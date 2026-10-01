@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
-import Icon from '../components/Icon.jsx';
 import { Field } from '../components/ui.jsx';
 
 export default function Login({ mode }) {
@@ -45,21 +44,20 @@ export default function Login({ mode }) {
           <span className="brand-name">PSCM E-class</span>
         </div>
         <div>
-          <h2>Procurement and supply chain courses, all in one place.</h2>
-          <p>Lecture materials, quizzes, assignments and your grades — on your phone or laptop.</p>
+          <h2>Virtual Classroom for Procurement and Supply Chain Management Courses</h2>
+          <p>L.O Appiah, PhD</p>
         </div>
-        <div className="auth-points">
-          <div><Icon name="book" /> Weekly slides, notes and recorded lectures</div>
-          <div><Icon name="quiz" /> Timed quizzes, marked the moment you submit</div>
-          <div><Icon name="upload" /> Hand in assignments online, before the deadline</div>
-        </div>
+        <div />
       </aside>
 
       <main className="auth-main">
         <form className="auth-card" onSubmit={submit} noValidate>
-          <div className="row" style={{ marginBottom: 8 }}>
-            <span className="brand-mark">PS</span>
-            <strong>PSCM E-class</strong>
+          <div className="auth-mobile-head stack-sm" style={{ marginBottom: 8 }}>
+            <div className="row">
+              <span className="brand-mark">PS</span>
+              <strong>PSCM E-class</strong>
+            </div>
+            <span className="small muted">Virtual Classroom for Procurement and Supply Chain Management Courses · L.O Appiah, PhD</span>
           </div>
           <div className="stack-sm">
             <h1>{activating ? 'Activate your account' : 'Sign in'}</h1>

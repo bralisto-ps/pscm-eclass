@@ -33,7 +33,9 @@ export default function QuizBuilder() {
     const quiz = await run(supabase.from('quizzes').select('*, courses(id, code, title, color)').eq('id', quizId).maybeSingle());
     const questions = await run(supabase.from('questions').select('*').eq('quiz_id', quizId).order('position').order('created_at'));
     const { count } = await supabase.from('attempts').select('id', { count: 'exact', head: true }).eq('quiz_id', quizId);
-    return { quiz, questions, attempts: count || 0 };
+    const windows = await run(supabase.from('quiz_windows').select('*').eq('quiz_id', quizId));
+    const groups = quiz ? await rpc('course_groups', { p_course: quiz.course_id }) : { programmes: [], streams: [] };
+    return { quiz, questions, attempts: count || 0, windows, groups };
   }, [quizId]);
   const [editing, setEditing] = useState(null); // question id or 'new'
   const [draft, setDraft] = useState(null);
@@ -143,7 +145,7 @@ export default function QuizBuilder() {
             )}
           </main>
 
-          <Settings quiz={quiz} count={questions.length} onSaved={(q) => setData((d) => ({ ...d, quiz: { ...d.quiz, ...q } }))} />
+          <Settings quiz={quiz} count={questions.length} windows={data.windows} streams={data.groups.streams} onSaved={(q) => setData((d) => ({ ...d, quiz: { ...d.quiz, ...q } }))} />
         </div>
       </div>
 
@@ -430,7 +432,7 @@ function QuestionEditor({ number, initial, quizId, isNew, onCancel, onSaved }) {
 }
 
 // ---------------- settings ----------------
-function Settings({ quiz, count, onSaved }) {
+function Settings({ quiz, count, windows, streams, onSaved }) {
   const [act, busy] = useAction();
   const [f, setF] = useState(() => ({
     title: quiz.title, instructions: quiz.instructions, reference: quiz.reference,
@@ -438,12 +440,22 @@ function Settings({ quiz, count, onSaved }) {
     duration_minutes: quiz.duration_minutes, max_attempts: quiz.max_attempts, is_practice: quiz.is_practice,
     shuffle_questions: quiz.shuffle_questions, shuffle_options: quiz.shuffle_options,
     published: quiz.published, results_released: quiz.results_released, show_answers: quiz.show_answers,
+    lockdown: quiz.lockdown, max_exits: quiz.max_exits ?? 0, no_backtrack: quiz.no_backtrack, pool_size: quiz.pool_size ?? '',
   }));
+  const [perStream, setPerStream] = useState(windows.length > 0);
+  const [win, setWin] = useState(() => {
+    const names = [...new Set([...streams, ...windows.map((w) => w.stream)])];
+    return names.map((st) => {
+      const w = windows.find((x) => x.stream.toLowerCase() === st.toLowerCase());
+      return { stream: st, on: windows.length ? !!w : true, opens_at: toLocalInput(w?.opens_at), closes_at: toLocalInput(w?.closes_at) };
+    });
+  });
   const [dirty, setDirty] = useState(false);
   const set = (k) => (e) => {
     setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
     setDirty(true);
   };
+  const setW = (i, k, v) => { setWin(win.map((w, j) => (j === i ? { ...w, [k]: v } : w))); setDirty(true); };
 
   async function save() {
     const row = {
@@ -451,34 +463,95 @@ function Settings({ quiz, count, onSaved }) {
       title: f.title.trim() || 'Untitled quiz',
       opens_at: fromLocalInput(f.opens_at), closes_at: fromLocalInput(f.closes_at),
       duration_minutes: Math.max(1, Number(f.duration_minutes) || 30), max_attempts: Math.max(1, Number(f.max_attempts) || 1),
+      max_exits: Math.max(0, Number(f.max_exits) || 0),
+      pool_size: f.pool_size === '' || Number(f.pool_size) <= 0 ? null : Math.floor(Number(f.pool_size)),
     };
     if (row.opens_at && row.closes_at && new Date(row.closes_at) <= new Date(row.opens_at)) {
       throw new Error('The closing time must be after the opening time.');
     }
     if (row.published && count === 0) throw new Error('Add at least one question before publishing.');
+    if (row.pool_size && row.pool_size > count) throw new Error(`The question bank has only ${count} questions — the number per student cannot be more than that.`);
+    const chosen = perStream ? win.filter((w) => w.on) : [];
+    if (perStream && !chosen.length) throw new Error('Tick at least one stream, or choose "Same times for everyone".');
+    for (const w of chosen) {
+      if (w.opens_at && w.closes_at && new Date(w.closes_at) <= new Date(w.opens_at)) throw new Error(`For ${w.stream}, the closing time must be after the opening time.`);
+    }
     const saved = await run(supabase.from('quizzes').update(row).eq('id', quiz.id).select().single());
+    await run(supabase.from('quiz_windows').delete().eq('quiz_id', quiz.id));
+    if (chosen.length) {
+      await run(supabase.from('quiz_windows').insert(chosen.map((w) => ({
+        quiz_id: quiz.id, stream: w.stream, opens_at: fromLocalInput(w.opens_at), closes_at: fromLocalInput(w.closes_at),
+      }))));
+    }
     onSaved(saved);
     setDirty(false);
     return saved;
   }
 
   return (
-    <aside className="card stack" style={{ position: 'sticky', top: 90 }}>
+    <aside className="card stack" style={{ alignSelf: 'start' }}>
       <div className="between"><h2>Quiz settings</h2>{dirty && <span className="badge badge-amber">Unsaved</span>}</div>
       <Field label="Title"><input className="input" value={f.title} onChange={set('title')} /></Field>
       <Field label="Instructions" hint="shown before starting"><textarea className="textarea" style={{ minHeight: 70 }} value={f.instructions} onChange={set('instructions')} /></Field>
       <Field label="Formula sheet" hint="optional, shown beside questions"><textarea className="textarea mono" style={{ minHeight: 70, fontSize: 13 }} value={f.reference} onChange={set('reference')} placeholder={'EOQ = √(2DS ÷ H)\nROP = d × L + SS'} /></Field>
-      <div className="grid-2" style={{ gap: 10 }}>
-        <Field label="Opens"><input className="input" type="datetime-local" value={f.opens_at} onChange={set('opens_at')} /></Field>
-        <Field label="Closes"><input className="input" type="datetime-local" value={f.closes_at} onChange={set('closes_at')} /></Field>
-        <Field label="Time limit (min)"><input className="input" type="number" min="1" value={f.duration_minutes} onChange={set('duration_minutes')} /></Field>
-        <Field label="Attempts"><input className="input" type="number" min="1" value={f.max_attempts} onChange={set('max_attempts')} disabled={f.is_practice} /></Field>
+
+      <div className="stack-sm" style={{ borderTop: '1px solid var(--line-2)', paddingTop: 14 }}>
+        <span className="eyebrow">When</span>
+        {streams.length > 0 && (
+          <div className="chips" role="group" aria-label="Timing">
+            <button type="button" className="chip" aria-pressed={!perStream} onClick={() => { setPerStream(false); setDirty(true); }}>Same times for everyone</button>
+            <button type="button" className="chip" aria-pressed={perStream} onClick={() => { setPerStream(true); setDirty(true); }}>Different times per stream</button>
+          </div>
+        )}
+        {!perStream ? (
+          <div className="grid-2" style={{ gap: 10 }}>
+            <Field label="Opens"><input className="input" type="datetime-local" value={f.opens_at} onChange={set('opens_at')} /></Field>
+            <Field label="Closes"><input className="input" type="datetime-local" value={f.closes_at} onChange={set('closes_at')} /></Field>
+          </div>
+        ) : (
+          <div className="stack-sm">
+            {win.map((w, i) => (
+              <div key={w.stream} className="stack-sm" style={{ background: 'var(--surface-2)', padding: 10, borderRadius: 8 }}>
+                <label className="check"><input type="checkbox" checked={w.on} onChange={(e) => setW(i, 'on', e.target.checked)} /> <strong>{w.stream}</strong></label>
+                {w.on && (
+                  <div className="grid-2" style={{ gap: 8 }}>
+                    <Field label="Opens"><input className="input" type="datetime-local" value={w.opens_at} onChange={(e) => setW(i, 'opens_at', e.target.value)} /></Field>
+                    <Field label="Closes"><input className="input" type="datetime-local" value={w.closes_at} onChange={(e) => setW(i, 'closes_at', e.target.value)} /></Field>
+                  </div>
+                )}
+              </div>
+            ))}
+            <span className="tiny muted">Unticked streams cannot see or take this quiz.</span>
+          </div>
+        )}
+        <div className="grid-2" style={{ gap: 10 }}>
+          <Field label="Time limit (min)"><input className="input" type="number" min="1" value={f.duration_minutes} onChange={set('duration_minutes')} /></Field>
+          <Field label="Attempts"><input className="input" type="number" min="1" value={f.max_attempts} onChange={set('max_attempts')} disabled={f.is_practice} /></Field>
+        </div>
       </div>
-      <div className="stack-sm">
-        <label className="check"><input type="checkbox" checked={f.is_practice} onChange={set('is_practice')} /> Practice quiz — unlimited attempts, score and answers shown straight away, not in grades</label>
+
+      <div className="stack-sm" style={{ borderTop: '1px solid var(--line-2)', paddingTop: 14 }}>
+        <span className="eyebrow">Exam security</span>
+        <label className="check"><input type="checkbox" checked={f.lockdown} onChange={set('lockdown')} />
+          <span><strong>Strict mode</strong> — opens full screen, blocks copy, paste and right-click, and warns and records every time a student leaves the quiz</span></label>
+        {f.lockdown && (
+          <label className="row-wrap small" style={{ gap: 8, paddingLeft: 28 }}>
+            <span className="nowrap">Auto-submit after</span>
+            <input className="input" type="number" min="0" style={{ width: 70, minHeight: 36 }} value={f.max_exits} onChange={set('max_exits')} />
+            <span className="nowrap">exits <span className="muted">(0 = never)</span></span>
+          </label>
+        )}
+        <label className="check"><input type="checkbox" checked={f.no_backtrack} onChange={set('no_backtrack')} /> No going back — each question locks once the student moves on</label>
+        <label className="row-wrap small" style={{ gap: 8 }}>
+          <span className="nowrap">Give each student</span>
+          <input className="input" type="number" min="1" style={{ width: 70, minHeight: 36 }} value={f.pool_size} onChange={set('pool_size')} placeholder="all" />
+          random questions from the {count} in the bank
+        </label>
         <label className="check"><input type="checkbox" checked={f.shuffle_questions} onChange={set('shuffle_questions')} /> Shuffle question order for each student</label>
         <label className="check"><input type="checkbox" checked={f.shuffle_options} onChange={set('shuffle_options')} /> Shuffle multiple-choice options</label>
+        <label className="check"><input type="checkbox" checked={f.is_practice} onChange={set('is_practice')} /> Practice quiz — unlimited attempts, score shown straight away, not in grades</label>
       </div>
+
       <div className="stack-sm" style={{ borderTop: '1px solid var(--line-2)', paddingTop: 14 }}>
         <label className="check"><input type="checkbox" checked={f.published} onChange={set('published')} /> <span><strong>Published</strong> — students can see it (and take it when open)</span></label>
         <label className="check"><input type="checkbox" checked={f.results_released} onChange={set('results_released')} /> <span><strong>Results released</strong> — students see their score</span></label>

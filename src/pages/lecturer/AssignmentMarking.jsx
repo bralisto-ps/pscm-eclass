@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { rpcAll, run, supabase, openStoredFile } from '../../lib/supabase.js';
 import { fmtFull, fmtNumber, pct, relative } from '../../lib/format.js';
-import { downloadExcel } from '../../lib/sheets.js';
+import { downloadWorkbook } from '../../lib/sheets.js';
+import { ALL_GROUPS, GroupFilters, GroupSummaryTable, groupLabel, groupSummary, matchesGroup } from '../../components/Groups.jsx';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
@@ -32,6 +33,7 @@ export default function AssignmentMarking() {
   }, [assignmentId]);
   const [filter, setFilter] = useState('tomark');
   const [q, setQ] = useState('');
+  const [group, setGroup] = useState(ALL_GROUPS);
   const [marking, setMarking] = useState(null); // index in `shown`
   const [editing, setEditing] = useState(false);
   const [act, busy] = useAction();
@@ -40,18 +42,21 @@ export default function AssignmentMarking() {
     if (!data) return [];
     const term = q.trim().toLowerCase();
     return data.rows.filter((r) => {
+      if (!matchesGroup(r, group)) return false;
       if (filter === 'tomark' && !(r.sub && r.sub.marks === null)) return false;
       if (filter === 'marked' && !(r.sub && r.sub.marks !== null)) return false;
       if (filter === 'missing' && r.sub) return false;
       if (filter === 'late' && !r.sub?.is_late) return false;
       return !term || String(r.full_name).toLowerCase().includes(term) || String(r.index_no).toLowerCase().includes(term);
     });
-  }, [data, filter, q]);
+  }, [data, filter, q, group]);
 
   if (loading) return <Loading />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
 
-  const { a, rows } = data;
+  const { a } = data;
+  const rows = data.rows.filter((r) => matchesGroup(r, group));
+  const summary = groupSummary(data.rows, (r) => !!r.sub && r.sub.marks !== null, (r) => pct(r.sub.marks, a.max_marks));
   const submitted = rows.filter((r) => r.sub);
   const marked = submitted.filter((r) => r.sub.marks !== null);
   const late = submitted.filter((r) => r.sub.is_late);
@@ -65,14 +70,21 @@ export default function AssignmentMarking() {
   }
 
   function exportXlsx() {
-    downloadExcel(`${a.courses.code} - ${a.title}.xlsx`, [
-      ['Index number', 'Name', 'Submitted', 'Late', 'File', 'Marks', 'Out of', 'Percent', 'Feedback'],
-      ...rows.map((r) => [
-        r.index_no, r.full_name, r.sub ? fmtFull(r.sub.submitted_at) : 'Not submitted', r.sub?.is_late ? 'Yes' : '',
-        r.sub?.file_name || '', r.sub?.marks !== null && r.sub?.marks !== undefined ? Number(r.sub.marks) : '', Number(a.max_marks),
-        r.sub?.marks !== null && r.sub?.marks !== undefined ? pct(r.sub.marks, a.max_marks) : '', r.sub?.feedback || '',
-      ]),
-    ], [16, 30, 22, 8, 30, 10, 10, 10, 50]);
+    const header = ['Index number', 'Name', 'Programme', 'Stream', 'Submitted', 'Late', 'File', 'Marks', 'Out of', 'Percent', 'Feedback'];
+    const line = (r) => [
+      r.index_no, r.full_name, r.programme || '', r.stream || '', r.sub ? fmtFull(r.sub.submitted_at) : 'Not submitted', r.sub?.is_late ? 'Yes' : '',
+      r.sub?.file_name || '', r.sub?.marks !== null && r.sub?.marks !== undefined ? Number(r.sub.marks) : '', Number(a.max_marks),
+      r.sub?.marks !== null && r.sub?.marks !== undefined ? pct(r.sub.marks, a.max_marks) : '', r.sub?.feedback || '',
+    ];
+    const widths = [16, 30, 18, 12, 22, 8, 30, 10, 10, 10, 50];
+    const sheets = [
+      { name: 'All students', rows: [header, ...data.rows.map(line)], widths },
+      { name: 'Summary', rows: [['Programme', 'Stream', 'Students', 'Marked', 'Average %'],
+        ...summary.map((g) => [groupLabel(g.programme), groupLabel(g.stream), g.students, g.submitted, g.average ?? ''])], widths: [22, 14, 10, 10, 10] },
+    ];
+    const streams = [...new Set(data.rows.map((r) => r.stream || ''))];
+    if (streams.length > 1) streams.sort().forEach((st) => sheets.push({ name: groupLabel(st), rows: [header, ...data.rows.filter((r) => (r.stream || '') === st).map(line)], widths }));
+    downloadWorkbook(`${a.courses.code} - ${a.title}.xlsx`, sheets);
   }
 
   function updateSub(id, patch) {
@@ -95,6 +107,9 @@ export default function AssignmentMarking() {
           <div className="kpi"><span className="l">Late</span><span className="v" style={{ color: late.length ? 'var(--amber-ink)' : undefined }}>{late.length}</span></div>
           <div className="kpi"><span className="l">Average mark</span><span className="v">{avg === null ? '—' : `${avg}%`}</span></div>
         </div>
+
+        <GroupFilters rows={data.rows} value={group} onChange={setGroup} />
+        <GroupSummaryTable summary={summary} doneLabel="Marked" />
 
         {!a.results_released && marked.length > 0 && (
           <div className="notice notice-warn">Students cannot see their marks yet. Press <strong>Release marks</strong> when you have finished.</div>
@@ -119,12 +134,13 @@ export default function AssignmentMarking() {
           {shown.length === 0 ? <Empty icon="inbox">{filter === 'tomark' ? 'Nothing waiting to be marked.' : 'No students match.'}</Empty> : (
             <div className="table-wrap">
               <table className="table">
-                <thead><tr><th>Index no.</th><th>Student</th><th>Submitted</th><th className="num">Marks</th><th /></tr></thead>
+                <thead><tr><th>Index no.</th><th>Student</th><th className="hide-sm">Group</th><th>Submitted</th><th className="num">Marks</th><th /></tr></thead>
                 <tbody>
                   {shown.slice(0, 400).map((r, i) => (
                     <tr key={r.index_no}>
                       <td className="mono small">{r.index_no}</td>
                       <td>{r.full_name}</td>
+                      <td className="small muted hide-sm">{[r.programme, r.stream].filter(Boolean).join(' · ') || '—'}</td>
                       <td className="small">
                         {r.sub ? (
                           <>{relative(r.sub.submitted_at)} {r.sub.is_late && <span className="badge badge-amber">Late</span>}

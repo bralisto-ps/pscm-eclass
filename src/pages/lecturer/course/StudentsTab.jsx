@@ -4,6 +4,7 @@ import { fmtFull, relative } from '../../../lib/format.js';
 import { downloadExcel, downloadText, parseDelimited, readStudentFile, rowsToStudents } from '../../../lib/sheets.js';
 import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../../components/ui.jsx';
+import { ALL_GROUPS, GroupFilters, matchesGroup } from '../../../components/Groups.jsx';
 
 export default function StudentsTab({ course }) {
   const { data, error, loading, reload } = useLoad(() => rpcAll('course_students', { p_course: course.id }), [course.id]);
@@ -12,14 +13,16 @@ export default function StudentsTab({ course }) {
   const [importing, setImporting] = useState(false);
   const [resetting, setResetting] = useState(null);
   const [removing, setRemoving] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [group, setGroup] = useState(ALL_GROUPS);
   const [act, busy] = useAction();
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
     return (data || []).filter((r) =>
-      (filter === 'all' || (filter === 'active' ? r.activated : !r.activated)) &&
+      (filter === 'all' || (filter === 'active' ? r.activated : !r.activated)) && matchesGroup(r, group) &&
       (!term || r.index_no.toLowerCase().includes(term) || r.full_name.toLowerCase().includes(term)));
-  }, [data, q, filter]);
+  }, [data, q, filter, group]);
 
   if (loading) return <Loading />;
   if (error) return <ErrorNote error={error} onRetry={reload} />;
@@ -34,9 +37,9 @@ export default function StudentsTab({ course }) {
 
   function exportList() {
     downloadExcel(`${course.code} class list.xlsx`, [
-      ['Index number', 'Full name', 'Account activated', 'Last sign-in'],
-      ...data.map((r) => [r.index_no, r.full_name, r.activated ? 'Yes' : 'No', r.last_sign_in ? fmtFull(r.last_sign_in) : '']),
-    ], [18, 32, 18, 22]);
+      ['Index number', 'Full name', 'Programme', 'Stream', 'Account activated', 'Last sign-in'],
+      ...data.map((r) => [r.index_no, r.full_name, r.programme, r.stream, r.activated ? 'Yes' : 'No', r.last_sign_in ? fmtFull(r.last_sign_in) : '']),
+    ], [18, 32, 20, 14, 18, 22]);
   }
 
   return (
@@ -60,6 +63,7 @@ export default function StudentsTab({ course }) {
               <button type="button" className="chip" aria-pressed={filter === 'active'} onClick={() => setFilter('active')}>Activated</button>
               <button type="button" className="chip" aria-pressed={filter === 'inactive'} onClick={() => setFilter('inactive')}>Not activated</button>
             </div>
+            <GroupFilters rows={data} value={group} onChange={setGroup} />
           </div>
           <div className="row-wrap">
             {data.length > 0 && <button type="button" className="btn btn-sm" onClick={exportList}><Icon name="download" size={16} /> Export</button>}
@@ -74,17 +78,20 @@ export default function StudentsTab({ course }) {
         ) : (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>Index no.</th><th>Name</th><th>Account</th><th className="hide-sm">Last sign-in</th><th /></tr></thead>
+              <thead><tr><th>Index no.</th><th>Name</th><th>Programme</th><th>Stream</th><th>Account</th><th className="hide-sm">Last sign-in</th><th /></tr></thead>
               <tbody>
                 {rows.slice(0, 300).map((r) => (
                   <tr key={r.index_no}>
                     <td className="mono small">{r.index_no}</td>
                     <td>{r.full_name}</td>
+                    <td className="small">{r.programme || <span className="muted">—</span>}</td>
+                    <td className="small">{r.stream || <span className="muted">—</span>}</td>
                     <td>{r.activated ? <span className="badge badge-teal">Activated</span> : <span className="badge">Not yet</span>}</td>
                     <td className="small muted hide-sm">{r.last_sign_in ? relative(r.last_sign_in) : '—'}</td>
                     <td>
                       <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
                         {r.activated && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setResetting(r)}><Icon name="key" size={16} /> Reset password</button>}
+                        <button type="button" className="icon-btn plain" aria-label={`Edit ${r.full_name}`} onClick={() => setEditing(r)}><Icon name="edit" /></button>
                         <button type="button" className="icon-btn plain" aria-label={`Remove ${r.full_name} from course`} onClick={() => setRemoving(r)}><Icon name="trash" /></button>
                       </div>
                     </td>
@@ -105,6 +112,7 @@ export default function StudentsTab({ course }) {
 
       {importing && <ImportModal course={course} onClose={() => setImporting(false)} onDone={reload} />}
       {resetting && <ResetModal student={resetting} onClose={() => setResetting(null)} />}
+      {editing && <EditModal student={editing} onClose={() => setEditing(null)} onSaved={reload} />}
       {removing && (
         <Confirm title="Remove from course?" danger confirmLabel="Remove" busy={busy}
           message={`${removing.full_name} (${removing.index_no}) will lose access to ${course.code}. Their account and past results stay.`}
@@ -167,17 +175,17 @@ function ImportModal({ course, onClose, onDone }) {
           {busy ? 'Adding…' : `Add ${students.length || ''} student${students.length === 1 ? '' : 's'}`}
         </button></>}>
       <p className="small muted">
-        Use an Excel (.xlsx) or CSV file with the <strong>index number</strong> in one column and the <strong>full name</strong> in another.
-        A heading row is fine. Students already on the list are updated, not duplicated. You can upload again at any time to add late registrations.
+        Use an Excel (.xlsx) or CSV file with columns for <strong>index number</strong>, <strong>full name</strong>, and optionally
+        <strong>programme</strong> (e.g. Marketing, HRM) and <strong>stream</strong> (e.g. Regular, Weekend, Evening). Give the columns those headings. Students already on the list are updated, not duplicated. You can upload again at any time to add late registrations.
       </p>
       <div className="row-wrap">
         <input type="file" accept=".xlsx,.csv,.txt" className="input" style={{ paddingTop: 9, maxWidth: 420 }} onChange={onFile} aria-label="Class list file" />
-        <button type="button" className="btn btn-sm btn-ghost" onClick={() => downloadText('class-list-template.csv', 'Index number,Full name\n4021180,Kofi Mensah\n4021214,Ama Owusu\n')}>
+        <button type="button" className="btn btn-sm btn-ghost" onClick={() => downloadText('class-list-template.csv', 'Index number,Full name,Programme,Stream\n4021180,Kofi Mensah,Marketing,Regular\n4021214,Ama Owusu,HRM,Weekend\n')}>
           <Icon name="download" size={16} /> Template
         </button>
       </div>
       <Field label="…or paste from Excel" hint="copy the two columns and paste here">
-        <textarea className="textarea mono" value={paste} onChange={(e) => onPaste(e.target.value)} placeholder={'4021180\tKofi Mensah\n4021214\tAma Owusu'} />
+        <textarea className="textarea mono" value={paste} onChange={(e) => onPaste(e.target.value)} placeholder={'Index number\tFull name\tProgramme\tStream\n4021180\tKofi Mensah\tMarketing\tRegular'} />
       </Field>
       {error && <div className="notice notice-error">{error}</div>}
       {students.length > 0 && (
@@ -185,9 +193,16 @@ function ImportModal({ course, onClose, onDone }) {
           <strong>{students.length} students found{missingNames ? ` · ${missingNames} without a name` : ''}</strong>
           <div className="card-flush table-wrap">
             <table className="table">
-              <thead><tr><th>Index no.</th><th>Name</th></tr></thead>
+              <thead><tr><th>Index no.</th><th>Name</th><th>Programme</th><th>Stream</th></tr></thead>
               <tbody>
-                {students.slice(0, 6).map((s, i) => <tr key={i}><td className="mono small">{s.index_no}</td><td>{s.full_name || <span className="muted">—</span>}</td></tr>)}
+                {students.slice(0, 6).map((s, i) => (
+                  <tr key={i}>
+                    <td className="mono small">{s.index_no}</td>
+                    <td>{s.full_name || <span className="muted">—</span>}</td>
+                    <td className="small">{s.programme || <span className="muted">—</span>}</td>
+                    <td className="small">{s.stream || <span className="muted">—</span>}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -224,6 +239,26 @@ function ResetModal({ student, onClose }) {
       ) : (
         <p className="small muted">A new temporary password will be created. Their old password stops working immediately.</p>
       )}
+    </Modal>
+  );
+}
+
+function EditModal({ student, onClose, onSaved }) {
+  const [act, busy] = useAction();
+  const [f, setF] = useState({ name: student.full_name, programme: student.programme || '', stream: student.stream || '' });
+  async function save() {
+    const ok = await act(() => rpc('update_student', { p_index: student.index_no, p_name: f.name, p_programme: f.programme, p_stream: f.stream }), 'Student updated.');
+    if (ok !== undefined) { onSaved(); onClose(); }
+  }
+  return (
+    <Modal title={`Edit ${student.index_no}`} onClose={onClose}
+      footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button><button type="button" className="btn btn-primary" onClick={save} disabled={busy}>Save</button></>}>
+      <Field label="Full name"><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+      <div className="grid-2">
+        <Field label="Programme"><input className="input" value={f.programme} onChange={(e) => setF({ ...f, programme: e.target.value })} placeholder="Marketing" /></Field>
+        <Field label="Stream"><input className="input" value={f.stream} onChange={(e) => setF({ ...f, stream: e.target.value })} placeholder="Weekend" /></Field>
+      </div>
+      <p className="small muted">Programme and stream apply to this student in all your courses.</p>
     </Modal>
   );
 }

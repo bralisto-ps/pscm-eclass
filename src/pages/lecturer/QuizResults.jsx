@@ -2,10 +2,11 @@ import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
 import { fmtFull, fmtNumber, pct } from '../../lib/format.js';
-import { downloadExcel } from '../../lib/sheets.js';
+import { downloadWorkbook } from '../../lib/sheets.js';
+import { ALL_GROUPS, GroupFilters, GroupSummaryTable, groupLabel, groupSummary, matchesGroup } from '../../components/Groups.jsx';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
-import { Confirm, Empty, ErrorNote, Loading, Tabs, useAction, useLoad, useToast } from '../../components/ui.jsx';
+import { Confirm, Empty, ErrorNote, Loading, Modal, Tabs, useAction, useLoad, useToast } from '../../components/ui.jsx';
 
 const BINS = [
   { label: '0–39%', lo: 0, hi: 39.999, color: 'var(--amber)' },
@@ -71,41 +72,65 @@ export default function QuizResults() {
   );
 }
 
-function Gradebook({ quiz, rows, reload }) {
+function exitText(r) {
+  if (!r.exits) return '';
+  const kinds = { tab: 'switched tab or app', blur: 'left the window', fullscreen: 'left full screen' };
+  return (r.exit_log || []).map((e) => `${new Date(e.at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} — ${kinds[e.kind] || e.kind}`).join('\n');
+}
+
+function Gradebook({ quiz, rows: allRows, reload }) {
   const [filter, setFilter] = useState('all');
+  const [group, setGroup] = useState(ALL_GROUPS);
   const [q, setQ] = useState('');
   const [retake, setRetake] = useState(null);
+  const [showLog, setShowLog] = useState(null);
   const [act, busy] = useAction();
 
+  const rows = useMemo(() => allRows.filter((r) => matchesGroup(r, group)), [allRows, group]);
+  const isDone = (r) => r.status === 'marked' || r.status === 'needs_marking';
   const fastLimit = Math.max(2, quiz.duration_minutes * 0.2);
-  const done = rows.filter((r) => r.status === 'marked' || r.status === 'needs_marking');
+  const done = rows.filter(isDone);
   const withPct = done.map((r) => ({ ...r, p: pct(r.score, r.max_score) })).filter((r) => r.p !== null);
   const avg = withPct.length ? Math.round(withPct.reduce((s, r) => s + r.p, 0) / withPct.length) : null;
   const fast = done.filter((r) => r.minutes_used !== null && Number(r.minutes_used) < fastLimit);
+  const suspicious = rows.filter((r) => r.exits > 0 || r.devices > 1);
   const counts = BINS.map((b) => withPct.filter((r) => r.p >= b.lo && r.p <= b.hi).length);
   const maxCount = Math.max(1, ...counts);
+  const summary = useMemo(() => groupSummary(allRows, isDone, (r) => pct(r.score, r.max_score)), [allRows]);
 
   const shown = useMemo(() => {
     const term = q.trim().toLowerCase();
     return rows.filter((r) => {
       if (filter === 'marking' && r.status !== 'needs_marking') return false;
-      if (filter === 'missing' && (r.status === 'marked' || r.status === 'needs_marking')) return false;
+      if (filter === 'missing' && isDone(r)) return false;
       if (filter === 'fast' && !(r.minutes_used !== null && Number(r.minutes_used) < fastLimit && r.submitted_at)) return false;
+      if (filter === 'flagged' && !(r.exits > 0 || r.devices > 1)) return false;
       return !term || r.full_name.toLowerCase().includes(term) || r.index_no.toLowerCase().includes(term);
     });
   }, [rows, filter, q, fastLimit]);
 
   function exportXlsx() {
-    downloadExcel(`${quiz.courses.code} - ${quiz.title}.xlsx`, [
-      ['Index number', 'Name', 'Status', 'Auto-marked', 'Written', 'Total', 'Out of', 'Percent', 'Minutes used', 'Submitted', 'Attempts'],
-      ...rows.map((r) => [
-        r.index_no, r.full_name, (STATUS[r.status] || [r.status])[0],
-        r.auto_score !== null ? Number(r.auto_score) : '', r.manual_score !== null ? Number(r.manual_score) : '',
-        r.score !== null ? Number(r.score) : '', r.max_score !== null ? Number(r.max_score) : '',
-        pct(r.score, r.max_score) ?? '', r.minutes_used !== null ? Number(r.minutes_used) : '',
-        r.submitted_at ? fmtFull(r.submitted_at) : '', r.attempts_used,
-      ]),
-    ], [16, 30, 16, 12, 10, 10, 10, 10, 12, 22, 10]);
+    const header = ['Index number', 'Name', 'Programme', 'Stream', 'Status', 'Auto-marked', 'Written', 'Total', 'Out of', 'Percent',
+      'Minutes used', 'Times left quiz', 'Devices used', 'Submitted', 'Attempts'];
+    const line = (r) => [
+      r.index_no, r.full_name, r.programme, r.stream, (STATUS[r.status] || [r.status])[0],
+      r.auto_score !== null && r.attempt_id ? Number(r.auto_score) : '', r.manual_score !== null ? Number(r.manual_score) : '',
+      r.score !== null ? Number(r.score) : '', r.max_score !== null ? Number(r.max_score) : '',
+      pct(r.score, r.max_score) ?? '', r.minutes_used !== null ? Number(r.minutes_used) : '',
+      r.attempt_id ? r.exits : '', r.attempt_id ? r.devices : '',
+      r.submitted_at ? fmtFull(r.submitted_at) : '', r.attempts_used,
+    ];
+    const widths = [16, 30, 18, 12, 16, 12, 10, 10, 10, 10, 12, 14, 12, 22, 10];
+    const sheets = [
+      { name: 'All students', rows: [header, ...allRows.map(line)], widths },
+      { name: 'Summary', rows: [['Programme', 'Stream', 'Students', 'Submitted', 'Average %'],
+        ...summary.map((g) => [groupLabel(g.programme), groupLabel(g.stream), g.students, g.submitted, g.average ?? ''])], widths: [22, 14, 10, 10, 10] },
+    ];
+    const streams = [...new Set(allRows.map((r) => r.stream || ''))];
+    if (streams.length > 1) {
+      streams.sort().forEach((st) => sheets.push({ name: groupLabel(st), rows: [header, ...allRows.filter((r) => (r.stream || '') === st).map(line)], widths }));
+    }
+    downloadWorkbook(`${quiz.courses.code} - ${quiz.title}.xlsx`, sheets);
   }
 
   async function allowRetake() {
@@ -117,12 +142,13 @@ function Gradebook({ quiz, rows, reload }) {
 
   return (
     <div className="stack-lg">
+      <GroupFilters rows={allRows} value={group} onChange={setGroup} />
       <div className="two-col" style={{ gridTemplateColumns: '440px minmax(0,1fr)' }}>
         <div className="grid-2">
-          <div className="kpi"><span className="l">Submitted</span><span className="v">{done.length}</span><span className="tiny muted">of {rows.length} enrolled</span></div>
-          <div className="kpi"><span className="l">Class average</span><span className="v">{avg === null ? '—' : `${avg}%`}</span><span className="tiny muted">of submitted work</span></div>
+          <div className="kpi"><span className="l">Submitted</span><span className="v">{done.length}</span><span className="tiny muted">of {rows.length} students</span></div>
+          <div className="kpi"><span className="l">Average</span><span className="v">{avg === null ? '—' : `${avg}%`}</span><span className="tiny muted">of submitted work</span></div>
           <div className="kpi"><span className="l">Needs marking</span><span className="v" style={{ color: 'var(--amber-ink)' }}>{rows.filter((r) => r.status === 'needs_marking').length}</span><span className="tiny muted">written answers pending</span></div>
-          <div className="kpi"><span className="l">Very fast finishers</span><span className="v" style={{ color: fast.length ? 'var(--red-ink)' : undefined }}>{fast.length}</span><span className="tiny muted">under {fmtNumber(fastLimit, 1)} min</span></div>
+          <div className="kpi"><span className="l">Flagged</span><span className="v" style={{ color: suspicious.length ? 'var(--red-ink)' : undefined }}>{suspicious.length}</span><span className="tiny muted">left the quiz or used 2+ devices</span></div>
         </div>
         <section className="card stack-sm" aria-label="Score distribution">
           <div className="between"><h2>Score distribution</h2><span className="tiny muted">students per score band</span></div>
@@ -138,6 +164,8 @@ function Gradebook({ quiz, rows, reload }) {
         </section>
       </div>
 
+      <GroupSummaryTable summary={summary} />
+
       <section className="card-flush">
         <div className="card-head" style={{ flexWrap: 'wrap' }}>
           <div className="row-wrap">
@@ -147,18 +175,18 @@ function Gradebook({ quiz, rows, reload }) {
               <input className="input" style={{ width: 230, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name or index number" />
             </label>
             <div className="chips" role="group" aria-label="Filter">
-              {[['all', `All · ${rows.length}`], ['marking', 'Needs marking'], ['missing', 'Not submitted'], ['fast', 'Very fast']].map(([id, label]) => (
+              {[['all', `All · ${rows.length}`], ['marking', 'Needs marking'], ['missing', 'Not submitted'], ['flagged', `Flagged · ${suspicious.length}`], ['fast', `Under ${fmtNumber(fastLimit, 1)} min · ${fast.length}`]].map(([id, label]) => (
                 <button key={id} type="button" className="chip" aria-pressed={filter === id} onClick={() => setFilter(id)}>{label}</button>
               ))}
             </div>
           </div>
           <button type="button" className="btn btn-sm" onClick={exportXlsx}><Icon name="download" size={16} /> Export to Excel</button>
         </div>
-        {rows.length === 0 ? <Empty icon="users" title="No students on this course yet" /> : (
+        {rows.length === 0 ? <Empty icon="users" title="No students in this group" /> : (
           <div className="table-wrap">
             <table className="table">
               <thead>
-                <tr><th>Index no.</th><th>Student</th><th className="num">Auto</th><th className="num">Written</th><th className="num">Total</th><th className="num">%</th><th className="num hide-sm">Time</th><th>Status</th><th /></tr>
+                <tr><th>Index no.</th><th>Student</th><th className="hide-sm">Group</th><th className="num">Total</th><th className="num">%</th><th className="num hide-sm">Time</th><th>Left quiz</th><th>Status</th><th /></tr>
               </thead>
               <tbody>
                 {shown.slice(0, 400).map((r) => {
@@ -168,11 +196,21 @@ function Gradebook({ quiz, rows, reload }) {
                     <tr key={r.index_no}>
                       <td className="mono small">{r.index_no}</td>
                       <td>{r.full_name}{r.attempts_used > 1 ? <span className="tiny muted"> · {r.attempts_used} attempts</span> : null}</td>
-                      <td className="num">{r.auto_score !== null && r.attempt_id && r.status !== 'in_progress' ? fmtNumber(r.auto_score) : '—'}</td>
-                      <td className="num">{r.manual_score !== null ? fmtNumber(r.manual_score) : '—'}</td>
-                      <td className="num strong">{r.score !== null ? `${fmtNumber(r.score)} / ${fmtNumber(r.max_score)}` : '—'}</td>
-                      <td className="num">{p !== null ? `${p}%` : '—'}</td>
+                      <td className="small muted hide-sm">{[r.programme, r.stream].filter(Boolean).join(' · ') || '—'}</td>
+                      <td className="num strong">{r.score !== null && r.status !== 'in_progress' ? `${fmtNumber(r.score)} / ${fmtNumber(r.max_score)}` : '—'}</td>
+                      <td className="num">{p !== null && r.status !== 'in_progress' ? `${p}%` : '—'}</td>
                       <td className="num hide-sm">{r.minutes_used !== null ? `${fmtNumber(r.minutes_used, 1)}m` : '—'}</td>
+                      <td>
+                        <div className="row" style={{ gap: 4 }}>
+                          {r.exits > 0 && (
+                            <button type="button" className="badge badge-red" style={{ border: 0, cursor: 'pointer' }} onClick={() => setShowLog(r)} title={exitText(r)}>
+                              {r.exits}×
+                            </button>
+                          )}
+                          {r.devices > 1 && <span className="badge badge-amber" title="Opened on more than one device or browser">{r.devices} devices</span>}
+                          {!r.exits && r.devices <= 1 && <span className="muted small">—</span>}
+                        </div>
+                      </td>
                       <td><span className={`badge ${cls}`}>{label}</span></td>
                       <td>{r.attempts_used > 0 && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setRetake(r)}>Allow retake</button>}</td>
                     </tr>
@@ -190,6 +228,12 @@ function Gradebook({ quiz, rows, reload }) {
         <Confirm title="Allow a retake?" danger confirmLabel="Delete attempt and allow retake" busy={busy}
           message={`${retake.full_name}'s attempt${retake.attempts_used > 1 ? 's' : ''} and score will be deleted so they can take the quiz again (while it is open).`}
           onClose={() => setRetake(null)} onConfirm={allowRetake} />
+      )}
+      {showLog && (
+        <Modal title={`${showLog.full_name} — left the quiz ${showLog.exits} time${showLog.exits === 1 ? '' : 's'}`} onClose={() => setShowLog(null)}>
+          <p className="small muted">Times are when the quiz screen was left. {showLog.devices > 1 ? `The attempt was also opened on ${showLog.devices} different devices or browsers.` : ''}</p>
+          <pre className="mono small" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{exitText(showLog)}</pre>
+        </Modal>
       )}
     </div>
   );

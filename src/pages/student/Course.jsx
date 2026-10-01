@@ -226,9 +226,10 @@ function Quizzes({ quizzes }) {
                 <div className="row-wrap">
                   <h2>{q.title}</h2>
                   {q.is_practice && <span className="badge badge-blue">Practice · not graded</span>}
+                  {q.lockdown && <span className="badge badge-red">Strict mode</span>}
                 </div>
                 <span className="small muted">
-                  {q.question_count} questions · {fmtNumber(q.total_marks)} marks · {q.duration_minutes} minutes ·{' '}
+                  {q.question_count} questions{q.total_marks !== null && q.total_marks !== undefined ? ` · ${fmtNumber(q.total_marks)} marks` : ''} · {q.duration_minutes} minutes ·{' '}
                   {q.is_practice ? 'unlimited attempts' : `${q.max_attempts} attempt${q.max_attempts > 1 ? 's' : ''}`}
                 </span>
                 <span className="small muted">
@@ -287,11 +288,20 @@ function Quizzes({ quizzes }) {
             {starting.closes_at ? <> (or until {fmtDateTime(starting.closes_at)}, whichever comes first)</> : null}.
           </div>
           <ul className="small" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>
-            <li>{starting.question_count} questions, {fmtNumber(starting.total_marks)} marks in total.</li>
+            <li>{starting.question_count} questions{starting.total_marks !== null && starting.total_marks !== undefined ? `, ${fmtNumber(starting.total_marks)} marks in total` : ''}.</li>
             <li>Your answers save automatically as you go.</li>
             <li>Calculation questions use figures unique to you.</li>
             <li>When time runs out, your saved answers are submitted for you.</li>
+            {starting.no_backtrack && <li><strong>You cannot go back</strong> to a question once you move to the next one.</li>}
           </ul>
+          {starting.lockdown && (
+            <div className="notice notice-error small">
+              <strong>Strict mode.</strong> The quiz opens full screen. Switching tabs or apps, leaving full screen or
+              copying and pasting is blocked or recorded, and your lecturer sees every exit
+              {starting.max_exits ? <>. After <strong>{starting.max_exits}</strong> exits your quiz is submitted automatically</> : ''}.
+              Close other apps and turn off notifications before you start.
+            </div>
+          )}
           {starting.instructions && <p className="small pre">{starting.instructions}</p>}
         </Modal>
       )}

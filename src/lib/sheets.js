@@ -26,29 +26,42 @@ export function parseDelimited(text) {
   return lines.map((l) => splitCsvLine(l, delim).map((c) => c.trim()));
 }
 
-// Finds the index-number and name columns, whatever order or headings they have.
+// Finds the index-number, name, programme and stream columns, whatever order or headings they have.
 export function rowsToStudents(rows) {
   if (!rows.length) return [];
-  const header = rows[0].map((h) => String(h ?? '').toLowerCase());
-  const looksLikeHeader = header.some((h) => /index|student|name|id|number|ref/.test(h));
+  const header = rows[0].map((h) => String(h ?? '').toLowerCase().trim());
+  const looksLikeHeader = header.some((h) => /index|student|name|id|number|ref|programme|program|stream/.test(h));
   let idxCol = 0;
   let nameCols = [1];
+  let progCol = -1;
+  let streamCol = -1;
   let body = rows;
   if (looksLikeHeader) {
     body = rows.slice(1);
-    const i = header.findIndex((h) => /index|student.?id|id|number|ref/.test(h) && !/name/.test(h));
+    progCol = header.findIndex((h) => /programme|program|specialisation|specialization|major|department|option/.test(h));
+    streamCol = header.findIndex((h) => /stream|session|mode|category|shift/.test(h));
+    const used = new Set([progCol, streamCol]);
+    const i = header.findIndex((h, k) => !used.has(k) && /index|student.?id|^id$|number|ref|matric/.test(h) && !/name/.test(h));
     if (i >= 0) idxCol = i;
-    const full = header.findIndex((h) => /full.?name|^name$|student.?name/.test(h));
-    const first = header.findIndex((h) => /first|given|other/.test(h));
-    const last = header.findIndex((h) => /last|surname|family/.test(h));
+    used.add(idxCol);
+    const full = header.findIndex((h, k) => !used.has(k) && /full.?name|^name$|student.?name|^names?$/.test(h));
+    const first = header.findIndex((h, k) => !used.has(k) && /first|given|other/.test(h));
+    const last = header.findIndex((h, k) => !used.has(k) && /last|surname|family/.test(h));
     if (full >= 0) nameCols = [full];
     else if (first >= 0 && last >= 0) nameCols = [first, last];
-    else nameCols = header.map((_, k) => k).filter((k) => k !== idxCol).slice(0, 1);
+    else nameCols = header.map((_, k) => k).filter((k) => !used.has(k)).slice(0, 1);
+  } else if (rows[0].length >= 4) {
+    // no headings: index, name, programme, stream
+    progCol = 2;
+    streamCol = 3;
   }
+  const cell = (r, c) => (c >= 0 ? String(r[c] ?? '').trim() : '');
   return body
     .map((r) => ({
-      index_no: String(r[idxCol] ?? '').trim(),
-      full_name: nameCols.map((c) => String(r[c] ?? '').trim()).filter(Boolean).join(' '),
+      index_no: cell(r, idxCol),
+      full_name: nameCols.map((c) => cell(r, c)).filter(Boolean).join(' '),
+      programme: cell(r, progCol),
+      stream: cell(r, streamCol),
     }))
     .filter((r) => r.index_no);
 }
@@ -80,6 +93,32 @@ export async function downloadExcel(fileName, rows, widths) {
   await writeXlsxFile(data, {
     fileName,
     columns: widths ? widths.map((w) => ({ width: w })) : undefined,
+    stickyRowsCount: 1,
+  });
+}
+
+// sheets: [{ name, rows (first row = header), widths }]
+export async function downloadWorkbook(fileName, sheets) {
+  const { default: writeXlsxFile } = await import('write-excel-file');
+  const toCells = (rows) => rows.map((r, i) =>
+    r.map((v) => {
+      if (v === null || v === undefined || v === '') return null;
+      if (i === 0) return { value: String(v), fontWeight: 'bold' };
+      if (typeof v === 'number') return { value: v, type: Number };
+      return { value: String(v), type: String };
+    }));
+  const used = new Set();
+  const names = sheets.map((s) => {
+    let n = String(s.name || 'Sheet').replace(/[\\/?*[\]:]/g, ' ').slice(0, 31).trim() || 'Sheet';
+    let k = 2;
+    while (used.has(n)) n = `${n.slice(0, 28)} ${k++}`;
+    used.add(n);
+    return n;
+  });
+  await writeXlsxFile(sheets.map((s) => toCells(s.rows)), {
+    fileName,
+    sheets: names,
+    columns: sheets.map((s) => (s.widths || []).map((w) => ({ width: w }))),
     stickyRowsCount: 1,
   });
 }

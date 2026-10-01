@@ -18,7 +18,7 @@ export default function QuizzesTab({ course }) {
   const [act, busy] = useAction();
   const [removing, setRemoving] = useState(null);
   const { data, error, loading, reload } = useLoad(
-    () => run(supabase.from('quizzes').select('*, questions(count), attempts(count)').eq('course_id', course.id).order('created_at', { ascending: false })),
+    () => run(supabase.from('quizzes').select('*, questions(count), attempts(count), quiz_windows(count)').eq('course_id', course.id).order('created_at', { ascending: false })),
     [course.id],
   );
 
@@ -31,7 +31,7 @@ export default function QuizzesTab({ course }) {
 
   async function duplicate(src) {
     const copy = await act(async () => {
-      const { id, created_at, questions, attempts, ...rest } = src;
+      const { id, created_at, questions, attempts, quiz_windows, ...rest } = src;
       const q = await run(supabase.from('quizzes').insert({
         ...rest, title: `${src.title} (copy)`, published: false, results_released: false,
       }).select().single());
@@ -80,12 +80,13 @@ export default function QuizzesTab({ course }) {
                       <div className="tiny muted">
                         {q.duration_minutes} min · {q.is_practice ? 'practice' : `${q.max_attempts} attempt${q.max_attempts > 1 ? 's' : ''}`}
                         {q.results_released ? ' · results released' : ''}
+                        {q.lockdown ? ' · strict mode' : ''}
                       </div>
                     </td>
                     <td><span className={`badge ${st.cls}`}>{st.label}</span></td>
                     <td className="small nowrap">
-                      {q.opens_at ? fmtDateTime(q.opens_at) : 'Any time'}
-                      <div className="tiny muted">{q.closes_at ? `to ${fmtDateTime(q.closes_at)}` : 'no closing time'}</div>
+                      {q.quiz_windows?.[0]?.count ? 'Set per stream' : q.opens_at ? fmtDateTime(q.opens_at) : 'Any time'}
+                      <div className="tiny muted">{q.quiz_windows?.[0]?.count ? `${q.quiz_windows[0].count} stream${q.quiz_windows[0].count > 1 ? 's' : ''}` : q.closes_at ? `to ${fmtDateTime(q.closes_at)}` : 'no closing time'}</div>
                     </td>
                     <td className="num">{q.questions?.[0]?.count ?? 0}</td>
                     <td className="num">{q.attempts?.[0]?.count ?? 0}</td>
