@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { rpc, rpcAll, run, supabase } from '../../../lib/supabase.js';
 import { fmtFull, relative } from '../../../lib/format.js';
 import { downloadExcel, downloadText, parseDelimited, readStudentFile, rowsToStudents } from '../../../lib/sheets.js';
@@ -7,7 +7,21 @@ import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, u
 import { ALL_GROUPS, GroupFilters, matchesGroup } from '../../../components/Groups.jsx';
 
 export default function StudentsTab({ course }) {
-  const { data, error, loading, reload } = useLoad(() => rpcAll('course_students', { p_course: course.id }), [course.id]);
+  const { data: loaded, error, loading, reload } = useLoad(async () => {
+    const [students, options] = await Promise.all([
+      rpcAll('course_students', { p_course: course.id }),
+      run(supabase.from('group_options').select('kind, name').order('name')),
+    ]);
+    return {
+      students,
+      programmes: options.filter((o) => o.kind === 'programme').map((o) => o.name),
+      streams: options.filter((o) => o.kind === 'stream').map((o) => o.name),
+    };
+  }, [course.id]);
+  const data = loaded?.students;
+  const [selected, setSelected] = useState(() => new Set());
+  const [risk, setRisk] = useState(null); // null = not loaded; Map index → row
+  const [riskErr, setRiskErr] = useState('');
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
   const [importing, setImporting] = useState(false);
@@ -16,18 +30,32 @@ export default function StudentsTab({ course }) {
   const [editing, setEditing] = useState(null);
   const [group, setGroup] = useState(ALL_GROUPS);
   const [act, busy] = useAction();
+  useEffect(() => {
+    if (filter !== 'risk' || risk) return;
+    rpcAll('course_at_risk', { p_course: course.id })
+      .then((rows) => setRisk(new Map(rows.map((r) => [r.index_no, r]))))
+      .catch((e) => setRiskErr(e.message));
+  }, [filter, risk, course.id]);
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
     return (data || []).filter((r) =>
-      (filter === 'all' || (filter === 'active' ? r.activated : !r.activated)) && matchesGroup(r, group) &&
+      (filter === 'all' || (filter === 'risk' ? risk?.has(r.index_no) : filter === 'active' ? r.activated : !r.activated)) && matchesGroup(r, group) &&
       (!term || r.index_no.toLowerCase().includes(term) || r.full_name.toLowerCase().includes(term)));
-  }, [data, q, filter, group]);
+  }, [data, q, filter, group, risk]);
 
   if (loading) return <Loading />;
   if (error) return <ErrorNote error={error} onRetry={reload} />;
 
   const activated = data.filter((r) => r.activated).length;
+  const { programmes, streams } = loaded;
+  const allShownSelected = rows.length > 0 && rows.every((r) => selected.has(r.index_no));
+  const toggle = (idx) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(idx)) next.delete(idx); else next.add(idx);
+    return next;
+  });
+  const toggleAll = () => setSelected(allShownSelected ? new Set() : new Set(rows.map((r) => r.index_no)));
 
   async function remove() {
     await act(() => run(supabase.from('enrollments').delete().eq('course_id', course.id).eq('index_no', removing.index_no)), 'Removed from course.');
@@ -50,6 +78,8 @@ export default function StudentsTab({ course }) {
         <div className="kpi"><span className="l">Not yet activated</span><span className="v" style={{ color: data.length - activated ? 'var(--amber-ink)' : undefined }}>{(data.length - activated).toLocaleString()}</span></div>
       </div>
 
+      <GroupManager programmes={programmes} streams={streams} students={data} onChanged={reload} />
+
       <div className="card-flush">
         <div className="card-head" style={{ flexWrap: 'wrap' }}>
           <div className="row-wrap">
@@ -62,6 +92,7 @@ export default function StudentsTab({ course }) {
               <button type="button" className="chip" aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>All</button>
               <button type="button" className="chip" aria-pressed={filter === 'active'} onClick={() => setFilter('active')}>Activated</button>
               <button type="button" className="chip" aria-pressed={filter === 'inactive'} onClick={() => setFilter('inactive')}>Not activated</button>
+              <button type="button" className="chip" aria-pressed={filter === 'risk'} onClick={() => setFilter('risk')}>At risk{risk ? ` · ${risk.size}` : ''}</button>
             </div>
             <GroupFilters rows={data} value={group} onChange={setGroup} />
           </div>
@@ -71,6 +102,22 @@ export default function StudentsTab({ course }) {
           </div>
         </div>
 
+        {selected.size > 0 && (
+          <BulkAssign
+            indexes={[...selected]}
+            programmes={programmes}
+            streams={streams}
+            onClear={() => setSelected(new Set())}
+            onDone={() => { setSelected(new Set()); reload(); }}
+          />
+        )}
+
+        {filter === 'risk' && (
+          <div className="notice notice-warn" style={{ margin: '12px 18px' }}>
+            {riskErr || (risk ? 'Students who never activated, have not signed in for 2 weeks, missed 2+ closed quizzes, average under 40% on quizzes, or attend under 50% (once there are 3+ sessions). A good list to follow up before mid-semester.' : 'Checking…')}
+          </div>
+        )}
+
         {data.length === 0 ? (
           <Empty icon="users" title="No students yet" action={<button type="button" className="btn btn-primary" onClick={() => setImporting(true)}>Upload class list</button>}>
             Upload an Excel or CSV file with index numbers and names. Students can then activate their accounts.
@@ -78,15 +125,18 @@ export default function StudentsTab({ course }) {
         ) : (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>Index no.</th><th>Name</th><th>Programme</th><th>Stream</th><th>Account</th><th className="hide-sm">Last sign-in</th><th /></tr></thead>
+              <thead><tr><th style={{ width: 36 }}><input type="checkbox" aria-label="Select all shown students" checked={allShownSelected} onChange={toggleAll} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} /></th><th>Index no.</th><th>Name</th><th>Programme</th><th>Stream</th><th>{filter === 'risk' ? 'Why' : 'Account'}</th><th className="hide-sm">Last sign-in</th><th /></tr></thead>
               <tbody>
                 {rows.slice(0, 300).map((r) => (
-                  <tr key={r.index_no}>
+                  <tr key={r.index_no} style={selected.has(r.index_no) ? { background: 'var(--teal-50)' } : undefined}>
+                    <td><input type="checkbox" aria-label={`Select ${r.full_name}`} checked={selected.has(r.index_no)} onChange={() => toggle(r.index_no)} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} /></td>
                     <td className="mono small">{r.index_no}</td>
                     <td>{r.full_name}</td>
                     <td className="small">{r.programme || <span className="muted">—</span>}</td>
                     <td className="small">{r.stream || <span className="muted">—</span>}</td>
-                    <td>{r.activated ? <span className="badge badge-teal">Activated</span> : <span className="badge">Not yet</span>}</td>
+                    <td>{filter === 'risk' && risk?.get(r.index_no) ? (
+                      <div className="row-wrap" style={{ gap: 4 }}>{risk.get(r.index_no).reasons.map((x) => <span key={x} className="badge badge-amber">{x}</span>)}</div>
+                    ) : r.activated ? <span className="badge badge-teal">Activated</span> : <span className="badge">Not yet</span>}</td>
                     <td className="small muted hide-sm">{r.last_sign_in ? relative(r.last_sign_in) : '—'}</td>
                     <td>
                       <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
@@ -112,7 +162,7 @@ export default function StudentsTab({ course }) {
 
       {importing && <ImportModal course={course} onClose={() => setImporting(false)} onDone={reload} />}
       {resetting && <ResetModal student={resetting} onClose={() => setResetting(null)} />}
-      {editing && <EditModal student={editing} onClose={() => setEditing(null)} onSaved={reload} />}
+      {editing && <EditModal student={editing} programmes={programmes} streams={streams} onClose={() => setEditing(null)} onSaved={reload} />}
       {removing && (
         <Confirm title="Remove from course?" danger confirmLabel="Remove" busy={busy}
           message={`${removing.full_name} (${removing.index_no}) will lose access to ${course.code}. Their account and past results stay.`}
@@ -243,7 +293,130 @@ function ResetModal({ student, onClose }) {
   );
 }
 
-function EditModal({ student, onClose, onSaved }) {
+function GroupSelect({ label, value, options, onChange, allowKeep }) {
+  const [adding, setAdding] = useState(false);
+  const [text, setText] = useState('');
+  if (adding) {
+    return (
+      <Field label={label}>
+        <div className="row" style={{ gap: 6 }}>
+          <input className="input" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder={`New ${label.toLowerCase()}`}
+            onKeyDown={(e) => { if (e.key === 'Enter' && text.trim()) { onChange(text.trim()); setAdding(false); } }} />
+          <button type="button" className="btn btn-sm" disabled={!text.trim()} onClick={() => { onChange(text.trim()); setAdding(false); }}>OK</button>
+        </div>
+      </Field>
+    );
+  }
+  return (
+    <Field label={label}>
+      <select className="select" value={value ?? '__keep'} onChange={(e) => {
+        if (e.target.value === '__new') { setText(''); setAdding(true); } else onChange(e.target.value === '__keep' ? null : e.target.value);
+      }}>
+        {allowKeep && <option value="__keep">Leave unchanged</option>}
+        <option value="">Not set</option>
+        {[...new Set([...options, ...(value ? [value] : [])])].map((o) => <option key={o} value={o}>{o}</option>)}
+        <option value="__new">+ New {label.toLowerCase()}…</option>
+      </select>
+    </Field>
+  );
+}
+
+function BulkAssign({ indexes, programmes, streams, onClear, onDone }) {
+  const [act, busy] = useAction();
+  const [prog, setProg] = useState(null);
+  const [stream, setStream] = useState(null);
+  async function apply() {
+    const n = await act(() => rpc('assign_group', { p_indexes: indexes, p_programme: prog, p_stream: stream }));
+    if (n !== undefined) onDone(n);
+  }
+  return (
+    <div className="row-wrap" style={{ padding: '12px 18px', background: 'var(--teal-50)', borderBottom: '1px solid var(--line-2)', alignItems: 'flex-end' }}>
+      <strong className="small" style={{ alignSelf: 'center' }}>{indexes.length} selected</strong>
+      <div style={{ width: 200 }}><GroupSelect label="Programme" value={prog} options={programmes} onChange={setProg} allowKeep /></div>
+      <div style={{ width: 200 }}><GroupSelect label="Stream" value={stream} options={streams} onChange={setStream} allowKeep /></div>
+      <button type="button" className="btn btn-primary" disabled={busy || (prog === null && stream === null)} onClick={apply}>Apply to {indexes.length}</button>
+      <button type="button" className="btn btn-ghost" onClick={onClear}>Clear selection</button>
+    </div>
+  );
+}
+
+function GroupManager({ programmes, streams, students, onChanged }) {
+  const [act, busy] = useAction();
+  const [renaming, setRenaming] = useState(null); // { kind, name, value }
+  const [removing, setRemoving] = useState(null);
+  const [newName, setNewName] = useState({ programme: '', stream: '' });
+  const count = (kind, name) => students.filter((r) => (kind === 'programme' ? r.programme : r.stream) === name).length;
+
+  async function add(kind) {
+    const name = newName[kind].trim();
+    if (!name) return;
+    const ok = await act(() => run(supabase.from('group_options').upsert({ kind, name }, { onConflict: 'kind,name', ignoreDuplicates: true })), `${name} added.`);
+    if (ok !== undefined) { setNewName({ ...newName, [kind]: '' }); onChanged(); }
+  }
+  async function rename() {
+    const ok = await act(() => rpc('rename_group', { p_kind: renaming.kind, p_old: renaming.name, p_new: renaming.value }), 'Renamed.');
+    if (ok !== undefined) { setRenaming(null); onChanged(); }
+  }
+  async function remove() {
+    const ok = await act(() => rpc('delete_group', { p_kind: removing.kind, p_name: removing.name }), 'Removed.');
+    if (ok !== undefined) { setRemoving(null); onChanged(); }
+  }
+
+  const column = (kind, title, list, example) => (
+    <div className="stack-sm" style={{ flex: 1, minWidth: 260 }}>
+      <span className="eyebrow">{title}</span>
+      <div className="stack-sm" style={{ gap: 6 }}>
+        {list.length === 0 && <span className="small muted">None yet — add one below, e.g. {example}.</span>}
+        {list.map((name) => (
+          <div key={name} className="between" style={{ padding: '6px 10px', border: '1px solid var(--line)', borderRadius: 8, background: 'var(--surface)' }}>
+            <span className="small"><strong>{name}</strong> <span className="muted">· {count(kind, name)} in this course</span></span>
+            <span className="row" style={{ gap: 2 }}>
+              <button type="button" className="icon-btn plain" aria-label={`Rename ${name}`} onClick={() => setRenaming({ kind, name, value: name })}><Icon name="edit" size={16} /></button>
+              <button type="button" className="icon-btn plain" aria-label={`Remove ${name}`} onClick={() => setRemoving({ kind, name })}><Icon name="trash" size={16} /></button>
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="row" style={{ gap: 6 }}>
+        <label className="sr-only" htmlFor={`new-${kind}`}>New {kind}</label>
+        <input id={`new-${kind}`} className="input" style={{ minHeight: 40 }} value={newName[kind]} placeholder={`Add ${kind}, e.g. ${example}`}
+          onChange={(e) => setNewName({ ...newName, [kind]: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && add(kind)} />
+        <button type="button" className="btn btn-sm" disabled={busy || !newName[kind].trim()} onClick={() => add(kind)}><Icon name="plus" size={16} /> Add</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <section className="card stack">
+      <div className="stack-sm" style={{ gap: 2 }}>
+        <h2>Programmes and streams</h2>
+        <p className="small muted">
+          Create the groups here, then tick students in the list below to assign them — or include Programme and Stream columns
+          when you upload a class list. These groups are shared across all your courses.
+        </p>
+      </div>
+      <div className="row-wrap" style={{ alignItems: 'flex-start', gap: 24 }}>
+        {column('programme', 'Programmes', programmes, 'Marketing')}
+        {column('stream', 'Streams', streams, 'Weekend')}
+      </div>
+
+      {renaming && (
+        <Modal title={`Rename ${renaming.kind}`} onClose={() => setRenaming(null)}
+          footer={<><button type="button" className="btn" onClick={() => setRenaming(null)}>Cancel</button><button type="button" className="btn btn-primary" onClick={rename} disabled={busy || !renaming.value.trim()}>Rename</button></>}>
+          <Field label="New name"><input className="input" autoFocus value={renaming.value} onChange={(e) => setRenaming({ ...renaming, value: e.target.value })} /></Field>
+          <p className="small muted">Every student in “{renaming.name}” moves to the new name, in all courses.</p>
+        </Modal>
+      )}
+      {removing && (
+        <Confirm title={`Remove “${removing.name}”?`} danger confirmLabel="Remove" busy={busy}
+          message={`Students in ${removing.name} will have no ${removing.kind}. Their scores are kept.${removing.kind === 'stream' ? ' Any quiz times set for this stream are removed.' : ''}`}
+          onClose={() => setRemoving(null)} onConfirm={remove} />
+      )}
+    </section>
+  );
+}
+
+function EditModal({ student, programmes, streams, onClose, onSaved }) {
   const [act, busy] = useAction();
   const [f, setF] = useState({ name: student.full_name, programme: student.programme || '', stream: student.stream || '' });
   async function save() {
@@ -255,8 +428,8 @@ function EditModal({ student, onClose, onSaved }) {
       footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button><button type="button" className="btn btn-primary" onClick={save} disabled={busy}>Save</button></>}>
       <Field label="Full name"><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
       <div className="grid-2">
-        <Field label="Programme"><input className="input" value={f.programme} onChange={(e) => setF({ ...f, programme: e.target.value })} placeholder="Marketing" /></Field>
-        <Field label="Stream"><input className="input" value={f.stream} onChange={(e) => setF({ ...f, stream: e.target.value })} placeholder="Weekend" /></Field>
+        <GroupSelect label="Programme" value={f.programme} options={programmes} onChange={(v) => setF({ ...f, programme: v ?? '' })} />
+        <GroupSelect label="Stream" value={f.stream} options={streams} onChange={(v) => setF({ ...f, stream: v ?? '' })} />
       </div>
       <p className="small muted">Programme and stream apply to this student in all your courses.</p>
     </Modal>

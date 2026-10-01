@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { run, supabase } from '../../lib/supabase.js';
+import { removeFiles } from '../../lib/files.js';
 import { Confirm, Empty, ErrorNote, Loading, Tabs, useAction, useLoad } from '../../components/ui.jsx';
 import { CourseForm } from './Dashboard.jsx';
 import MaterialsTab from './course/MaterialsTab.jsx';
@@ -8,12 +9,18 @@ import QuizzesTab from './course/QuizzesTab.jsx';
 import AssignmentsTab from './course/AssignmentsTab.jsx';
 import StudentsTab from './course/StudentsTab.jsx';
 import AnnouncementsTab from './course/AnnouncementsTab.jsx';
+import AttendanceTab from './course/AttendanceTab.jsx';
+import CATab from './course/CATab.jsx';
+import Forum from '../../components/Forum.jsx';
 
 const TABS = [
   { id: 'materials', label: 'Materials' },
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'assignments', label: 'Assignments' },
+  { id: 'attendance', label: 'Attendance' },
+  { id: 'ca', label: 'CA' },
   { id: 'students', label: 'Students' },
+  { id: 'qa', label: 'Q&A' },
   { id: 'announcements', label: 'Announcements' },
   { id: 'settings', label: 'Settings' },
 ];
@@ -51,7 +58,10 @@ export default function ManageCourse() {
         {tab === 'materials' && <MaterialsTab course={course} />}
         {tab === 'quizzes' && <QuizzesTab course={course} />}
         {tab === 'assignments' && <AssignmentsTab course={course} />}
+        {tab === 'attendance' && <AttendanceTab course={course} />}
+        {tab === 'ca' && <CATab course={course} onCourseChanged={reload} />}
         {tab === 'students' && <StudentsTab course={course} />}
+        {tab === 'qa' && <Forum course={course} lecturer />}
         {tab === 'announcements' && <AnnouncementsTab course={course} />}
         {tab === 'settings' && <SettingsTab course={course} reload={reload} />}
       </div>
@@ -76,8 +86,10 @@ function SettingsTab({ course, reload }) {
 
   async function remove() {
     const ok = await act(async () => {
-      const { data: files } = await supabase.storage.from('materials').list(course.id, { limit: 1000 });
-      if (files?.length) await supabase.storage.from('materials').remove(files.map((f) => `${course.id}/${f.name}`));
+      const mats = await run(supabase.from('materials').select('storage_path').eq('course_id', course.id).not('storage_path', 'is', null));
+      const subs = await run(supabase.from('submissions').select('file_path, assignments!inner(course_id)').eq('assignments.course_id', course.id));
+      await removeFiles('materials', mats.map((m) => m.storage_path));
+      await removeFiles('submissions', subs.map((x) => x.file_path));
       return run(supabase.from('courses').delete().eq('id', course.id));
     }, 'Course deleted.');
     if (ok !== undefined) navigate('/');

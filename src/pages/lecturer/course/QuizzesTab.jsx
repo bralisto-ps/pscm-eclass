@@ -4,6 +4,8 @@ import { run, supabase } from '../../../lib/supabase.js';
 import { fmtDateTime } from '../../../lib/format.js';
 import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Loading, useAction, useLoad } from '../../../components/ui.jsx';
+import QuestionBank from './QuestionBank.jsx';
+import { shareWhatsApp } from '../../../lib/share.js';
 
 export function quizStatus(q) {
   const now = Date.now();
@@ -14,6 +16,19 @@ export function quizStatus(q) {
 }
 
 export default function QuizzesTab({ course }) {
+  const [view, setView] = useState('quizzes');
+  return (
+    <div className="stack">
+      <div className="chips" role="tablist" aria-label="Quizzes or question bank">
+        <button type="button" className="chip" aria-pressed={view === 'quizzes'} onClick={() => setView('quizzes')}>Quizzes</button>
+        <button type="button" className="chip" aria-pressed={view === 'bank'} onClick={() => setView('bank')}>Question bank</button>
+      </div>
+      {view === 'quizzes' ? <QuizList course={course} /> : <QuestionBank course={course} />}
+    </div>
+  );
+}
+
+function QuizList({ course }) {
   const navigate = useNavigate();
   const [act, busy] = useAction();
   const [removing, setRemoving] = useState(null);
@@ -94,6 +109,9 @@ export default function QuizzesTab({ course }) {
                       <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
                         <Link to={`/teach/quiz/${q.id}/results`} className="btn btn-sm">Results</Link>
                         <Link to={`/teach/quiz/${q.id}`} className="btn btn-sm btn-ghost">Edit</Link>
+                        {q.published && <button type="button" className="icon-btn plain" title="Share on WhatsApp" aria-label="Share on WhatsApp"
+                          onClick={() => shareWhatsApp(`*${course.code}: ${q.title}*\n${q.opens_at ? `Opens ${fmtDateTime(q.opens_at)}` : 'Open now'}${q.closes_at ? `, closes ${fmtDateTime(q.closes_at)}` : ''} · ${q.duration_minutes} minutes`)}>
+                          <Icon name="megaphone" /></button>}
                         <button type="button" className="icon-btn plain" title="Duplicate" aria-label="Duplicate quiz" onClick={() => duplicate(q)} disabled={busy}><Icon name="file" /></button>
                         <button type="button" className="icon-btn plain" title="Delete" aria-label="Delete quiz" onClick={() => setRemoving(q)}><Icon name="trash" /></button>
                       </div>

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { run, supabase } from '../../../lib/supabase.js';
 import { fmtFull } from '../../../lib/format.js';
 import Icon from '../../../components/Icon.jsx';
+import { shareWhatsApp } from '../../../lib/share.js';
 import { Confirm, Empty, ErrorNote, Field, Loading, useAction, useLoad } from '../../../components/ui.jsx';
 
 export default function AnnouncementsTab({ course }) {
@@ -41,7 +42,10 @@ export default function AnnouncementsTab({ course }) {
           <article key={n.id} className="card stack-sm">
             <div className="between">
               <span className="tiny muted">{fmtFull(n.created_at)}</span>
-              <button type="button" className="icon-btn plain" aria-label="Delete announcement" onClick={() => setRemoving(n)}><Icon name="trash" /></button>
+              <div className="row" style={{ gap: 4 }}>
+                <button type="button" className="btn btn-sm btn-ghost" onClick={() => shareWhatsApp(`*${course.code}: ${n.title}*\n${n.body || ''}`)}>Share on WhatsApp</button>
+                <button type="button" className="icon-btn plain" aria-label="Delete announcement" onClick={() => setRemoving(n)}><Icon name="trash" /></button>
+              </div>
             </div>
             <h2>{n.title}</h2>
             {n.body && <p className="pre">{n.body}</p>}
@@ -53,7 +57,7 @@ export default function AnnouncementsTab({ course }) {
         <Field label="Title"><input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Quiz moved to Friday" /></Field>
         <Field label="Message"><textarea className="textarea" style={{ minHeight: 140 }} value={body} onChange={(e) => setBody(e.target.value)} /></Field>
         <button type="submit" className="btn btn-primary" disabled={busy || !title.trim()}>Post to {course.code}</button>
-        <p className="tiny muted">Shows on students' home page and course page.</p>
+        <p className="tiny muted">Shows on students' home page and course page. After posting, use <strong>Share on WhatsApp</strong> to send it to your class groups.</p>
       </form>
       {removing && <Confirm title="Delete announcement?" danger confirmLabel="Delete" busy={busy} message={`"${removing.title}"`} onClose={() => setRemoving(null)} onConfirm={remove} />}
     </div>

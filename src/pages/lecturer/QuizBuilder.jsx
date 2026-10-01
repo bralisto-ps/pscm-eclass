@@ -18,7 +18,7 @@ const kindName = (k) => KINDS.find((x) => x.id === k)?.label || k;
 const LETTERS = 'abcdefgh';
 
 function blank(kind, position) {
-  const base = { kind, prompt: '', marks: 1, explanation: '', position, options: [], answer: {}, params: {}, formula: null, unit: '', decimals: 2, tolerance: 0, tolerance_type: 'abs' };
+  const base = { kind, prompt: '', marks: 1, explanation: '', topic: '', position, options: [], answer: {}, params: {}, formula: null, unit: '', decimals: 2, tolerance: 0, tolerance_type: 'abs' };
   if (kind === 'mcq') return { ...base, options: [{ id: 'a', text: '' }, { id: 'b', text: '' }, { id: 'c', text: '' }, { id: 'd', text: '' }], answer: { correct: 'a' } };
   if (kind === 'truefalse') return { ...base, options: [{ id: 'true', text: 'True' }, { id: 'false', text: 'False' }], answer: { correct: 'true' } };
   if (kind === 'numeric') return { ...base, answer: { value: '' }, decimals: 2, tolerance: 0.01 };
@@ -34,7 +34,8 @@ export default function QuizBuilder() {
     const questions = await run(supabase.from('questions').select('*').eq('quiz_id', quizId).order('position').order('created_at'));
     const { count } = await supabase.from('attempts').select('id', { count: 'exact', head: true }).eq('quiz_id', quizId);
     const windows = await run(supabase.from('quiz_windows').select('*').eq('quiz_id', quizId));
-    const groups = quiz ? await rpc('course_groups', { p_course: quiz.course_id }) : { programmes: [], streams: [] };
+    const opts = await run(supabase.from('group_options').select('name').eq('kind', 'stream').order('name'));
+    const groups = { streams: opts.map((o) => o.name) };
     return { quiz, questions, attempts: count || 0, windows, groups };
   }, [quizId]);
   const [editing, setEditing] = useState(null); // question id or 'new'
@@ -106,6 +107,7 @@ export default function QuizBuilder() {
                     <span className="mono strong" style={{ width: 28 }}>{i + 1}</span>
                     <span className="badge">{kindName(q.kind)}</span>
                     {q.kind === 'numeric' && q.formula && <span className="badge badge-blue">Unique figures</span>}
+                    {q.topic && <span className="badge badge-plum">{q.topic}</span>}
                     <span className="spacer" />
                     <span className="small muted nowrap">{fmtNumber(q.marks)} mark{Number(q.marks) === 1 ? '' : 's'}</span>
                     <button type="button" className="icon-btn plain" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}><Icon name="arrowUp" /></button>
@@ -211,7 +213,7 @@ function QuestionEditor({ number, initial, quizId, isNew, onCancel, onSaved }) {
 
   function buildRow() {
     const row = {
-      quiz_id: quizId, kind: q.kind, prompt: q.prompt.trim(), marks: Number(q.marks) || 0, explanation: q.explanation || '',
+      quiz_id: quizId, kind: q.kind, prompt: q.prompt.trim(), marks: Number(q.marks) || 0, explanation: q.explanation || '', topic: (q.topic || '').trim(),
       position: q.position, options: [], answer: {}, params: {}, formula: null, unit: q.unit || '',
       decimals: Number(q.decimals) || 0, tolerance: Number(q.tolerance) || 0, tolerance_type: q.tolerance_type || 'abs',
     };
@@ -299,6 +301,10 @@ function QuestionEditor({ number, initial, quizId, isNew, onCancel, onSaved }) {
         <span className="mono strong">{number}</span>
         <span className="badge badge-teal">{kindName(q.kind)}</span>
         <span className="spacer" />
+        <label className="row small" style={{ gap: 6 }}>
+          Topic
+          <input className="input" style={{ width: 170, minHeight: 36 }} value={q.topic || ''} onChange={(e) => set('topic', e.target.value)} placeholder="optional" />
+        </label>
         <label className="row small" style={{ gap: 6 }}>
           Marks
           <input className="input" type="number" min="0" step="0.5" style={{ width: 80, minHeight: 36 }} value={q.marks} onChange={(e) => set('marks', e.target.value)} />
@@ -497,6 +503,9 @@ function Settings({ quiz, count, windows, streams, onSaved }) {
 
       <div className="stack-sm" style={{ borderTop: '1px solid var(--line-2)', paddingTop: 14 }}>
         <span className="eyebrow">When</span>
+        {streams.length === 0 && (
+          <span className="tiny muted">To set different times for Regular, Weekend or Evening students, first create streams on the course's Students tab.</span>
+        )}
         {streams.length > 0 && (
           <div className="chips" role="group" aria-label="Timing">
             <button type="button" className="chip" aria-pressed={!perStream} onClick={() => { setPerStream(false); setDirty(true); }}>Same times for everyone</button>
@@ -593,13 +602,14 @@ export function parseMcq(text) {
 function PasteModal({ quizId, start, onClose, onDone }) {
   const [text, setText] = useState('');
   const [marks, setMarks] = useState(1);
+  const [topic, setTopic] = useState('');
   const [act, busy] = useAction();
   const parsed = useMemo(() => parseMcq(text), [text]);
   const missing = parsed.filter((p) => p.correct < 0).length;
 
   async function save() {
     const rows = parsed.filter((p) => p.correct >= 0).map((p, i) => ({
-      quiz_id: quizId, kind: 'mcq', position: start + i, prompt: p.prompt, marks: Number(marks) || 1,
+      quiz_id: quizId, kind: 'mcq', position: start + i, prompt: p.prompt, marks: Number(marks) || 1, topic: topic.trim(),
       options: p.options.map((t, k) => ({ id: LETTERS[k], text: t })), answer: { correct: LETTERS[p.correct] },
     }));
     const ok = await act(() => run(supabase.from('questions').insert(rows)), `${rows.length} questions added.`);
@@ -622,6 +632,7 @@ function PasteModal({ quizId, start, onClose, onDone }) {
       <textarea className="textarea mono" style={{ minHeight: 240, fontSize: 13 }} value={text} onChange={(e) => setText(e.target.value)}
         placeholder={'1. Which inventory cost rises when order size increases?\nA) Ordering cost\nB) Holding cost *\nC) Stock-out cost\nD) Purchase price\n\n2. The bullwhip effect describes…\nA) Falling prices\nB) Growing order variability upstream\nC) Supplier consolidation\nAnswer: B'} />
       <div className="row-wrap">
+        <label className="row small" style={{ gap: 6 }}>Topic <input className="input" style={{ width: 160, minHeight: 36 }} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="optional" /></label>
         <label className="row small" style={{ gap: 6 }}>Marks each <input className="input" type="number" min="0" step="0.5" style={{ width: 80, minHeight: 36 }} value={marks} onChange={(e) => setMarks(e.target.value)} /></label>
         <span className="small">{parsed.length} found{missing ? <span style={{ color: 'var(--red-ink)' }}> · {missing} without a marked answer (skipped)</span> : ''}</span>
       </div>

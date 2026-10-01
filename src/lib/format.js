@@ -85,7 +85,27 @@ export function fillVars(text, vars) {
   );
 }
 
-export const COURSE_COLORS = ['#0E6B63', '#2A4F8F', '#9A5B0B', '#6B3B6E', '#3F5563', '#8A2A18', '#276749'];
+// Course colours — all dark enough for white text on top.
+export const COURSE_COLORS = [
+  '#0E6B63', '#0F766E', '#276749', '#3F6212', '#4D7C0F', '#166534',
+  '#1E40AF', '#2A4F8F', '#1D4ED8', '#0369A1', '#155E75', '#3730A3',
+  '#6B3B6E', '#7E22CE', '#86198F', '#9D174D', '#BE123C', '#8A2A18',
+  '#9A5B0B', '#B45309', '#A16207', '#7C2D12', '#57534E', '#3F5563',
+  '#334155', '#1F2937', '#14532D', '#4A044E',
+];
+
+// Contrast of white text on a colour (WCAG). 4.5 or more is comfortable to read.
+export function contrastWithWhite(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
+  if (!m) return 0;
+  const n = parseInt(m[1], 16);
+  const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  const L = 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+  return 1.05 / (L + 0.05);
+}
 
 export function hostOf(url) {
   try {

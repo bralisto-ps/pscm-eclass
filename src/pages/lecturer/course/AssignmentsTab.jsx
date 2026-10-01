@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { run, supabase } from '../../../lib/supabase.js';
+import { removeFiles } from '../../../lib/files.js';
+import { shareWhatsApp } from '../../../lib/share.js';
 import { fmtDateTime, fmtNumber, fromLocalInput, relative, toLocalInput } from '../../../lib/format.js';
 import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad } from '../../../components/ui.jsx';
@@ -20,11 +22,8 @@ export default function AssignmentsTab({ course }) {
 
   async function remove() {
     await act(async () => {
-      const { data: folders } = await supabase.storage.from('submissions').list(removing.id, { limit: 1000 });
-      for (const f of folders || []) {
-        const { data: files } = await supabase.storage.from('submissions').list(`${removing.id}/${f.name}`, { limit: 100 });
-        if (files?.length) await supabase.storage.from('submissions').remove(files.map((x) => `${removing.id}/${f.name}/${x.name}`));
-      }
+      const subs = await run(supabase.from('submissions').select('file_path').eq('assignment_id', removing.id));
+      await removeFiles('submissions', subs.map((x) => x.file_path));
       await run(supabase.from('assignments').delete().eq('id', removing.id));
     }, 'Assignment deleted.');
     setRemoving(null);
@@ -71,6 +70,9 @@ export default function AssignmentsTab({ course }) {
                       <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
                         <Link to={`/teach/assignment/${a.id}`} className="btn btn-sm">Mark</Link>
                         <button type="button" className="btn btn-sm btn-ghost" onClick={() => setEditing(a)}>Edit</button>
+                        {a.published && <button type="button" className="icon-btn plain" title="Share on WhatsApp" aria-label="Share on WhatsApp"
+                          onClick={() => shareWhatsApp(`*${course.code} assignment: ${a.title}*\n${a.due_at ? `Due ${fmtDateTime(a.due_at)}` : 'No deadline'} · ${fmtNumber(a.max_marks)} marks\nHand in on the course page.`)}>
+                          <Icon name="megaphone" /></button>}
                         <button type="button" className="icon-btn plain" aria-label="Delete assignment" onClick={() => setRemoving(a)}><Icon name="trash" /></button>
                       </div>
                     </td>

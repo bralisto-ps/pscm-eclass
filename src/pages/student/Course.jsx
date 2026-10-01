@@ -1,6 +1,9 @@
 import { useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { rpc, run, supabase, openStoredFile, safeFileName } from '../../lib/supabase.js';
+import { rpc, run, supabase, safeFileName } from '../../lib/supabase.js';
+import { openStoredFile, uploadFile, SUBMISSION_ACCEPT } from '../../lib/files.js';
+import CheckInModal from '../../components/CheckIn.jsx';
+import Forum from '../../components/Forum.jsx';
 import { useAuth } from '../../lib/auth.jsx';
 import { fmtBytes, fmtDateTime, fmtFull, fmtNumber, hostOf, pct, relative } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
@@ -13,6 +16,7 @@ const TABS = [
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'assignments', label: 'Assignments' },
   { id: 'grades', label: 'My grades' },
+  { id: 'qa', label: 'Q&A' },
   { id: 'announcements', label: 'Announcements' },
 ];
 
@@ -21,17 +25,20 @@ export default function StudentCourse() {
   const [params, setParams] = useSearchParams();
   const tab = params.get('tab') || 'materials';
   const setTab = (t) => setParams({ tab: t }, { replace: true });
+  const [checkingIn, setCheckingIn] = useState(false);
 
   const { data, error, loading, reload } = useLoad(async () => {
-    const [course, modules, materials, news, quizzes, assignments] = await Promise.all([
+    const [course, modules, materials, news, quizzes, assignments, attendance, ca] = await Promise.all([
       run(supabase.from('courses').select('*').eq('id', courseId).maybeSingle()),
       run(supabase.from('modules').select('*').eq('course_id', courseId).order('week_no', { nullsFirst: false }).order('position')),
       run(supabase.from('materials').select('*').eq('course_id', courseId).order('position').order('created_at')),
       run(supabase.from('announcements').select('*').eq('course_id', courseId).order('created_at', { ascending: false })),
       rpc('my_quizzes', { p_course: courseId }),
       rpc('my_assignments', { p_course: courseId }),
+      rpc('my_attendance', { p_course: courseId }),
+      rpc('my_ca', { p_course: courseId }),
     ]);
-    return { course, modules, materials, news, quizzes: quizzes || [], assignments: assignments || [] };
+    return { course, modules, materials, news, quizzes: quizzes || [], assignments: assignments || [], attendance, ca };
   }, [courseId]);
 
   if (loading) return <Loading />;
@@ -45,6 +52,7 @@ export default function StudentCourse() {
   }
   const { course } = data;
   const graded = data.quizzes.filter((q) => !q.is_practice);
+  const openAttendance = data.attendance?.open_now;
 
   return (
     <>
@@ -52,8 +60,11 @@ export default function StudentCourse() {
         <div className="between">
           <Link to="/" className="small">← Home</Link>
           <div className="row-wrap">
-            {course.semester && <span className="band-chip">{course.semester}</span>}
-            <span className="band-chip">{data.materials.length} materials</span>
+            {course.semester && <span className="band-chip hide-sm">{course.semester}</span>}
+            <button type="button" className={`btn btn-sm ${openAttendance ? 'btn-light' : ''}`} onClick={() => setCheckingIn(true)}
+              style={openAttendance ? undefined : { background: 'rgba(0,0,0,.2)', borderColor: 'transparent', color: '#fff' }}>
+              <Icon name="check" size={16} /> {openAttendance ? 'Check in now' : 'Check in'}
+            </button>
           </div>
         </div>
         <div style={{ marginTop: 12 }}>
@@ -67,9 +78,17 @@ export default function StudentCourse() {
         {tab === 'materials' && <Materials data={data} onQuizzes={() => setTab('quizzes')} graded={graded} />}
         {tab === 'quizzes' && <Quizzes quizzes={data.quizzes} reload={reload} />}
         {tab === 'assignments' && <Assignments assignments={data.assignments} reload={reload} />}
-        {tab === 'grades' && <GradesTable quizzes={graded} assignments={data.assignments} />}
+        {tab === 'grades' && (
+          <div className="stack-lg" style={{ maxWidth: 900 }}>
+            {data.ca && <CACard ca={data.ca} />}
+            <GradesTable quizzes={graded} assignments={data.assignments} />
+            <AttendanceCard attendance={data.attendance} />
+          </div>
+        )}
+        {tab === 'qa' && <Forum course={course} />}
         {tab === 'announcements' && <Announcements news={data.news} />}
       </div>
+      {checkingIn && <CheckInModal courseId={course.id} courseCode={course.code} onClose={() => setCheckingIn(false)} onDone={reload} />}
     </>
   );
 }
@@ -343,9 +362,8 @@ function AssignmentCard({ a, reload }) {
     setBusy(true);
     try {
       const path = `${a.id}/${session.user.id}/${Date.now()}-${safeFileName(file.name)}`;
-      const { error } = await supabase.storage.from('submissions').upload(path, file, { contentType: file.type || undefined });
-      if (error) throw new Error(/mime|type/i.test(error.message) ? 'That file type is not accepted. Upload a PDF, Word, Excel, PowerPoint, ZIP or image file.' : error.message);
-      await rpc('submit_assignment', { p_assignment: a.id, p_path: path, p_name: file.name, p_note: note });
+      const stored = await uploadFile('submissions', path, file);
+      await rpc('submit_assignment', { p_assignment: a.id, p_path: stored, p_name: file.name, p_note: note });
       toast('Submitted. Well done!');
       setFile(null);
       setNote('');
@@ -406,7 +424,7 @@ function AssignmentCard({ a, reload }) {
       {canSubmit && (
         <div className="stack" style={{ borderTop: '1px solid var(--line-2)', paddingTop: 16 }}>
           <Field label={s ? 'Replace your submission' : 'Your file'} hint="PDF, Word, Excel, PowerPoint, ZIP or image · max 5 MB">
-            <input ref={fileRef} type="file" className="input" style={{ paddingTop: 9 }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            <input ref={fileRef} type="file" accept={SUBMISSION_ACCEPT} className="input" style={{ paddingTop: 9 }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
           </Field>
           <Field label="Note to your lecturer" hint="optional">
             <input className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} />
@@ -474,5 +492,47 @@ function Announcements({ news }) {
         </article>
       ))}
     </div>
+  );
+}
+
+function CACard({ ca }) {
+  return (
+    <section className="card stack">
+      <div className="between" style={{ flexWrap: 'wrap' }}>
+        <div className="stack-sm" style={{ gap: 0 }}>
+          <span className="eyebrow">Continuous assessment</span>
+          <span className="mono" style={{ fontSize: 30 }}>{fmtNumber(ca.total)} <span className="muted" style={{ fontSize: 18 }}>/ {fmtNumber(ca.out_of)}</span></span>
+        </div>
+        <span className="small muted">Your exam makes up the rest of the course mark.</span>
+      </div>
+      <div className="stack-sm">
+        {ca.components.map((c) => (
+          <div key={c.name} className="row small" style={{ gap: 12 }}>
+            <span style={{ width: 170 }}>{c.name}</span>
+            <div className="bar-track" style={{ flex: 1 }}><div className="bar-fill" style={{ width: `${Math.min(100, Number(c.pct) || 0)}%`, background: 'var(--teal)' }} /></div>
+            <span className="mono" style={{ width: 90, textAlign: 'right' }}>{fmtNumber(c.points)} / {fmtNumber(c.weight)}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function AttendanceCard({ attendance }) {
+  if (!attendance || !attendance.total) return null;
+  const pctv = Math.round((attendance.attended / attendance.total) * 100);
+  return (
+    <section className="card-flush">
+      <div className="card-head">
+        <h2>Attendance</h2>
+        <span className={`badge ${pctv < 50 ? 'badge-amber' : 'badge-teal'}`}>{attendance.attended} of {attendance.total} · {pctv}%</span>
+      </div>
+      {attendance.sessions.slice(0, 30).map((x) => (
+        <div key={x.id} className="list-row small">
+          <span className="list-main"><span className="title">{x.title}</span><span className="tiny muted">{fmtDateTime(x.opens_at)}</span></span>
+          {x.present ? <span className="badge badge-teal">Present</span> : <span className="badge">Absent</span>}
+        </div>
+      ))}
+    </section>
   );
 }

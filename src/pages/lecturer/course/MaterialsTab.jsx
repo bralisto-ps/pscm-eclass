@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { run, supabase, openStoredFile, safeFileName } from '../../../lib/supabase.js';
+import { run, supabase, safeFileName } from '../../../lib/supabase.js';
+import { openStoredFile, removeFiles, uploadFile, STORAGE_LIMIT_LABEL } from '../../../lib/files.js';
 import { fmtBytes, hostOf, relative } from '../../../lib/format.js';
 import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, KindTag, Loading, Modal, useAction, useLoad } from '../../../components/ui.jsx';
@@ -45,11 +46,11 @@ export default function MaterialsTab({ course }) {
     const r = removing;
     await act(async () => {
       if (r.type === 'material') {
-        if (r.item.storage_path) await supabase.storage.from('materials').remove([r.item.storage_path]);
+        if (r.item.storage_path) await removeFiles('materials', [r.item.storage_path]);
         await run(supabase.from('materials').delete().eq('id', r.item.id));
       } else {
         const files = data.materials.filter((m) => m.module_id === r.item.id && m.storage_path).map((m) => m.storage_path);
-        if (files.length) await supabase.storage.from('materials').remove(files);
+        if (files.length) await removeFiles('materials', files);
         await run(supabase.from('modules').delete().eq('id', r.item.id));
       }
     }, 'Deleted.');
@@ -61,7 +62,7 @@ export default function MaterialsTab({ course }) {
     <div className="stack-lg" style={{ maxWidth: 980 }}>
       <div className="between" style={{ flexWrap: 'wrap' }}>
         <p className="small muted" style={{ maxWidth: 560 }}>
-          Organise materials by week. Files you upload here use this course's share of the 1 GB free storage
+          Organise materials by week. Files you upload here use this course's share of the {STORAGE_LIMIT_LABEL} free storage
           ({fmtBytes(usedBytes) || '0 KB'} used) — for videos, upload to YouTube (unlisted) or Google Drive and add the link instead.
         </p>
         <button type="button" className="btn btn-primary" onClick={() => setEditingWeek({ week_no: nextWeek })}>
@@ -207,11 +208,15 @@ function MaterialForm({ course, moduleId, onClose, onSaved }) {
         if (big) throw new Error(`"${big.name}" is larger than ${MAX_MB} MB. Compress it, or put it on Google Drive and add the link instead.`);
         for (const file of files) {
           const path = `${course.id}/${crypto.randomUUID()}-${safeFileName(file.name)}`;
-          const { error: upErr } = await supabase.storage.from('materials').upload(path, file, { contentType: file.type || undefined });
-          if (upErr) throw new Error(`Upload of "${file.name}" failed: ${upErr.message}`);
+          let stored;
+          try {
+            stored = await uploadFile('materials', path, file);
+          } catch (upErr) {
+            throw new Error(`Upload of "${file.name}" failed: ${upErr.message}`);
+          }
           const niceTitle = files.length === 1 && title.trim() ? title.trim() : file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
           await run(supabase.from('materials').insert({
-            course_id: course.id, module_id: moduleId, kind: kindFromName(file.name), title: niceTitle, storage_path: path, size_bytes: file.size,
+            course_id: course.id, module_id: moduleId, kind: kindFromName(file.name), title: niceTitle, storage_path: stored, size_bytes: file.size,
           }));
         }
       }

@@ -7,6 +7,7 @@ import { ALL_GROUPS, GroupFilters, GroupSummaryTable, groupLabel, groupSummary, 
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import { Confirm, Empty, ErrorNote, Loading, Modal, Tabs, useAction, useLoad, useToast } from '../../components/ui.jsx';
+import { ItemAnalysis, Integrity } from './QuizInsights.jsx';
 
 const BINS = [
   { label: '0–39%', lo: 0, hi: 39.999, color: 'var(--amber)' },
@@ -62,11 +63,13 @@ export default function QuizResults() {
         {quiz.results_released
           ? <div className="notice notice-info">Results are released. Students can see their scores{quiz.show_answers ? ' and the correct answers' : ''}.</div>
           : <div className="notice notice-warn">Results are hidden. Students only see "submitted" until you release them.</div>}
-        <Tabs tabs={[{ id: 'gradebook', label: 'Gradebook' }, { id: 'marking', label: 'Written answers', count: pending }]} value={tab}
+        <Tabs tabs={[{ id: 'gradebook', label: 'Gradebook' }, { id: 'marking', label: 'Written answers', count: pending },
+          { id: 'analysis', label: 'Question analysis' }, { id: 'integrity', label: 'Integrity checks' }]} value={tab}
           onChange={(t) => { setTab(t); if (t === 'gradebook') reload(); }} />
-        {tab === 'gradebook'
-          ? <Gradebook quiz={quiz} rows={rows} reload={reload} />
-          : <Marking queue={queue} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
+        {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} />}
+        {tab === 'marking' && <Marking queue={queue} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
+        {tab === 'analysis' && <ItemAnalysis quiz={quiz} />}
+        {tab === 'integrity' && <Integrity quiz={quiz} rows={rows} />}
       </div>
     </>
   );

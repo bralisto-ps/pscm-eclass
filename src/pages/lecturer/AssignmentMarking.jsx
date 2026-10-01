@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { rpcAll, run, supabase, openStoredFile } from '../../lib/supabase.js';
+import { rpcAll, run, supabase } from '../../lib/supabase.js';
+import { openStoredFile } from '../../lib/files.js';
 import { fmtFull, fmtNumber, pct, relative } from '../../lib/format.js';
 import { downloadWorkbook } from '../../lib/sheets.js';
 import { ALL_GROUPS, GroupFilters, GroupSummaryTable, groupLabel, groupSummary, matchesGroup } from '../../components/Groups.jsx';

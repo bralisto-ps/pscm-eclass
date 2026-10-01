@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { rpc, run, supabase } from '../../lib/supabase.js';
 import { useAuth } from '../../lib/auth.jsx';
-import { COURSE_COLORS, greeting, initials } from '../../lib/format.js';
+import { COURSE_COLORS, contrastWithWhite, greeting, initials } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import { Bar, ErrorNote, Field, Loading, Modal, Swatch, useAction, useLoad } from '../../components/ui.jsx';
@@ -136,9 +136,10 @@ export function CourseForm({ course, onClose, onSaved }) {
     color: course?.color || COURSE_COLORS[0],
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const tooLight = contrastWithWhite(f.color) < 4.5;
 
   async function save() {
-    if (!f.code.trim() || !f.title.trim()) return;
+    if (!f.code.trim() || !f.title.trim() || tooLight) return;
     const row = { ...f, code: f.code.trim().toUpperCase(), title: f.title.trim() };
     const saved = await act(
       () =>
@@ -161,7 +162,7 @@ export function CourseForm({ course, onClose, onSaved }) {
       footer={
         <>
           <button type="button" className="btn" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn btn-primary" onClick={save} disabled={busy || !f.code.trim() || !f.title.trim()}>
+          <button type="button" className="btn btn-primary" onClick={save} disabled={busy || !f.code.trim() || !f.title.trim() || tooLight}>
             {course ? 'Save changes' : 'Create course'}
           </button>
         </>
@@ -175,12 +176,24 @@ export function CourseForm({ course, onClose, onSaved }) {
       <Field label="Short description" hint="optional"><textarea className="textarea" value={f.description} onChange={set('description')} /></Field>
       <div className="field">
         <span className="field-label">Colour</span>
-        <div className="row-wrap">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(36px, 1fr))', gap: 8 }}>
           {COURSE_COLORS.map((c) => (
-            <button key={c} type="button" onClick={() => setF({ ...f, color: c })} aria-label={`Colour ${c}`} aria-pressed={f.color === c}
-              style={{ width: 40, height: 40, borderRadius: 10, background: c, cursor: 'pointer', border: f.color === c ? '3px solid var(--ink)' : '3px solid transparent', outline: f.color === c ? '2px solid #fff' : 'none', outlineOffset: -5 }} />
+            <button key={c} type="button" onClick={() => setF({ ...f, color: c })} aria-label={`Colour ${c}`} aria-pressed={f.color.toLowerCase() === c.toLowerCase()}
+              style={{ width: '100%', aspectRatio: '1', minHeight: 36, borderRadius: 9, background: c, cursor: 'pointer', border: f.color.toLowerCase() === c.toLowerCase() ? '3px solid var(--ink)' : '3px solid transparent', outline: f.color.toLowerCase() === c.toLowerCase() ? '2px solid #fff' : 'none', outlineOffset: -5 }} />
           ))}
         </div>
+        <div className="row-wrap" style={{ marginTop: 8 }}>
+          <label className="row small" style={{ gap: 8 }}>
+            <input type="color" value={f.color} onChange={(e) => setF({ ...f, color: e.target.value })} aria-label="Custom colour"
+              style={{ width: 44, height: 40, padding: 2, border: '1px solid var(--field)', borderRadius: 8, background: '#fff', cursor: 'pointer' }} />
+            Any colour
+          </label>
+          <div style={{ flex: 1, minWidth: 180, background: f.color, color: '#fff', borderRadius: 8, padding: '10px 14px' }}>
+            <div className="mono tiny" style={{ opacity: 0.85 }}>{f.code.trim().toUpperCase() || 'SCM 101'}</div>
+            <strong>{f.title.trim() || 'Course title'}</strong>
+          </div>
+        </div>
+        {tooLight && <span className="small" style={{ color: 'var(--red-ink)' }}>This colour is too light for the white heading text. Pick a darker shade.</span>}
       </div>
     </Modal>
   );

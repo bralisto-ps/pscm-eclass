@@ -62,17 +62,6 @@ export async function run(query) {
   return data;
 }
 
-export async function openStoredFile(bucket, path) {
-  const win = window.open('', '_blank');
-  const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60);
-  if (error) {
-    if (win) win.close();
-    throw new Error(friendlyError(error));
-  }
-  if (win) win.location.href = data.signedUrl;
-  else window.location.href = data.signedUrl;
-}
-
 export function safeFileName(name) {
   const clean = String(name || 'file').normalize('NFKD').replace(/[^\w.\-]+/g, '_').replace(/_+/g, '_');
   return clean.slice(-80) || 'file';

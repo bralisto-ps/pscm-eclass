@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import CheckInModal from '../../components/CheckIn.jsx';
 import { useAuth } from '../../lib/auth.jsx';
 import { rpc, run, supabase } from '../../lib/supabase.js';
 import { dayChip, fmtDateTime, greeting, initials, relative } from '../../lib/format.js';
@@ -19,15 +21,17 @@ function describe(item) {
 export default function StudentHome() {
   const { profile } = useAuth();
   const { data, error, loading, reload } = useLoad(async () => {
-    const [courses, upcoming, news] = await Promise.all([
+    const [courses, upcoming, news, openAtt] = await Promise.all([
       run(supabase.from('courses').select('id, code, title, color, semester, description').eq('archived', false).order('code')),
       rpc('my_upcoming'),
       run(supabase.from('announcements').select('id, title, body, created_at, courses(code, color)').order('created_at', { ascending: false }).limit(5)),
+      rpc('my_open_attendance'),
     ]);
-    return { courses, upcoming: upcoming || [], news };
+    return { courses, upcoming: upcoming || [], news, openAtt: openAtt || [] };
   }, []);
 
   const firstName = (profile.full_name || '').split(' ')[0];
+  const [checkIn, setCheckIn] = useState(null);
 
   return (
     <>
@@ -38,6 +42,12 @@ export default function StudentHome() {
         {data && (
           <div className="two-col">
             <main className="stack-lg">
+              {data.openAtt.map((a) => (
+                <section key={a.session_id} className="notice notice-info row-wrap" style={{ padding: '14px 18px' }} aria-label="Attendance open">
+                  <span style={{ flex: 1, minWidth: 200 }}><strong>Attendance is open for {a.course_code}</strong> — {a.title}. Type the code shown in class.</span>
+                  <button type="button" className="btn btn-primary" onClick={() => setCheckIn(a)}>Check in</button>
+                </section>
+              ))}
               {data.upcoming[0] ? (
                 <NextUp item={data.upcoming[0]} />
               ) : (
@@ -123,6 +133,7 @@ export default function StudentHome() {
           </div>
         )}
       </div>
+      {checkIn && <CheckInModal courseId={checkIn.course_id} courseCode={checkIn.course_code} onClose={() => setCheckIn(null)} onDone={reload} />}
     </>
   );
 }
