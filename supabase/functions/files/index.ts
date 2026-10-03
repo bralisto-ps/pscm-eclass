@@ -64,14 +64,16 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return reply({ error: 'Use POST.' }, 405);
 
-  const account = Deno.env.get('R2_ACCOUNT_ID');
-  const accessKeyId = Deno.env.get('R2_ACCESS_KEY_ID');
-  const secretAccessKey = Deno.env.get('R2_SECRET_ACCESS_KEY');
-  const r2bucket = Deno.env.get('R2_BUCKET');
-  if (!accessKeyId || !secretAccessKey || !r2bucket || (!account && !Deno.env.get('R2_ENDPOINT'))) {
+  // Secrets are trimmed: a space or line break pasted with a key breaks signing.
+  const env = (k: string) => (Deno.env.get(k) ?? '').trim();
+  const account = env('R2_ACCOUNT_ID');
+  const accessKeyId = env('R2_ACCESS_KEY_ID');
+  const secretAccessKey = env('R2_SECRET_ACCESS_KEY');
+  const r2bucket = env('R2_BUCKET');
+  if (!accessKeyId || !secretAccessKey || !r2bucket || (!account && !env('R2_ENDPOINT'))) {
     return reply({ error: 'File storage is not set up yet (missing R2 secrets).' }, 500);
   }
-  const endpoint = Deno.env.get('R2_ENDPOINT') ?? `https://${account}.r2.cloudflarestorage.com`;
+  const endpoint = env('R2_ENDPOINT') || `https://${account}.r2.cloudflarestorage.com`;
   const client = new AwsClient({ accessKeyId, secretAccessKey, service: 's3', region: 'auto' });
 
   let body: Record<string, unknown>;
