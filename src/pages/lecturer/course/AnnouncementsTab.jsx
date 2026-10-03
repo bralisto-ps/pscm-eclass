@@ -5,7 +5,7 @@ import Icon from '../../../components/Icon.jsx';
 import { shareWhatsApp } from '../../../lib/share.js';
 import { Confirm, Empty, ErrorNote, Field, Loading, useAction, useLoad } from '../../../components/ui.jsx';
 
-export default function AnnouncementsTab({ course }) {
+export default function AnnouncementsTab({ course, ta }) {
   const { data, error, loading, reload } = useLoad(
     () => run(supabase.from('announcements').select('*').eq('course_id', course.id).order('created_at', { ascending: false })),
     [course.id],
@@ -44,7 +44,7 @@ export default function AnnouncementsTab({ course }) {
               <span className="tiny muted">{fmtFull(n.created_at)}</span>
               <div className="row" style={{ gap: 4 }}>
                 <button type="button" className="btn btn-sm btn-ghost" onClick={() => shareWhatsApp(`*${course.code}: ${n.title}*\n${n.body || ''}`)}>Share on WhatsApp</button>
-                <button type="button" className="icon-btn plain" aria-label="Delete announcement" onClick={() => setRemoving(n)}><Icon name="trash" /></button>
+                {!ta && <button type="button" className="icon-btn plain" aria-label="Delete announcement" onClick={() => setRemoving(n)}><Icon name="trash" /></button>}
               </div>
             </div>
             <h2>{n.title}</h2>

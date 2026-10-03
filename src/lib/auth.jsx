@@ -72,6 +72,22 @@ export function AuthProvider({ children }) {
     return data;
   }
 
+  async function activateStaff(email, name, password) {
+    const e = String(email || '').trim().toLowerCase();
+    const status = await rpc('check_staff_email', { p_email: e });
+    if (status === 'not_found') {
+      throw new Error('That email has not been added as a teaching assistant. Ask the lecturer to add it on the course Settings tab.');
+    }
+    if (status === 'active') throw new Error('This email already has an account. Sign in instead.');
+    const { data, error } = await supabase.auth.signUp({ email: e, password, options: { data: { full_name: String(name || '').trim() } } });
+    if (error) throw new Error(friendlyError(error));
+    if (!data.session) {
+      throw new Error('Account created, but sign-in did not start. Ask the lecturer to turn off "Confirm email" in Supabase.');
+    }
+    await loadProfile(data.session);
+    return data;
+  }
+
   async function signOut() {
     await supabase.auth.signOut();
     setProfile(null);
@@ -83,8 +99,11 @@ export function AuthProvider({ children }) {
     loading,
     profileError,
     isLecturer: profile?.role === 'lecturer',
+    isTA: profile?.role === 'ta',
+    isStaff: profile?.role === 'lecturer' || profile?.role === 'ta',
     signIn,
     activate,
+    activateStaff,
     signOut,
     reloadProfile: () => loadProfile(session),
   };

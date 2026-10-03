@@ -88,7 +88,7 @@ export default function StudentCourse() {
         {tab === 'qa' && <Forum course={course} />}
         {tab === 'announcements' && <Announcements news={data.news} />}
       </div>
-      {checkingIn && <CheckInModal courseId={course.id} courseCode={course.code} onClose={() => setCheckingIn(false)} onDone={reload} />}
+      {checkingIn && <CheckInModal courseId={course.id} courseCode={course.code} askRow={data.attendance?.ask_row} onClose={() => setCheckingIn(false)} onDone={reload} />}
     </>
   );
 }
@@ -530,7 +530,10 @@ function AttendanceCard({ attendance }) {
       {attendance.sessions.slice(0, 30).map((x) => (
         <div key={x.id} className="list-row small">
           <span className="list-main"><span className="title">{x.title}</span><span className="tiny muted">{fmtDateTime(x.opens_at)}</span></span>
-          {x.present ? <span className="badge badge-teal">Present</span> : <span className="badge">Absent</span>}
+          {x.status === 'ok' ? <span className="badge badge-teal">Present</span>
+            : x.status === 'review' ? <span className="badge badge-amber" title="Your lecturer is checking this check-in">Being checked</span>
+            : x.status === 'rejected' ? <span className="badge badge-red" title="Your check-in was not accepted">Not accepted</span>
+            : <span className="badge">Absent</span>}
         </div>
       ))}
     </section>

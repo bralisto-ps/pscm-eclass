@@ -32,7 +32,7 @@ function NotConfigured() {
 }
 
 function Gate() {
-  const { session, profile, loading, profileError, isLecturer, signOut } = useAuth();
+  const { session, profile, loading, profileError, isLecturer, isStaff, signOut } = useAuth();
   if (loading) return <Loading label="Opening PSCM E-class…" />;
 
   if (!session) {
@@ -40,6 +40,7 @@ function Gate() {
       <Routes>
         <Route path="/login" element={<Login mode="signin" />} />
         <Route path="/activate" element={<Login mode="activate" />} />
+        <Route path="/staff" element={<Login mode="staff" />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
@@ -61,13 +62,13 @@ function Gate() {
 
   return (
     <Routes>
-      {!isLecturer && <Route path="/quiz/:attemptId" element={<TakeQuiz />} />}
+      {!isStaff && <Route path="/quiz/:attemptId" element={<TakeQuiz />} />}
       <Route element={<Layout />}>
-        {isLecturer ? (
+        {isStaff ? (
           <>
             <Route index element={<Dashboard />} />
             <Route path="teach/course/:courseId" element={<ManageCourse />} />
-            <Route path="teach/quiz/:quizId" element={<QuizBuilder />} />
+            {isLecturer && <Route path="teach/quiz/:quizId" element={<QuizBuilder />} />}
             <Route path="teach/quiz/:quizId/results" element={<QuizResults />} />
             <Route path="teach/assignment/:assignmentId" element={<AssignmentMarking />} />
           </>

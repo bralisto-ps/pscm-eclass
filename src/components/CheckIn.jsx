@@ -1,28 +1,45 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { rpc } from '../lib/supabase.js';
+import { attendanceDevice } from '../lib/device.js';
 import { Modal, useToast } from './ui.jsx';
 
-export default function CheckInModal({ courseId, courseCode, onClose, onDone }) {
+export default function CheckInModal({ courseId, courseCode, askRow: askRowProp, onClose, onDone }) {
   const toast = useToast();
   const [code, setCode] = useState('');
+  const [row, setRow] = useState('');
+  const [askRow, setAskRow] = useState(askRowProp ?? true);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // find out whether this session asks for the row number
+  useEffect(() => {
+    if (askRowProp !== undefined) return;
+    let alive = true;
+    rpc('my_open_attendance').then((list) => {
+      const s = (list || []).find((x) => x.course_id === courseId);
+      if (alive && s) setAskRow(s.ask_row !== false);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [courseId, askRowProp]);
 
   async function submit(e) {
     e?.preventDefault();
     const c = code.replace(/\D/g, '');
     if (c.length !== 6) return setMsg('The code has 6 digits.');
+    const r = Number(row);
+    if (askRow && (!row || !Number.isInteger(r) || r < 1 || r > 200)) return setMsg('Enter the number of the row you are sitting in.');
     setBusy(true);
     setMsg('');
     try {
-      const r = await rpc('check_in', { p_course: courseId, p_code: c });
-      if (r.ok) {
-        toast(`Checked in — ${r.session}`);
+      const res = await rpc('check_in', { p_course: courseId, p_code: c, p_row: askRow ? r : null, p_device: attendanceDevice() });
+      if (res.ok) {
+        toast(`Checked in — ${res.session}`);
         onDone?.();
         onClose();
       } else {
-        setMsg(r.message);
-        setCode('');
+        if (res.need_row) setAskRow(true);
+        else setCode('');
+        setMsg(res.message);
       }
     } catch (err) {
       setMsg(err.message);
@@ -43,7 +60,16 @@ export default function CheckInModal({ courseId, courseCode, onClose, onDone }) 
             value={code} onChange={(e) => setCode(e.target.value.replace(/[^\d ]/g, ''))}
             style={{ fontSize: 34, letterSpacing: '0.3em', textAlign: 'center', minHeight: 64 }} placeholder="000000" />
         </label>
+        {askRow && (
+          <label className="field">
+            <span className="field-label">Which row are you sitting in?</span>
+            <input className="input mono" inputMode="numeric" type="number" min="1" max="200" aria-label="Row number"
+              value={row} onChange={(e) => setRow(e.target.value)} style={{ maxWidth: 140, fontSize: 22 }} placeholder="e.g. 4" />
+            <span className="tiny muted">Count from the front. Rows are checked against a head count, so give your real row.</span>
+          </label>
+        )}
         {msg && <div className="notice notice-error" role="alert">{msg}</div>}
+        <button type="submit" hidden aria-hidden="true" tabIndex={-1} />
       </form>
     </Modal>
   );

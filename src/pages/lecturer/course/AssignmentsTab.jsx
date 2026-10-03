@@ -7,7 +7,7 @@ import { fmtDateTime, fmtNumber, fromLocalInput, relative, toLocalInput } from '
 import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad } from '../../../components/ui.jsx';
 
-export default function AssignmentsTab({ course }) {
+export default function AssignmentsTab({ course, ta }) {
   const [editing, setEditing] = useState(null);
   const [removing, setRemoving] = useState(null);
   const [act, busy] = useAction();
@@ -37,10 +37,10 @@ export default function AssignmentsTab({ course }) {
     <div className="stack" style={{ maxWidth: 1040 }}>
       <div className="between" style={{ flexWrap: 'wrap' }}>
         <p className="small muted" style={{ maxWidth: 600 }}>
-          Students upload one file (up to 5 MB) before the deadline. You mark it here with feedback, then release the marks.
-          For work that marks itself, use a quiz instead.
+          {ta ? 'Open an assignment to mark submissions and give feedback. The lecturer releases the marks.'
+            : 'Students upload one file (up to 5 MB) before the deadline. You mark it here with feedback, then release the marks. For work that marks itself, use a quiz instead.'}
         </p>
-        <button type="button" className="btn btn-primary" onClick={() => setEditing({})}><Icon name="plus" /> New assignment</button>
+        {!ta && <button type="button" className="btn btn-primary" onClick={() => setEditing({})}><Icon name="plus" /> New assignment</button>}
       </div>
 
       {data.list.length === 0 ? (
@@ -69,11 +69,11 @@ export default function AssignmentsTab({ course }) {
                     <td>
                       <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
                         <Link to={`/teach/assignment/${a.id}`} className="btn btn-sm">Mark</Link>
-                        <button type="button" className="btn btn-sm btn-ghost" onClick={() => setEditing(a)}>Edit</button>
+                        {!ta && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setEditing(a)}>Edit</button>}
                         {a.published && <button type="button" className="icon-btn plain" title="Share on WhatsApp" aria-label="Share on WhatsApp"
                           onClick={() => shareWhatsApp(`*${course.code} assignment: ${a.title}*\n${a.due_at ? `Due ${fmtDateTime(a.due_at)}` : 'No deadline'} · ${fmtNumber(a.max_marks)} marks\nHand in on the course page.`)}>
                           <Icon name="megaphone" /></button>}
-                        <button type="button" className="icon-btn plain" aria-label="Delete assignment" onClick={() => setRemoving(a)}><Icon name="trash" /></button>
+                        {!ta && <button type="button" className="icon-btn plain" aria-label="Delete assignment" onClick={() => setRemoving(a)}><Icon name="trash" /></button>}
                       </div>
                     </td>
                   </tr>

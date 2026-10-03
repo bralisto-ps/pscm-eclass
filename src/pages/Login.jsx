@@ -4,20 +4,22 @@ import { useAuth } from '../lib/auth.jsx';
 import { Field } from '../components/ui.jsx';
 
 export default function Login({ mode }) {
-  const { signIn, activate } = useAuth();
+  const { signIn, activate, activateStaff } = useAuth();
   const navigate = useNavigate();
   const [id, setId] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [name, setName] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const activating = mode === 'activate';
+  const staff = mode === 'staff';
+  const activating = mode === 'activate' || staff;
 
   async function submit(e) {
     e.preventDefault();
     setError('');
     if (!id.trim() || !password) {
-      setError(activating ? 'Enter your index number and choose a password.' : 'Enter your index number and password.');
+      setError(staff ? 'Enter your email and choose a password.' : activating ? 'Enter your index number and choose a password.' : 'Enter your index number and password.');
       return;
     }
     if (activating) {
@@ -26,7 +28,8 @@ export default function Login({ mode }) {
     }
     setBusy(true);
     try {
-      if (activating) await activate(id, password);
+      if (staff) await activateStaff(id, name, password);
+      else if (activating) await activate(id, password);
       else await signIn(id, password);
       navigate('/', { replace: true });
     } catch (err) {
@@ -60,27 +63,35 @@ export default function Login({ mode }) {
             <span className="small muted">Virtual Classroom for Procurement and Supply Chain Management Courses · L.O Appiah, PhD</span>
           </div>
           <div className="stack-sm">
-            <h1>{activating ? 'Activate your account' : 'Sign in'}</h1>
+            <h1>{staff ? 'Teaching assistant account' : activating ? 'Activate your account' : 'Sign in'}</h1>
             <p className="muted">
-              {activating
-                ? 'First time here? Enter your index number and choose a password you will remember.'
-                : 'Students sign in with their index number.'}
+              {staff
+                ? 'Use the email address your lecturer added for you, and choose a password.'
+                : activating
+                  ? 'First time here? Enter your index number and choose a password you will remember.'
+                  : 'Students sign in with their index number.'}
             </p>
           </div>
 
           {error && <div className="notice notice-error" role="alert">{error}</div>}
 
-          <Field label={activating ? 'Index number' : 'Index number (or lecturer email)'}>
+          <Field label={staff ? 'Email' : activating ? 'Index number' : 'Index number (or staff email)'}>
             <input
-              className="input mono"
+              className={staff ? 'input' : 'input mono'}
+              type={staff ? 'email' : 'text'}
               value={id}
               onChange={(e) => setId(e.target.value)}
-              autoComplete="username"
-              autoCapitalize="characters"
+              autoComplete={staff ? 'email' : 'username'}
+              autoCapitalize={staff ? 'none' : 'characters'}
               spellCheck={false}
-              placeholder="e.g. 4021180"
+              placeholder={staff ? 'you@gmail.com' : 'e.g. 4021180'}
             />
           </Field>
+          {staff && (
+            <Field label="Your name">
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
+            </Field>
+          )}
           <Field label={activating ? 'Choose a password' : 'Password'} hint={activating ? 'at least 6 characters' : undefined}>
             <input
               className="input"
@@ -113,6 +124,11 @@ export default function Login({ mode }) {
               <>First time? <Link to="/activate">Activate your account</Link></>
             )}
           </div>
+          {!activating && (
+            <p className="tiny muted" style={{ textAlign: 'center' }}>
+              Teaching assistant? <Link to="/staff">Set up your account</Link>
+            </p>
+          )}
           {!activating && (
             <p className="tiny muted" style={{ textAlign: 'center' }}>
               Forgot your password? Ask your lecturer to reset it.

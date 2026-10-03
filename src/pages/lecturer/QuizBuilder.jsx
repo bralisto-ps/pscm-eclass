@@ -6,6 +6,7 @@ import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { quizStatus } from './course/QuizzesTab.jsx';
+import SpecialAccess from './SpecialAccess.jsx';
 
 const KINDS = [
   { id: 'mcq', label: 'Multiple choice' },
@@ -147,7 +148,10 @@ export default function QuizBuilder() {
             )}
           </main>
 
-          <Settings quiz={quiz} count={questions.length} windows={data.windows} streams={data.groups.streams} onSaved={(q) => setData((d) => ({ ...d, quiz: { ...d.quiz, ...q } }))} />
+          <div className="stack" style={{ alignSelf: 'start' }}>
+            <Settings quiz={quiz} count={questions.length} windows={data.windows} streams={data.groups.streams} onSaved={(q) => setData((d) => ({ ...d, quiz: { ...d.quiz, ...q } }))} />
+            <SpecialAccess quiz={quiz} restricted={quiz.restricted} />
+          </div>
         </div>
       </div>
 
@@ -446,7 +450,7 @@ function Settings({ quiz, count, windows, streams, onSaved }) {
     duration_minutes: quiz.duration_minutes, max_attempts: quiz.max_attempts, is_practice: quiz.is_practice,
     shuffle_questions: quiz.shuffle_questions, shuffle_options: quiz.shuffle_options,
     published: quiz.published, results_released: quiz.results_released, show_answers: quiz.show_answers,
-    lockdown: quiz.lockdown, max_exits: quiz.max_exits ?? 0, no_backtrack: quiz.no_backtrack, pool_size: quiz.pool_size ?? '',
+    restricted: quiz.restricted, lockdown: quiz.lockdown, max_exits: quiz.max_exits ?? 0, no_backtrack: quiz.no_backtrack, pool_size: quiz.pool_size ?? '',
   }));
   const [perStream, setPerStream] = useState(windows.length > 0);
   const [win, setWin] = useState(() => {
@@ -495,14 +499,16 @@ function Settings({ quiz, count, windows, streams, onSaved }) {
   }
 
   return (
-    <aside className="card stack" style={{ alignSelf: 'start' }}>
+    <aside className="card stack">
       <div className="between"><h2>Quiz settings</h2>{dirty && <span className="badge badge-amber">Unsaved</span>}</div>
       <Field label="Title"><input className="input" value={f.title} onChange={set('title')} /></Field>
       <Field label="Instructions" hint="shown before starting"><textarea className="textarea" style={{ minHeight: 70 }} value={f.instructions} onChange={set('instructions')} /></Field>
       <Field label="Formula sheet" hint="optional, shown beside questions"><textarea className="textarea mono" style={{ minHeight: 70, fontSize: 13 }} value={f.reference} onChange={set('reference')} placeholder={'EOQ = √(2DS ÷ H)\nROP = d × L + SS'} /></Field>
 
       <div className="stack-sm" style={{ borderTop: '1px solid var(--line-2)', paddingTop: 14 }}>
-        <span className="eyebrow">When</span>
+        <span className="eyebrow">Who and when</span>
+        <label className="check"><input type="checkbox" checked={f.restricted} onChange={set('restricted')} />
+          <span><strong>Only students given special access</strong> — for a resit or a make-up quiz. Add them under Special access below.</span></label>
         {streams.length === 0 && (
           <span className="tiny muted">To set different times for Regular, Weekend or Evening students, first create streams on the course's Students tab.</span>
         )}

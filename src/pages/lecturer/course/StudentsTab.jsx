@@ -6,7 +6,7 @@ import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../../components/ui.jsx';
 import { ALL_GROUPS, GroupFilters, matchesGroup } from '../../../components/Groups.jsx';
 
-export default function StudentsTab({ course }) {
+export default function StudentsTab({ course, ta }) {
   const { data: loaded, error, loading, reload } = useLoad(async () => {
     const [students, options] = await Promise.all([
       rpcAll('course_students', { p_course: course.id }),
@@ -78,7 +78,7 @@ export default function StudentsTab({ course }) {
         <div className="kpi"><span className="l">Not yet activated</span><span className="v" style={{ color: data.length - activated ? 'var(--amber-ink)' : undefined }}>{(data.length - activated).toLocaleString()}</span></div>
       </div>
 
-      <GroupManager programmes={programmes} streams={streams} students={data} onChanged={reload} />
+      {!ta && <GroupManager programmes={programmes} streams={streams} students={data} onChanged={reload} />}
 
       <div className="card-flush">
         <div className="card-head" style={{ flexWrap: 'wrap' }}>
@@ -98,11 +98,11 @@ export default function StudentsTab({ course }) {
           </div>
           <div className="row-wrap">
             {data.length > 0 && <button type="button" className="btn btn-sm" onClick={exportList}><Icon name="download" size={16} /> Export</button>}
-            <button type="button" className="btn btn-sm btn-primary" onClick={() => setImporting(true)}><Icon name="upload" size={16} /> Upload class list</button>
+            {!ta && <button type="button" className="btn btn-sm btn-primary" onClick={() => setImporting(true)}><Icon name="upload" size={16} /> Upload class list</button>}
           </div>
         </div>
 
-        {selected.size > 0 && (
+        {!ta && selected.size > 0 && (
           <BulkAssign
             indexes={[...selected]}
             programmes={programmes}
@@ -119,17 +119,17 @@ export default function StudentsTab({ course }) {
         )}
 
         {data.length === 0 ? (
-          <Empty icon="users" title="No students yet" action={<button type="button" className="btn btn-primary" onClick={() => setImporting(true)}>Upload class list</button>}>
+          <Empty icon="users" title="No students yet" action={ta ? null : <button type="button" className="btn btn-primary" onClick={() => setImporting(true)}>Upload class list</button>}>
             Upload an Excel or CSV file with index numbers and names. Students can then activate their accounts.
           </Empty>
         ) : (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th style={{ width: 36 }}><input type="checkbox" aria-label="Select all shown students" checked={allShownSelected} onChange={toggleAll} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} /></th><th>Index no.</th><th>Name</th><th>Programme</th><th>Stream</th><th>{filter === 'risk' ? 'Why' : 'Account'}</th><th className="hide-sm">Last sign-in</th><th /></tr></thead>
+              <thead><tr>{!ta && <th style={{ width: 36 }}><input type="checkbox" aria-label="Select all shown students" checked={allShownSelected} onChange={toggleAll} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} /></th>}<th>Index no.</th><th>Name</th><th>Programme</th><th>Stream</th><th>{filter === 'risk' ? 'Why' : 'Account'}</th><th className="hide-sm">Last sign-in</th><th /></tr></thead>
               <tbody>
                 {rows.slice(0, 300).map((r) => (
                   <tr key={r.index_no} style={selected.has(r.index_no) ? { background: 'var(--teal-50)' } : undefined}>
-                    <td><input type="checkbox" aria-label={`Select ${r.full_name}`} checked={selected.has(r.index_no)} onChange={() => toggle(r.index_no)} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} /></td>
+                    {!ta && <td><input type="checkbox" aria-label={`Select ${r.full_name}`} checked={selected.has(r.index_no)} onChange={() => toggle(r.index_no)} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} /></td>}
                     <td className="mono small">{r.index_no}</td>
                     <td>{r.full_name}</td>
                     <td className="small">{r.programme || <span className="muted">—</span>}</td>
@@ -141,8 +141,8 @@ export default function StudentsTab({ course }) {
                     <td>
                       <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
                         {r.activated && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setResetting(r)}><Icon name="key" size={16} /> Reset password</button>}
-                        <button type="button" className="icon-btn plain" aria-label={`Edit ${r.full_name}`} onClick={() => setEditing(r)}><Icon name="edit" /></button>
-                        <button type="button" className="icon-btn plain" aria-label={`Remove ${r.full_name} from course`} onClick={() => setRemoving(r)}><Icon name="trash" /></button>
+                        {!ta && <button type="button" className="icon-btn plain" aria-label={`Edit ${r.full_name}`} onClick={() => setEditing(r)}><Icon name="edit" /></button>}
+                        {!ta && <button type="button" className="icon-btn plain" aria-label={`Remove ${r.full_name} from course`} onClick={() => setRemoving(r)}><Icon name="trash" /></button>}
                       </div>
                     </td>
                   </tr>

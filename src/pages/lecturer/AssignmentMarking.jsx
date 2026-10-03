@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { rpcAll, run, supabase } from '../../lib/supabase.js';
+import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
+import { useAuth } from '../../lib/auth.jsx';
 import { openStoredFile } from '../../lib/files.js';
 import { fmtFull, fmtNumber, pct, relative } from '../../lib/format.js';
 import { downloadWorkbook } from '../../lib/sheets.js';
@@ -13,7 +14,7 @@ import { AssignmentForm } from './course/AssignmentsTab.jsx';
 async function allSubmissions(assignmentId) {
   let all = [];
   for (let from = 0; ; from += 1000) {
-    const page = await run(supabase.from('submissions').select('*, profiles(index_no, full_name)').eq('assignment_id', assignmentId)
+    const page = await run(supabase.from('submissions').select('*, profiles!submissions_student_id_fkey(index_no, full_name)').eq('assignment_id', assignmentId)
       .order('submitted_at').range(from, from + 999));
     all = all.concat(page);
     if (page.length < 1000) return all;
@@ -22,6 +23,7 @@ async function allSubmissions(assignmentId) {
 
 export default function AssignmentMarking() {
   const { assignmentId } = useParams();
+  const { isTA } = useAuth();
   const { data, error, loading, reload, setData } = useLoad(async () => {
     const a = await run(supabase.from('assignments').select('*, courses(id, code, title)').eq('id', assignmentId).single());
     const [students, subs] = await Promise.all([rpcAll('course_students', { p_course: a.course_id }), allSubmissions(assignmentId)]);
@@ -96,10 +98,12 @@ export default function AssignmentMarking() {
     <>
       <Topbar title={a.title} sub={`${a.courses.code} · ${a.due_at ? `due ${fmtFull(a.due_at)}` : 'no deadline'} · ${fmtNumber(a.max_marks)} marks`}>
         <Link to={`/teach/course/${a.course_id}?tab=assignments`} className="btn"><Icon name="chevronLeft" /> Assignments</Link>
-        <button type="button" className="btn" onClick={() => setEditing(true)}><Icon name="edit" /> Edit</button>
-        <button type="button" className={`btn ${a.results_released ? '' : 'btn-primary'}`} onClick={toggleRelease} disabled={busy}>
-          {a.results_released ? 'Hide marks' : 'Release marks'}
-        </button>
+        {!isTA && <button type="button" className="btn" onClick={() => setEditing(true)}><Icon name="edit" /> Edit</button>}
+        {!isTA && (
+          <button type="button" className={`btn ${a.results_released ? '' : 'btn-primary'}`} onClick={toggleRelease} disabled={busy}>
+            {a.results_released ? 'Hide marks' : 'Release marks'}
+          </button>
+        )}
       </Topbar>
       <div className="page stack">
         <div className="grid-4">
@@ -113,7 +117,7 @@ export default function AssignmentMarking() {
         <GroupSummaryTable summary={summary} doneLabel="Marked" />
 
         {!a.results_released && marked.length > 0 && (
-          <div className="notice notice-warn">Students cannot see their marks yet. Press <strong>Release marks</strong> when you have finished.</div>
+          <div className="notice notice-warn">{isTA ? 'Students cannot see these marks until the lecturer releases them.' : <>Students cannot see their marks yet. Press <strong>Release marks</strong> when you have finished.</>}</div>
         )}
 
         <section className="card-flush">
@@ -204,7 +208,7 @@ function MarkModal({ a, row, hasNext, onClose, onSaved }) {
     setBusy(true);
     try {
       const patch = { marks: m, feedback, marked_at: new Date().toISOString() };
-      await run(supabase.from('submissions').update(patch).eq('id', row.sub.id));
+      await rpc('mark_submission', { p_submission: row.sub.id, p_marks: m, p_feedback: feedback });
       toast(`Saved · ${row.full_name}`);
       onSaved(patch, next);
     } catch (e) {

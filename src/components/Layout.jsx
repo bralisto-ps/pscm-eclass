@@ -18,7 +18,8 @@ export function Topbar({ title, sub, children }) {
 }
 
 export default function Layout() {
-  const { profile, isLecturer, signOut } = useAuth();
+  const { profile, isStaff, isTA, signOut } = useAuth();
+  const isLecturer = isStaff;
   const [open, setOpen] = useState(false);
   const [courses, setCourses] = useState([]);
   const location = useLocation();
@@ -48,7 +49,7 @@ export default function Layout() {
           <span className="brand-mark">PS</span>
           <span>
             <div className="brand-name">PSCM E-class</div>
-            <div className="brand-sub">{isLecturer ? 'Lecturer' : 'Student'}</div>
+            <div className="brand-sub">{isTA ? 'Teaching assistant' : isLecturer ? 'Lecturer' : 'Student'}</div>
           </span>
         </Link>
 
@@ -79,7 +80,7 @@ export default function Layout() {
           <div className="who">
             <div style={{ fontSize: 14, color: '#fff' }}>{profile?.full_name}</div>
             <div className="mono tiny" style={{ color: '#9faab4' }}>
-              {profile?.index_no || 'Lecturer'}
+              {profile?.index_no || (isTA ? 'Teaching assistant' : 'Lecturer')}
             </div>
           </div>
           <button type="button" className="icon-btn-dark" onClick={signOut} aria-label="Sign out" title="Sign out">

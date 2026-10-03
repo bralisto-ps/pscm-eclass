@@ -133,7 +133,7 @@ export default function StudentHome() {
           </div>
         )}
       </div>
-      {checkIn && <CheckInModal courseId={checkIn.course_id} courseCode={checkIn.course_code} onClose={() => setCheckIn(null)} onDone={reload} />}
+      {checkIn && <CheckInModal courseId={checkIn.course_id} courseCode={checkIn.course_code} askRow={checkIn.ask_row} onClose={() => setCheckIn(null)} onDone={reload} />}
     </>
   );
 }

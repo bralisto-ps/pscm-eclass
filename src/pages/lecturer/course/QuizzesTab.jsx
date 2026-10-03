@@ -15,8 +15,9 @@ export function quizStatus(q) {
   return { label: 'Open now', cls: 'badge-teal' };
 }
 
-export default function QuizzesTab({ course }) {
+export default function QuizzesTab({ course, ta }) {
   const [view, setView] = useState('quizzes');
+  if (ta) return <QuizList course={course} ta />;
   return (
     <div className="stack">
       <div className="chips" role="tablist" aria-label="Quizzes or question bank">
@@ -28,12 +29,13 @@ export default function QuizzesTab({ course }) {
   );
 }
 
-function QuizList({ course }) {
+function QuizList({ course, ta }) {
   const navigate = useNavigate();
   const [act, busy] = useAction();
   const [removing, setRemoving] = useState(null);
   const { data, error, loading, reload } = useLoad(
-    () => run(supabase.from('quizzes').select('*, questions(count), attempts(count), quiz_windows(count)').eq('course_id', course.id).order('created_at', { ascending: false })),
+    () => run(supabase.from('quizzes').select(`*, ${ta ? '' : 'questions(count), '}attempts(count), quiz_windows(count), quiz_access(count)`)
+      .eq('course_id', course.id).order('created_at', { ascending: false })),
     [course.id],
   );
 
@@ -46,7 +48,7 @@ function QuizList({ course }) {
 
   async function duplicate(src) {
     const copy = await act(async () => {
-      const { id, created_at, questions, attempts, quiz_windows, ...rest } = src;
+      const { id, created_at, questions, attempts, quiz_windows, quiz_access, ...rest } = src;
       const q = await run(supabase.from('quizzes').insert({
         ...rest, title: `${src.title} (copy)`, published: false, results_released: false,
       }).select().single());
@@ -72,9 +74,10 @@ function QuizList({ course }) {
     <div className="stack" style={{ maxWidth: 1040 }}>
       <div className="between" style={{ flexWrap: 'wrap' }}>
         <p className="small muted" style={{ maxWidth: 600 }}>
-          Quizzes are marked automatically. Calculation questions can give every student their own figures, so answers can't be copied.
+          {ta ? 'Open a quiz\'s results to see the gradebook and mark written answers.'
+            : 'Quizzes are marked automatically. Calculation questions can give every student their own figures, so answers can\'t be copied.'}
         </p>
-        <button type="button" className="btn btn-primary" onClick={create} disabled={busy}><Icon name="plus" /> New quiz</button>
+        {!ta && <button type="button" className="btn btn-primary" onClick={create} disabled={busy}><Icon name="plus" /> New quiz</button>}
       </div>
 
       {data.length === 0 ? (
@@ -83,7 +86,7 @@ function QuizList({ course }) {
         <div className="card-flush table-wrap">
           <table className="table">
             <thead>
-              <tr><th>Quiz</th><th>Status</th><th>Window</th><th className="num">Questions</th><th className="num">Attempts</th><th /></tr>
+              <tr><th>Quiz</th><th>Status</th><th>Window</th>{!ta && <th className="num">Questions</th>}<th className="num">Attempts</th><th /></tr>
             </thead>
             <tbody>
               {data.map((q) => {
@@ -91,7 +94,7 @@ function QuizList({ course }) {
                 return (
                   <tr key={q.id}>
                     <td>
-                      <Link to={`/teach/quiz/${q.id}`} className="strong" style={{ color: 'var(--text)' }}>{q.title}</Link>
+                      <Link to={`/teach/quiz/${q.id}${ta ? '/results' : ''}`} className="strong" style={{ color: 'var(--text)' }}>{q.title}</Link>
                       <div className="tiny muted">
                         {q.duration_minutes} min · {q.is_practice ? 'practice' : `${q.max_attempts} attempt${q.max_attempts > 1 ? 's' : ''}`}
                         {q.results_released ? ' · results released' : ''}
@@ -100,20 +103,24 @@ function QuizList({ course }) {
                     </td>
                     <td><span className={`badge ${st.cls}`}>{st.label}</span></td>
                     <td className="small nowrap">
-                      {q.quiz_windows?.[0]?.count ? 'Set per stream' : q.opens_at ? fmtDateTime(q.opens_at) : 'Any time'}
-                      <div className="tiny muted">{q.quiz_windows?.[0]?.count ? `${q.quiz_windows[0].count} stream${q.quiz_windows[0].count > 1 ? 's' : ''}` : q.closes_at ? `to ${fmtDateTime(q.closes_at)}` : 'no closing time'}</div>
+                      {q.restricted ? `Only ${q.quiz_access?.[0]?.count ?? 0} student${q.quiz_access?.[0]?.count === 1 ? '' : 's'}`
+                        : q.quiz_windows?.[0]?.count ? 'Set per stream' : q.opens_at ? fmtDateTime(q.opens_at) : 'Any time'}
+                      <div className="tiny muted">
+                        {q.restricted ? 'special access only' : q.quiz_windows?.[0]?.count ? `${q.quiz_windows[0].count} stream${q.quiz_windows[0].count > 1 ? 's' : ''}` : q.closes_at ? `to ${fmtDateTime(q.closes_at)}` : 'no closing time'}
+                        {!q.restricted && q.quiz_access?.[0]?.count ? ` · +${q.quiz_access[0].count} special` : ''}
+                      </div>
                     </td>
-                    <td className="num">{q.questions?.[0]?.count ?? 0}</td>
+                    {!ta && <td className="num">{q.questions?.[0]?.count ?? 0}</td>}
                     <td className="num">{q.attempts?.[0]?.count ?? 0}</td>
                     <td>
                       <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
                         <Link to={`/teach/quiz/${q.id}/results`} className="btn btn-sm">Results</Link>
-                        <Link to={`/teach/quiz/${q.id}`} className="btn btn-sm btn-ghost">Edit</Link>
+                        {!ta && <Link to={`/teach/quiz/${q.id}`} className="btn btn-sm btn-ghost">Edit</Link>}
                         {q.published && <button type="button" className="icon-btn plain" title="Share on WhatsApp" aria-label="Share on WhatsApp"
                           onClick={() => shareWhatsApp(`*${course.code}: ${q.title}*\n${q.opens_at ? `Opens ${fmtDateTime(q.opens_at)}` : 'Open now'}${q.closes_at ? `, closes ${fmtDateTime(q.closes_at)}` : ''} · ${q.duration_minutes} minutes`)}>
                           <Icon name="megaphone" /></button>}
-                        <button type="button" className="icon-btn plain" title="Duplicate" aria-label="Duplicate quiz" onClick={() => duplicate(q)} disabled={busy}><Icon name="file" /></button>
-                        <button type="button" className="icon-btn plain" title="Delete" aria-label="Delete quiz" onClick={() => setRemoving(q)}><Icon name="trash" /></button>
+                        {!ta && <button type="button" className="icon-btn plain" title="Duplicate" aria-label="Duplicate quiz" onClick={() => duplicate(q)} disabled={busy}><Icon name="file" /></button>}
+                        {!ta && <button type="button" className="icon-btn plain" title="Delete" aria-label="Delete quiz" onClick={() => setRemoving(q)}><Icon name="trash" /></button>}
                       </div>
                     </td>
                   </tr>

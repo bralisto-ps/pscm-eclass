@@ -8,6 +8,7 @@ import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import { Confirm, Empty, ErrorNote, Loading, Modal, Tabs, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { ItemAnalysis, Integrity } from './QuizInsights.jsx';
+import { useAuth } from '../../lib/auth.jsx';
 
 const BINS = [
   { label: '0–39%', lo: 0, hi: 39.999, color: 'var(--amber)' },
@@ -28,6 +29,7 @@ const STATUS = {
 
 export default function QuizResults() {
   const { quizId } = useParams();
+  const { isTA } = useAuth();
   const [tab, setTab] = useState('gradebook');
   const { data, error, loading, reload, setData } = useLoad(async () => {
     const quiz = await run(supabase.from('quizzes').select('*, courses(id, code, title)').eq('id', quizId).single());
@@ -54,22 +56,28 @@ export default function QuizResults() {
   return (
     <>
       <Topbar title={quiz.title} sub={`${quiz.courses.code} · results`}>
-        <Link to={`/teach/quiz/${quiz.id}`} className="btn"><Icon name="edit" /> Edit quiz</Link>
-        <button type="button" className={`btn ${quiz.results_released ? '' : 'btn-primary'}`} onClick={toggleRelease} disabled={busy}>
-          {quiz.results_released ? 'Hide results' : 'Release results'}
-        </button>
+        {isTA ? (
+          <Link to={`/teach/course/${quiz.courses.id}?tab=quizzes`} className="btn"><Icon name="chevronLeft" /> Quizzes</Link>
+        ) : (
+          <>
+            <Link to={`/teach/quiz/${quiz.id}`} className="btn"><Icon name="edit" /> Edit quiz</Link>
+            <button type="button" className={`btn ${quiz.results_released ? '' : 'btn-primary'}`} onClick={toggleRelease} disabled={busy}>
+              {quiz.results_released ? 'Hide results' : 'Release results'}
+            </button>
+          </>
+        )}
       </Topbar>
       <div className="page stack">
         {quiz.results_released
           ? <div className="notice notice-info">Results are released. Students can see their scores{quiz.show_answers ? ' and the correct answers' : ''}.</div>
-          : <div className="notice notice-warn">Results are hidden. Students only see "submitted" until you release them.</div>}
+          : <div className="notice notice-warn">Results are hidden. Students only see "submitted" until {isTA ? 'the lecturer releases' : 'you release'} them.</div>}
         <Tabs tabs={[{ id: 'gradebook', label: 'Gradebook' }, { id: 'marking', label: 'Written answers', count: pending },
-          { id: 'analysis', label: 'Question analysis' }, { id: 'integrity', label: 'Integrity checks' }]} value={tab}
+          ...(isTA ? [] : [{ id: 'analysis', label: 'Question analysis' }, { id: 'integrity', label: 'Integrity checks' }])]} value={tab}
           onChange={(t) => { setTab(t); if (t === 'gradebook') reload(); }} />
-        {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} />}
+        {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} ta={isTA} />}
         {tab === 'marking' && <Marking queue={queue} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
-        {tab === 'analysis' && <ItemAnalysis quiz={quiz} />}
-        {tab === 'integrity' && <Integrity quiz={quiz} rows={rows} />}
+        {tab === 'analysis' && !isTA && <ItemAnalysis quiz={quiz} />}
+        {tab === 'integrity' && !isTA && <Integrity quiz={quiz} rows={rows} />}
       </div>
     </>
   );
@@ -81,7 +89,7 @@ function exitText(r) {
   return (r.exit_log || []).map((e) => `${new Date(e.at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} — ${kinds[e.kind] || e.kind}`).join('\n');
 }
 
-function Gradebook({ quiz, rows: allRows, reload }) {
+function Gradebook({ quiz, rows: allRows, reload, ta }) {
   const [filter, setFilter] = useState('all');
   const [group, setGroup] = useState(ALL_GROUPS);
   const [q, setQ] = useState('');
@@ -114,16 +122,16 @@ function Gradebook({ quiz, rows: allRows, reload }) {
 
   function exportXlsx() {
     const header = ['Index number', 'Name', 'Programme', 'Stream', 'Status', 'Auto-marked', 'Written', 'Total', 'Out of', 'Percent',
-      'Minutes used', 'Times left quiz', 'Devices used', 'Submitted', 'Attempts'];
+      'Minutes used', 'Times left quiz', 'Devices used', 'Submitted', 'Attempts', 'Special sitting'];
     const line = (r) => [
       r.index_no, r.full_name, r.programme, r.stream, (STATUS[r.status] || [r.status])[0],
       r.auto_score !== null && r.attempt_id ? Number(r.auto_score) : '', r.manual_score !== null ? Number(r.manual_score) : '',
       r.score !== null ? Number(r.score) : '', r.max_score !== null ? Number(r.max_score) : '',
       pct(r.score, r.max_score) ?? '', r.minutes_used !== null ? Number(r.minutes_used) : '',
       r.attempt_id ? r.exits : '', r.attempt_id ? r.devices : '',
-      r.submitted_at ? fmtFull(r.submitted_at) : '', r.attempts_used,
+      r.submitted_at ? fmtFull(r.submitted_at) : '', r.attempts_used, r.special ? 'Yes' : '',
     ];
-    const widths = [16, 30, 18, 12, 16, 12, 10, 10, 10, 10, 12, 14, 12, 22, 10];
+    const widths = [16, 30, 18, 12, 16, 12, 10, 10, 10, 10, 12, 14, 12, 22, 10, 14];
     const sheets = [
       { name: 'All students', rows: [header, ...allRows.map(line)], widths },
       { name: 'Summary', rows: [['Programme', 'Stream', 'Students', 'Submitted', 'Average %'],
@@ -198,7 +206,8 @@ function Gradebook({ quiz, rows: allRows, reload }) {
                   return (
                     <tr key={r.index_no}>
                       <td className="mono small">{r.index_no}</td>
-                      <td>{r.full_name}{r.attempts_used > 1 ? <span className="tiny muted"> · {r.attempts_used} attempts</span> : null}</td>
+                      <td>{r.full_name}{r.attempts_used > 1 ? <span className="tiny muted"> · {r.attempts_used} attempts</span> : null}
+                        {r.special && <span className="badge badge-plum" style={{ marginLeft: 6 }} title="Has special access to this quiz">Special sitting</span>}</td>
                       <td className="small muted hide-sm">{[r.programme, r.stream].filter(Boolean).join(' · ') || '—'}</td>
                       <td className="num strong">{r.score !== null && r.status !== 'in_progress' ? `${fmtNumber(r.score)} / ${fmtNumber(r.max_score)}` : '—'}</td>
                       <td className="num">{p !== null && r.status !== 'in_progress' ? `${p}%` : '—'}</td>
@@ -215,7 +224,7 @@ function Gradebook({ quiz, rows: allRows, reload }) {
                         </div>
                       </td>
                       <td><span className={`badge ${cls}`}>{label}</span></td>
-                      <td>{r.attempts_used > 0 && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setRetake(r)}>Allow retake</button>}</td>
+                      <td>{!ta && r.attempts_used > 0 && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setRetake(r)}>Allow retake</button>}</td>
                     </tr>
                   );
                 })}

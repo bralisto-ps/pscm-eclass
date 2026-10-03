@@ -4,6 +4,7 @@ import { rpc } from '../../lib/supabase.js';
 import { fillVars, fmtNumber, initials } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import { ErrorNote, Loading, Modal, Swatch, useLoad } from '../../components/ui.jsx';
+import { deviceLabel } from '../../lib/device.js';
 
 const LETTERS = 'ABCDEFGHIJ';
 
@@ -26,22 +27,6 @@ function writeFlags(id, set) {
   }
 }
 
-function deviceLabel() {
-  let id = 'nostore';
-  try {
-    id = localStorage.getItem('pscm-device');
-    if (!id) {
-      id = Math.random().toString(36).slice(2, 10);
-      localStorage.setItem('pscm-device', id);
-    }
-  } catch {
-    id = 'nostore';
-  }
-  const ua = navigator.userAgent;
-  const os = /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS' : /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : 'Other';
-  const br = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
-  return `${id} ${os} ${br}`;
-}
 
 function Watermark({ text }) {
   const safe = String(text).replace(/[<>&'"]/g, '');

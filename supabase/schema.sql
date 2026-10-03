@@ -246,6 +246,35 @@ create table if not exists public.quiz_windows (
   primary key (quiz_id, stream)
 );
 
+-- Version 5 additions
+-- Special access: named students get their own window (and extra attempts).
+-- A restricted quiz is visible only to the students listed here.
+alter table public.quizzes add column if not exists restricted boolean not null default false;
+create table if not exists public.quiz_access (
+  quiz_id        uuid not null references public.quizzes on delete cascade,
+  index_no       text not null references public.roster(index_no) on delete cascade on update cascade,
+  opens_at       timestamptz,
+  closes_at      timestamptz,
+  extra_attempts int not null default 0 check (extra_attempts between 0 and 10),
+  note           text not null default '',
+  created_at     timestamptz not null default now(),
+  primary key (quiz_id, index_no)
+);
+
+-- Teaching assistants, per course. They sign up with the email listed here.
+create table if not exists public.course_staff (
+  course_id  uuid not null references public.courses on delete cascade,
+  email      text not null,
+  full_name  text not null default '',
+  user_id    uuid references public.profiles on delete set null,
+  created_at timestamptz not null default now(),
+  primary key (course_id, email)
+);
+alter table public.profiles drop constraint if exists profiles_role_check;
+alter table public.profiles add constraint profiles_role_check check (role in ('student', 'lecturer', 'ta'));
+alter table public.responses   add column if not exists marked_by uuid references public.profiles on delete set null;
+alter table public.submissions add column if not exists marked_by uuid references public.profiles on delete set null;
+
 -- ---------------------------------------------------------------------
 -- 3. Helper functions used by the security rules
 -- ---------------------------------------------------------------------
@@ -266,6 +295,41 @@ language sql stable security definer set search_path = public as $$
     join public.profiles p on p.index_no = e.index_no
     where e.course_id = p_course and p.id = auth.uid()
   );
+$$;
+
+-- Teaching assistant on this course?
+create or replace function public.is_ta(p_course uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.course_staff where course_id = p_course and user_id = auth.uid());
+$$;
+
+create or replace function public.is_staff(p_course uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public.is_lecturer() or public.is_ta(p_course);
+$$;
+
+create or replace function public.is_ta_user() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles where id = auth.uid() and role = 'ta');
+$$;
+
+-- Is this student on any course the signed-in TA helps with?
+create or replace function public.ta_sees_index(p_index text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.enrollments e join public.course_staff s on s.course_id = e.course_id
+                  where e.index_no = p_index and s.user_id = auth.uid());
+$$;
+
+-- Can this student take this quiz? (special access, restricted quizzes, stream windows)
+create or replace function public.quiz_open_to(p_quiz uuid, p_index text, p_stream text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select case
+    when exists (select 1 from public.quiz_access a where a.quiz_id = p_quiz and a.index_no = p_index) then true
+    when (select restricted from public.quizzes where id = p_quiz) then false
+    when not exists (select 1 from public.quiz_windows w where w.quiz_id = p_quiz) then true
+    else exists (select 1 from public.quiz_windows w
+                  where w.quiz_id = p_quiz and lower(trim(w.stream)) = lower(trim(coalesce(p_stream, ''))))
+  end;
 $$;
 
 create or replace function public.try_uuid(p text) returns uuid
@@ -310,6 +374,17 @@ begin
     return new;
   end if;
 
+  -- teaching assistant invited by the lecturer
+  if exists (select 1 from public.course_staff where email = lower(new.email)) then
+    insert into public.profiles (id, role, full_name)
+    values (new.id, 'ta', coalesce(nullif(trim(new.raw_user_meta_data->>'full_name'), ''),
+                                   (select full_name from public.course_staff where email = lower(new.email) and full_name <> '' limit 1),
+                                   'Teaching assistant'))
+    on conflict (id) do nothing;
+    update public.course_staff set user_id = new.id where email = lower(new.email);
+    return new;
+  end if;
+
   v_index := public.norm_index(new.raw_user_meta_data->>'index_no');
   if v_index = '' or lower(new.email) <> public.student_email(v_index) then
     raise exception 'Only students on a class list can create an account.';
@@ -333,6 +408,15 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- Used by the teaching assistant sign-up page.
+create or replace function public.check_staff_email(p_email text) returns text
+language sql stable security definer set search_path = public as $$
+  select case
+    when not exists (select 1 from public.course_staff where email = lower(trim(coalesce(p_email, '')))) then 'not_found'
+    when exists (select 1 from public.course_staff where email = lower(trim(p_email)) and user_id is not null) then 'active'
+    else 'ok' end;
+$$;
 
 -- Used by the "Activate account" page before signing up.
 create or replace function public.check_index(p_index text) returns text
@@ -579,16 +663,22 @@ create or replace function public.quiz_window_for(p_quiz uuid, p_uid uuid)
 returns table (allowed boolean, opens_at timestamptz, closes_at timestamptz)
 language sql stable security definer set search_path = public as $$
   with st as (
-    select r.stream from public.roster r join public.profiles p on p.index_no = r.index_no where p.id = p_uid
+    select r.index_no, r.stream from public.roster r join public.profiles p on p.index_no = r.index_no where p.id = p_uid
+  ), acc as (
+    select x.* from public.quiz_access x, st where x.quiz_id = p_quiz and x.index_no = st.index_no
   ), mine as (
     select w.* from public.quiz_windows w, st
      where w.quiz_id = p_quiz and lower(trim(w.stream)) = lower(trim(st.stream))
-  ), n as (select count(*) as c from public.quiz_windows where quiz_id = p_quiz)
-  select case when n.c = 0 then true else exists (select 1 from mine) end,
-         case when n.c = 0 then q.opens_at  else (select m.opens_at  from mine m limit 1) end,
-         case when n.c = 0 then q.closes_at else (select m.closes_at from mine m limit 1) end
-    from public.quizzes q, n
-   where q.id = p_quiz;
+  ), n as (select count(*) as c from public.quiz_windows where quiz_id = p_quiz),
+  base as (
+    select case when q.restricted then false when n.c = 0 then true else exists (select 1 from mine) end as allowed,
+           case when n.c = 0 then q.opens_at  else (select m.opens_at  from mine m limit 1) end as opens_at,
+           case when n.c = 0 then q.closes_at else (select m.closes_at from mine m limit 1) end as closes_at
+      from public.quizzes q, n where q.id = p_quiz)
+  select case when exists (select 1 from acc) then true else b.allowed end,
+         case when exists (select 1 from acc) then coalesce((select a.opens_at from acc a), b.opens_at) else b.opens_at end,
+         case when exists (select 1 from acc) then coalesce((select a.closes_at from acc a), b.closes_at) else b.closes_at end
+    from base b;
 $$;
 
 create or replace function public.start_attempt(p_quiz uuid) returns uuid
@@ -608,7 +698,7 @@ begin
   end if;
   select * into w from public.quiz_window_for(p_quiz, auth.uid());
   if not w.allowed then
-    raise exception 'This quiz is not open to your stream.';
+    raise exception 'This quiz is not open to you.';
   end if;
 
   select * into a from public.attempts
@@ -627,7 +717,8 @@ begin
   end if;
 
   select count(*) into n from public.attempts where quiz_id = p_quiz and student_id = auth.uid();
-  if not qz.is_practice and n >= qz.max_attempts then
+  if not qz.is_practice and n >= qz.max_attempts + coalesce((select x.extra_attempts from public.quiz_access x
+                                                              where x.quiz_id = p_quiz and x.index_no = public.my_index()), 0) then
     raise exception 'You have used all your attempts for this quiz.';
   end if;
 
@@ -794,7 +885,9 @@ begin
   select coalesce(jsonb_agg(jsonb_build_object(
            'id', q.id, 'title', q.title, 'instructions', q.instructions,
            'opens_at', w.opens_at, 'closes_at', w.closes_at,
-           'duration_minutes', q.duration_minutes, 'max_attempts', q.max_attempts,
+           'duration_minutes', q.duration_minutes,
+           'max_attempts', q.max_attempts + coalesce((select x.extra_attempts from public.quiz_access x
+                                                      where x.quiz_id = q.id and x.index_no = public.my_index()), 0),
            'is_practice', q.is_practice, 'lockdown', q.lockdown, 'max_exits', q.max_exits,
            'no_backtrack', q.no_backtrack,
            'question_count', least((select count(*) from public.questions x where x.quiz_id = q.id),
@@ -952,6 +1045,16 @@ begin
 end;
 $$;
 
+-- Lecturer, or a teaching assistant on this course.
+create or replace function public.require_staff(p_course uuid) returns void
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if p_course is null or not public.is_staff(p_course) then
+    raise exception 'You do not have access to this course.';
+  end if;
+end;
+$$;
+
 -- Add or update students on a course from a class list.
 -- p_rows: [{"index_no":"4021180","full_name":"Kofi Mensah"}, ...]
 create or replace function public.import_roster(p_course uuid, p_rows jsonb) returns jsonb
@@ -992,7 +1095,7 @@ $$;
 create or replace function public.course_groups(p_course uuid) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 begin
-  perform public.require_lecturer();
+  perform public.require_staff(p_course);
   return jsonb_build_object(
     'programmes', coalesce((select jsonb_agg(distinct r.programme order by r.programme) from public.enrollments e
                               join public.roster r on r.index_no = e.index_no
@@ -1090,7 +1193,7 @@ create or replace function public.course_students(p_course uuid)
 returns table (index_no text, full_name text, programme text, stream text, activated boolean, last_sign_in timestamptz)
 language plpgsql stable security definer set search_path = public, auth as $$
 begin
-  perform public.require_lecturer();
+  perform public.require_staff(p_course);
   return query
     select r.index_no, r.full_name, r.programme, r.stream, p.id is not null, u.last_sign_in_at
       from public.enrollments e
@@ -1106,7 +1209,9 @@ create or replace function public.reset_student_password(p_index text, p_passwor
 language plpgsql security definer set search_path = public, extensions, auth as $$
 declare v_id uuid;
 begin
-  perform public.require_lecturer();
+  if not (public.is_lecturer() or public.ta_sees_index(public.norm_index(p_index))) then
+    raise exception 'Only the lecturer or the course TA can do this.';
+  end if;
   if length(coalesce(p_password, '')) < 6 then raise exception 'Password must be at least 6 characters.'; end if;
   select id into v_id from public.profiles where index_no = public.norm_index(p_index);
   if v_id is null then raise exception 'That student has not activated an account yet.'; end if;
@@ -1121,7 +1226,7 @@ create or replace function public.finalize_expired(p_quiz uuid) returns int
 language plpgsql security definer set search_path = public as $$
 declare n int := 0; a record;
 begin
-  perform public.require_lecturer();
+  perform public.require_staff((select course_id from public.quizzes where id = p_quiz));
   for a in select id from public.attempts
             where quiz_id = p_quiz and status = 'in_progress' and deadline_at < now() loop
     perform public.finalize_attempt(a.id);
@@ -1137,13 +1242,13 @@ create or replace function public.quiz_gradebook(p_quiz uuid)
 returns table (index_no text, full_name text, programme text, stream text, student_id uuid, attempt_id uuid,
                attempts_used int, status text, score numeric, max_score numeric, auto_score numeric,
                manual_score numeric, started_at timestamptz, submitted_at timestamptz, minutes_used numeric,
-               exits int, exit_log jsonb, devices int)
+               exits int, exit_log jsonb, devices int, special boolean)
 language plpgsql security definer set search_path = public as $$
 declare v_course uuid;
 begin
-  perform public.require_lecturer();
-  perform public.finalize_expired(p_quiz);
   select course_id into v_course from public.quizzes where id = p_quiz;
+  perform public.require_staff(v_course);
+  perform public.finalize_expired(p_quiz);
   return query
     select r.index_no, r.full_name, r.programme, r.stream, p.id,
            b.id, (select count(*)::int from public.attempts x where x.quiz_id = p_quiz and x.student_id = p.id),
@@ -1157,7 +1262,8 @@ begin
              where rr.attempt_id = b.id and qq.kind = 'essay'),
            b.started_at, b.submitted_at,
            round((extract(epoch from (b.submitted_at - b.started_at)) / 60)::numeric, 1),
-           coalesce(b.exits, 0), coalesce(b.exit_log, '[]'::jsonb), coalesce(cardinality(b.devices), 0)
+           coalesce(b.exits, 0), coalesce(b.exit_log, '[]'::jsonb), coalesce(cardinality(b.devices), 0),
+           exists (select 1 from public.quiz_access x where x.quiz_id = p_quiz and x.index_no = r.index_no)
       from public.enrollments e
       join public.roster r on r.index_no = e.index_no
       left join public.profiles p on p.index_no = r.index_no
@@ -1167,10 +1273,7 @@ begin
          order by (a.status = 'in_progress'), a.score desc nulls last, a.submitted_at desc
          limit 1) b on true
      where e.course_id = v_course
-       and (b.id is not null
-            or not exists (select 1 from public.quiz_windows w where w.quiz_id = p_quiz)
-            or exists (select 1 from public.quiz_windows w
-                        where w.quiz_id = p_quiz and lower(trim(w.stream)) = lower(trim(r.stream))))
+       and (b.id is not null or public.quiz_open_to(p_quiz, r.index_no, r.stream))
      order by r.full_name, r.index_no;
 end;
 $$;
@@ -1182,7 +1285,7 @@ returns table (response_id uuid, attempt_id uuid, index_no text, full_name text,
                marks_awarded numeric, feedback text)
 language plpgsql stable security definer set search_path = public as $$
 begin
-  perform public.require_lecturer();
+  perform public.require_staff((select course_id from public.quizzes where id = p_quiz));
   return query
     select rr.id, a.id, p.index_no, p.full_name, q.id, q.prompt, q.marks,
            coalesce(rr.value #>> '{}', ''), q.explanation, rr.marks_awarded, rr.feedback
@@ -1200,19 +1303,40 @@ returns void
 language plpgsql security definer set search_path = public as $$
 declare v_max numeric; v_attempt uuid;
 begin
-  perform public.require_lecturer();
   select q.marks, r.attempt_id into v_max, v_attempt
     from public.responses r join public.questions q on q.id = r.question_id
    where r.id = p_response;
   if v_attempt is null then raise exception 'Answer not found.'; end if;
+  perform public.require_staff((select qz.course_id from public.attempts a join public.quizzes qz on qz.id = a.quiz_id
+                                 where a.id = v_attempt));
   if p_marks is null or p_marks < 0 or p_marks > v_max then
     raise exception 'Marks must be between 0 and %.', v_max;
   end if;
   update public.responses
      set marks_awarded = p_marks, feedback = nullif(trim(coalesce(p_feedback, '')), ''),
-         is_correct = (p_marks = v_max)
+         is_correct = (p_marks = v_max), marked_by = auth.uid()
    where id = p_response;
   perform public.recalc_attempt(v_attempt);
+end;
+$$;
+
+-- Marks and feedback for one assignment submission (lecturer or TA).
+create or replace function public.mark_submission(p_submission uuid, p_marks numeric, p_feedback text) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_course uuid; v_max numeric;
+begin
+  select x.course_id, x.max_marks into v_course, v_max
+    from public.submissions s join public.assignments x on x.id = s.assignment_id where s.id = p_submission;
+  if v_course is null then raise exception 'Submission not found.'; end if;
+  perform public.require_staff(v_course);
+  if p_marks is not null and (p_marks < 0 or p_marks > v_max) then
+    raise exception 'Marks must be between 0 and %.', v_max;
+  end if;
+  update public.submissions
+     set marks = p_marks, feedback = coalesce(p_feedback, ''),
+         marked_at = case when p_marks is null then null else now() end,
+         marked_by = case when p_marks is null then null else auth.uid() end
+   where id = p_submission;
 end;
 $$;
 
@@ -1235,7 +1359,7 @@ create or replace function public.lecturer_overview() returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare r jsonb;
 begin
-  perform public.require_lecturer();
+  if not (public.is_lecturer() or public.is_ta_user()) then raise exception 'Staff only.'; end if;
   select coalesce(jsonb_agg(jsonb_build_object(
            'id', c.id, 'code', c.code, 'title', c.title, 'color', c.color, 'semester', c.semester,
            'archived', c.archived,
@@ -1254,7 +1378,7 @@ begin
                          join public.assignments x on x.id = s.assignment_id
                         where x.course_id = c.id and s.marks is null))
          order by c.archived, c.code), '[]'::jsonb)
-    into r from public.courses c;
+    into r from public.courses c where public.is_staff(c.id);
   return r;
 end;
 $$;
@@ -1282,7 +1406,7 @@ begin
     'my_upcoming()', 'import_roster(uuid, jsonb)', 'course_students(uuid)',
     'reset_student_password(text, text)', 'finalize_expired(uuid)', 'quiz_gradebook(uuid)',
     'marking_queue(uuid)', 'mark_response(uuid, numeric, text)', 'test_formula(text, jsonb)',
-    'lecturer_overview()', 'require_lecturer()']
+    'lecturer_overview()', 'require_lecturer()', 'require_staff(uuid)']
   loop
     execute format('revoke execute on function public.%s from public, anon', f);
     execute format('grant execute on function public.%s to authenticated', f);
@@ -1313,6 +1437,7 @@ on conflict (id) do update
 drop policy if exists "materials read" on storage.objects;
 create policy "materials read" on storage.objects for select to authenticated
   using (bucket_id = 'materials' and (public.is_lecturer()
+         or public.is_ta(public.try_uuid((storage.foldername(name))[1]))
          or public.is_enrolled(public.try_uuid((storage.foldername(name))[1]))));
 
 drop policy if exists "materials write" on storage.objects;
@@ -1343,7 +1468,9 @@ create policy "submissions replace" on storage.objects for update to authenticat
 drop policy if exists "submissions read" on storage.objects;
 create policy "submissions read" on storage.objects for select to authenticated
   using (bucket_id = 'submissions'
-         and (public.is_lecturer() or (storage.foldername(name))[2] = auth.uid()::text));
+         and (public.is_lecturer() or (storage.foldername(name))[2] = auth.uid()::text
+              or public.is_ta((select course_id from public.assignments
+                                where id = public.try_uuid((storage.foldername(name))[1])))));
 
 drop policy if exists "submissions delete" on storage.objects;
 create policy "submissions delete" on storage.objects for delete to authenticated
@@ -1380,6 +1507,17 @@ create table if not exists public.attendance (
   method     text not null default 'code' check (method in ('code', 'manual')),
   primary key (session_id, index_no)
 );
+
+-- Version 5: seat row, phone and review status for each check-in
+alter table public.attendance_sessions add column if not exists ask_row     boolean not null default true;
+alter table public.attendance_sessions add column if not exists head_counts jsonb   not null default '{}'::jsonb;
+alter table public.attendance add column if not exists row_no      int;
+alter table public.attendance add column if not exists device      text;
+alter table public.attendance add column if not exists status      text not null default 'ok';
+alter table public.attendance add column if not exists note        text not null default '';
+alter table public.attendance add column if not exists reviewed_by uuid references public.profiles on delete set null;
+alter table public.attendance drop constraint if exists attendance_status_check;
+alter table public.attendance add constraint attendance_status_check check (status in ('ok', 'review', 'rejected'));
 
 create table if not exists public.attendance_failures (
   id         bigserial primary key,
@@ -1457,15 +1595,18 @@ language sql immutable as $$
       or lower(trim(coalesce(p_stream, ''))) in (select lower(trim(x)) from unnest(p_streams) x);
 $$;
 
-create or replace function public.start_attendance(p_course uuid, p_title text, p_streams text[], p_minutes int)
+drop function if exists public.start_attendance(uuid, text, text[], int);
+create or replace function public.start_attendance(p_course uuid, p_title text, p_streams text[], p_minutes int,
+                                                   p_ask_row boolean default true)
 returns uuid
 language plpgsql security definer set search_path = public as $$
 declare v uuid;
 begin
-  perform public.require_lecturer();
-  insert into public.attendance_sessions (course_id, title, streams, closes_at)
+  perform public.require_staff(p_course);
+  insert into public.attendance_sessions (course_id, title, streams, closes_at, ask_row)
   values (p_course, coalesce(nullif(trim(p_title), ''), to_char(now(), 'Dy DD Mon, HH24:MI')),
-          coalesce(p_streams, '{}'), now() + make_interval(mins => greatest(1, least(coalesce(p_minutes, 10), 240))))
+          coalesce(p_streams, '{}'), now() + make_interval(mins => greatest(1, least(coalesce(p_minutes, 10), 240))),
+          coalesce(p_ask_row, true))
   returning id into v;
   return v;
 end;
@@ -1473,20 +1614,25 @@ $$;
 
 create or replace function public.attendance_live(p_session uuid) returns jsonb
 language plpgsql security definer set search_path = public as $$
-declare s public.attendance_sessions; v_slot bigint := public.attendance_slot(); v_expected int; v_count int;
+declare s public.attendance_sessions; v_slot bigint := public.attendance_slot(); v_expected int; v_count int; v_review int;
 begin
-  perform public.require_lecturer();
   select * into s from public.attendance_sessions where id = p_session;
   if not found then raise exception 'Session not found.'; end if;
-  select count(*) into v_count from public.attendance where session_id = p_session;
+  perform public.require_staff(s.course_id);
+  select count(*) filter (where status <> 'rejected'), count(*) filter (where status = 'review')
+    into v_count, v_review from public.attendance where session_id = p_session;
   select count(*) into v_expected from public.enrollments e join public.roster r on r.index_no = e.index_no
    where e.course_id = s.course_id and public.stream_in(r.stream, s.streams);
   return jsonb_build_object(
     'open', now() between s.opens_at and s.closes_at,
     'code', case when now() between s.opens_at and s.closes_at then public.attendance_code(s.secret, v_slot) end,
     'seconds_left', 30 - (floor(extract(epoch from now()))::bigint % 30),
-    'closes_at', s.closes_at, 'count', v_count, 'expected', v_expected, 'title', s.title, 'streams', s.streams,
-    'server_now', now());
+    'closes_at', s.closes_at, 'count', v_count, 'review', v_review, 'expected', v_expected,
+    'title', s.title, 'streams', s.streams, 'ask_row', s.ask_row, 'server_now', now(),
+    'rows', coalesce((select jsonb_object_agg(x.row_no::text, x.n) from (
+               select row_no, count(*) as n from public.attendance
+                where session_id = p_session and status <> 'rejected' and row_no is not null
+                group by row_no) x), '{}'::jsonb));
 end;
 $$;
 
@@ -1494,7 +1640,7 @@ create or replace function public.extend_attendance(p_session uuid, p_minutes in
 language plpgsql security definer set search_path = public as $$
 declare v timestamptz;
 begin
-  perform public.require_lecturer();
+  perform public.require_staff((select course_id from public.attendance_sessions where id = p_session));
   update public.attendance_sessions
      set closes_at = case when p_minutes <= 0 then now() else greatest(closes_at, now()) + make_interval(mins => p_minutes) end
    where id = p_session returning closes_at into v;
@@ -1502,10 +1648,14 @@ begin
 end;
 $$;
 
-create or replace function public.check_in(p_course uuid, p_code text) returns jsonb
+drop function if exists public.check_in(uuid, text);
+create or replace function public.check_in(p_course uuid, p_code text, p_row int default null, p_device text default null)
+returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare v_idx text; v_stream text; v_slot bigint := public.attendance_slot(); s public.attendance_sessions; v_fails int;
         v_code text := regexp_replace(coalesce(p_code, ''), '\D', '', 'g');
+        v_dev text := left(nullif(trim(coalesce(p_device, '')), ''), 100);
+        v_asks boolean;
 begin
   if not public.is_enrolled(p_course) then raise exception 'You are not on this course.'; end if;
   select r.index_no, r.stream into v_idx, v_stream
@@ -1516,21 +1666,36 @@ begin
     return jsonb_build_object('ok', false, 'message', 'Too many wrong codes. Wait a few minutes and try again.');
   end if;
 
+  select bool_or(x.ask_row) into v_asks from public.attendance_sessions x
+   where x.course_id = p_course and now() between x.opens_at and x.closes_at and public.stream_in(v_stream, x.streams);
+  if v_asks is null then
+    return jsonb_build_object('ok', false, 'message', 'Attendance is not open for you right now.');
+  end if;
+
   select * into s from public.attendance_sessions x
    where x.course_id = p_course and now() between x.opens_at and x.closes_at
      and public.stream_in(v_stream, x.streams)
      and v_code in (public.attendance_code(x.secret, v_slot), public.attendance_code(x.secret, v_slot - 1))
    order by x.opens_at desc limit 1;
   if not found then
-    if not exists (select 1 from public.attendance_sessions x where x.course_id = p_course
-                    and now() between x.opens_at and x.closes_at and public.stream_in(v_stream, x.streams)) then
-      return jsonb_build_object('ok', false, 'message', 'Attendance is not open for you right now.');
-    end if;
     -- recorded (not raised) so the failed try counts towards the limit
     insert into public.attendance_failures (student_id, course_id) values (auth.uid(), p_course);
     return jsonb_build_object('ok', false, 'message', 'That code is wrong or has expired. Check the screen and type the current code.');
   end if;
-  insert into public.attendance (session_id, index_no) values (s.id, v_idx) on conflict do nothing;
+  if s.ask_row and (p_row is null or p_row < 1 or p_row > 200) then
+    return jsonb_build_object('ok', false, 'need_row', true, 'message', 'Enter the number of the row you are sitting in.');
+  end if;
+
+  insert into public.attendance (session_id, index_no, row_no, device)
+  values (s.id, v_idx, case when s.ask_row then p_row end, v_dev)
+  on conflict do nothing;
+
+  -- one phone checking in more than one student: hold all of them for review
+  if v_dev is not null and exists (select 1 from public.attendance a where a.session_id = s.id
+                                       and a.device = v_dev and a.index_no <> v_idx) then
+    update public.attendance set status = 'review', note = 'Same phone as another check-in'
+     where session_id = s.id and device = v_dev and status = 'ok';
+  end if;
   return jsonb_build_object('ok', true, 'session', s.title, 'at', now());
 end;
 $$;
@@ -1538,7 +1703,8 @@ $$;
 create or replace function public.my_open_attendance() returns jsonb
 language sql stable security definer set search_path = public as $$
   select coalesce(jsonb_agg(jsonb_build_object('session_id', s.id, 'course_id', c.id, 'course_code', c.code,
-                                               'title', s.title, 'closes_at', s.closes_at) order by s.closes_at), '[]'::jsonb)
+                                               'title', s.title, 'closes_at', s.closes_at,
+                                               'ask_row', s.ask_row) order by s.closes_at), '[]'::jsonb)
     from public.attendance_sessions s
     join public.courses c on c.id = s.course_id
     join public.profiles p on p.id = auth.uid()
@@ -1552,16 +1718,18 @@ create or replace function public.my_attendance(p_course uuid) returns jsonb
 language sql stable security definer set search_path = public as $$
   with me as (select r.index_no, r.stream from public.profiles p join public.roster r on r.index_no = p.index_no where p.id = auth.uid()),
   ss as (
-    select s.id, s.title, s.opens_at, s.closes_at,
-           exists (select 1 from public.attendance a, me where a.session_id = s.id and a.index_no = me.index_no) as present
+    select s.id, s.title, s.opens_at, s.closes_at, s.ask_row,
+           (select a.status from public.attendance a, me where a.session_id = s.id and a.index_no = me.index_no) as status
       from public.attendance_sessions s, me
      where s.course_id = p_course and s.opens_at <= now() and public.stream_in(me.stream, s.streams)
-       and public.is_enrolled(p_course))
+       and public.is_enrolled(p_course)),
+  ss2 as (select ss.*, coalesce(ss.status = 'ok', false) as present from ss)
   select jsonb_build_object(
-    'sessions', coalesce((select jsonb_agg(to_jsonb(ss) order by ss.opens_at desc) from ss), '[]'::jsonb),
-    'attended', (select count(*) from ss where present),
-    'total', (select count(*) from ss),
-    'open_now', exists (select 1 from ss where now() between ss.opens_at and ss.closes_at and not ss.present));
+    'sessions', coalesce((select jsonb_agg(to_jsonb(ss2) order by ss2.opens_at desc) from ss2), '[]'::jsonb),
+    'attended', (select count(*) from ss2 where present),
+    'total', (select count(*) from ss2),
+    'open_now', exists (select 1 from ss2 where now() between ss2.opens_at and ss2.closes_at and ss2.status is null),
+    'ask_row', coalesce((select bool_or(ss2.ask_row) from ss2 where now() between ss2.opens_at and ss2.closes_at), false));
 $$;
 
 create or replace function public.course_attendance(p_course uuid)
@@ -1569,15 +1737,15 @@ returns table (index_no text, full_name text, programme text, stream text, atten
 language plpgsql stable security definer set search_path = public as $$
 #variable_conflict use_column
 begin
-  perform public.require_lecturer();
+  perform public.require_staff(p_course);
   return query
     select r.index_no, r.full_name, r.programme, r.stream,
            (select count(*)::int from public.attendance a join public.attendance_sessions s on s.id = a.session_id
-             where s.course_id = p_course and a.index_no = r.index_no),
+             where s.course_id = p_course and a.index_no = r.index_no and a.status = 'ok'),
            (select count(*)::int from public.attendance_sessions s
              where s.course_id = p_course and s.opens_at <= now() and public.stream_in(r.stream, s.streams)),
            coalesce((select array_agg(a.session_id) from public.attendance a join public.attendance_sessions s on s.id = a.session_id
-                      where s.course_id = p_course and a.index_no = r.index_no), '{}')
+                      where s.course_id = p_course and a.index_no = r.index_no and a.status = 'ok'), '{}')
       from public.enrollments e join public.roster r on r.index_no = e.index_no
      where e.course_id = p_course
      order by r.full_name, r.index_no;
@@ -1587,13 +1755,93 @@ $$;
 create or replace function public.set_attendance(p_session uuid, p_index text, p_present boolean) returns void
 language plpgsql security definer set search_path = public as $$
 begin
-  perform public.require_lecturer();
+  perform public.require_staff((select course_id from public.attendance_sessions where id = p_session));
   if p_present then
-    insert into public.attendance (session_id, index_no, method) values (p_session, public.norm_index(p_index), 'manual')
-    on conflict do nothing;
+    insert into public.attendance (session_id, index_no, method, reviewed_by)
+    values (p_session, public.norm_index(p_index), 'manual', auth.uid())
+    on conflict (session_id, index_no) do update set status = 'ok', note = 'Marked present by hand', reviewed_by = auth.uid();
   else
     delete from public.attendance where session_id = p_session and index_no = public.norm_index(p_index);
   end if;
+end;
+$$;
+
+-- Sessions list with counts (lecturer and TA).
+create or replace function public.course_attendance_sessions(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public.require_staff(p_course);
+  return coalesce((select jsonb_agg(jsonb_build_object(
+      'id', s.id, 'title', s.title, 'streams', s.streams, 'opens_at', s.opens_at, 'closes_at', s.closes_at,
+      'ask_row', s.ask_row,
+      'present', (select count(*) from public.attendance a where a.session_id = s.id and a.status = 'ok'),
+      'review', (select count(*) from public.attendance a where a.session_id = s.id and a.status = 'review'),
+      'rejected', (select count(*) from public.attendance a where a.session_id = s.id and a.status = 'rejected'))
+    order by s.opens_at desc) from public.attendance_sessions s where s.course_id = p_course), '[]'::jsonb);
+end;
+$$;
+
+-- Everything needed to check one session: rows, head counts, flagged check-ins.
+create or replace function public.attendance_session_detail(p_session uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare s public.attendance_sessions;
+begin
+  select * into s from public.attendance_sessions where id = p_session;
+  if not found then raise exception 'Session not found.'; end if;
+  perform public.require_staff(s.course_id);
+  return jsonb_build_object(
+    'id', s.id, 'title', s.title, 'opens_at', s.opens_at, 'closes_at', s.closes_at, 'ask_row', s.ask_row,
+    'open', now() between s.opens_at and s.closes_at, 'head_counts', s.head_counts,
+    'checkins', coalesce((select jsonb_agg(jsonb_build_object(
+        'index_no', a.index_no, 'full_name', r.full_name, 'stream', r.stream, 'row_no', a.row_no,
+        'status', a.status, 'note', a.note, 'method', a.method, 'checked_at', a.checked_at,
+        'phone', case when a.device is null then null else upper(left(md5(a.device), 4)) end,
+        'shared_phone', a.device is not null and exists (select 1 from public.attendance b where b.session_id = a.session_id
+                                                           and b.device = a.device and b.index_no <> a.index_no))
+      order by a.row_no nulls last, r.full_name)
+      from public.attendance a join public.roster r on r.index_no = a.index_no
+     where a.session_id = p_session), '[]'::jsonb));
+end;
+$$;
+
+-- Five (or n) random students who checked in, for a stand-up spot check.
+create or replace function public.attendance_spot(p_session uuid, p_n int default 5) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public.require_staff((select course_id from public.attendance_sessions where id = p_session));
+  return coalesce((select jsonb_agg(jsonb_build_object('index_no', x.index_no, 'full_name', x.full_name, 'row_no', x.row_no))
+    from (select a.index_no, r.full_name, a.row_no from public.attendance a join public.roster r on r.index_no = a.index_no
+           where a.session_id = p_session and a.status <> 'rejected'
+           order by random() limit greatest(1, least(coalesce(p_n, 5), 20))) x), '[]'::jsonb);
+end;
+$$;
+
+-- Accept or reject check-ins after checking.
+create or replace function public.attendance_review(p_session uuid, p_indexes text[], p_status text, p_note text default '')
+returns int
+language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  perform public.require_staff((select course_id from public.attendance_sessions where id = p_session));
+  if p_status not in ('ok', 'review', 'rejected') then raise exception 'Unknown status.'; end if;
+  update public.attendance set status = p_status, note = left(coalesce(p_note, ''), 200), reviewed_by = auth.uid()
+   where session_id = p_session and index_no = any(p_indexes);
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+
+-- The head count you or your TA took for one row (null clears it).
+create or replace function public.attendance_head_count(p_session uuid, p_row int, p_count int) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v jsonb;
+begin
+  perform public.require_staff((select course_id from public.attendance_sessions where id = p_session));
+  update public.attendance_sessions
+     set head_counts = case when p_count is null or p_count < 0 then head_counts - p_row::text
+                            else head_counts || jsonb_build_object(p_row::text, p_count) end
+   where id = p_session returning head_counts into v;
+  return v;
 end;
 $$;
 
@@ -1619,9 +1867,7 @@ begin
                            and (cardinality(c.item_ids) = 0 or q.id = any(c.item_ids))
       cross join st
      where c.kind = 'quizzes'
-       and (not exists (select 1 from public.quiz_windows w where w.quiz_id = q.id)
-            or exists (select 1 from public.quiz_windows w where w.quiz_id = q.id
-                        and lower(trim(w.stream)) = lower(trim(st.stream))))
+       and public.quiz_open_to(q.id, st.index_no, st.stream)
     union all
     select c.id, st.index_no,
            coalesce((select s.marks / x.max_marks * 100 from public.submissions s
@@ -1637,7 +1883,7 @@ begin
       cross join lateral (
         select count(*) as n, count(a.index_no) as att
           from public.attendance_sessions s
-          left join public.attendance a on a.session_id = s.id and a.index_no = st.index_no
+          left join public.attendance a on a.session_id = s.id and a.index_no = st.index_no and a.status = 'ok'
          where s.course_id = p_course and s.opens_at <= now() and public.stream_in(st.stream, s.streams)) ap
      where c.kind = 'attendance'
     union all
@@ -1841,7 +2087,7 @@ returns table (index_no text, full_name text, programme text, stream text, last_
 language plpgsql stable security definer set search_path = public, auth as $$
 #variable_conflict use_column
 begin
-  perform public.require_lecturer();
+  perform public.require_staff(p_course);
   return query
   with st as (
     select r.index_no, r.full_name, r.programme, r.stream, p.id as uid, u.last_sign_in_at
@@ -1862,7 +2108,7 @@ begin
         where q.course_id = p_course and not q.is_practice and a.student_id = st.uid and a.status <> 'in_progress') as avg_pct,
       (select case when count(*) >= 3 then round(count(at.index_no) * 100.0 / count(*), 0) end
          from public.attendance_sessions s
-         left join public.attendance at on at.session_id = s.id and at.index_no = st.index_no
+         left join public.attendance at on at.session_id = s.id and at.index_no = st.index_no and at.status = 'ok'
         where s.course_id = p_course and s.opens_at <= now() and public.stream_in(st.stream, s.streams)) as att
     from st)
   select m.index_no, m.full_name, m.programme, m.stream, m.last_sign_in_at, m.missed, m.avg_pct, m.att,
@@ -1884,23 +2130,43 @@ $$;
 -- ---------- Q&A board ----------
 create or replace function public.forum_list(p_course uuid) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
-declare v_lect boolean := public.is_lecturer();
+declare v_lect boolean := public.is_lecturer(); v_staff boolean := public.is_staff(p_course);
 begin
-  if not (v_lect or public.is_enrolled(p_course)) then raise exception 'Not available.'; end if;
+  if not (v_staff or public.is_enrolled(p_course)) then raise exception 'Not available.'; end if;
   return coalesce((
     select jsonb_agg(jsonb_build_object(
              'id', f.id, 'body', f.body, 'created_at', f.created_at, 'answer', f.answer, 'answered_at', f.answered_at,
              'hidden', f.hidden, 'anonymous', f.anonymous,
              'author', case when v_lect or not f.anonymous or f.author_id = auth.uid()
                             then coalesce(p.full_name, 'Former student') else null end,
-             'author_index', case when v_lect then p.index_no end,
+             'author_index', case when v_lect or (v_staff and not f.anonymous) then p.index_no end,
              'mine', f.author_id = auth.uid(),
              'votes', (select count(*) from public.forum_votes v where v.post_id = f.id),
              'voted', exists (select 1 from public.forum_votes v where v.post_id = f.id and v.student_id = auth.uid()))
            order by f.created_at desc)
       from public.forum_posts f
       left join public.profiles p on p.id = f.author_id
-     where f.course_id = p_course and (v_lect or not f.hidden or f.author_id = auth.uid())), '[]'::jsonb);
+     where f.course_id = p_course and (v_staff or not f.hidden or f.author_id = auth.uid())), '[]'::jsonb);
+end;
+$$;
+
+-- Staff answer or hide a question.
+create or replace function public.forum_answer(p_post uuid, p_answer text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public.require_staff((select course_id from public.forum_posts where id = p_post));
+  update public.forum_posts
+     set answer = nullif(trim(coalesce(p_answer, '')), ''),
+         answered_at = case when nullif(trim(coalesce(p_answer, '')), '') is null then null else now() end
+   where id = p_post;
+end;
+$$;
+
+create or replace function public.forum_hide(p_post uuid, p_hidden boolean) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public.require_staff((select course_id from public.forum_posts where id = p_post));
+  update public.forum_posts set hidden = coalesce(p_hidden, true) where id = p_post;
 end;
 $$;
 
@@ -1949,12 +2215,15 @@ begin
   if auth.uid() is null or coalesce(p_path, '') like '%..%' or cardinality(parts) < 2 then return false; end if;
   if p_bucket = 'materials' then
     if p_action = 'download' then
-      return public.is_lecturer() or public.is_enrolled(public.try_uuid(parts[1]));
+      return public.is_lecturer() or public.is_ta(public.try_uuid(parts[1])) or public.is_enrolled(public.try_uuid(parts[1]));
     end if;
     return public.is_lecturer();
   elsif p_bucket = 'submissions' then
     if cardinality(parts) < 3 then return false; end if;
-    if p_action = 'download' then return public.is_lecturer() or parts[2] = auth.uid()::text; end if;
+    if p_action = 'download' then
+      return public.is_lecturer() or parts[2] = auth.uid()::text
+          or public.is_ta((select course_id from public.assignments where id = public.try_uuid(parts[1])));
+    end if;
     if p_action = 'upload' then
       return parts[2] = auth.uid()::text and public.can_submit(public.try_uuid(parts[1]));
     end if;
@@ -1972,12 +2241,152 @@ do $$
 declare f text;
 begin
   foreach f in array array[
-    'start_attendance(uuid, text, text[], int)', 'attendance_live(uuid)', 'extend_attendance(uuid, int)',
-    'check_in(uuid, text)', 'my_open_attendance()', 'my_attendance(uuid)', 'course_attendance(uuid)',
+    'start_attendance(uuid, text, text[], int, boolean)', 'attendance_live(uuid)', 'extend_attendance(uuid, int)',
+    'check_in(uuid, text, int, text)', 'course_attendance_sessions(uuid)', 'attendance_session_detail(uuid)',
+    'attendance_spot(uuid, int)', 'attendance_review(uuid, text[], text, text)', 'attendance_head_count(uuid, int, int)',
+    'forum_answer(uuid, text)', 'forum_hide(uuid, boolean)', 'mark_submission(uuid, numeric, text)', 'my_open_attendance()', 'my_attendance(uuid)', 'course_attendance(uuid)',
     'set_attendance(uuid, text, boolean)', 'course_ca(uuid)', 'my_ca(uuid)', 'save_ca_scores(uuid, jsonb)',
     'quiz_item_analysis(uuid)', 'quiz_similar_answers(uuid, numeric)', 'quiz_figure_matches(uuid)',
     'course_at_risk(uuid)', 'forum_list(uuid)', 'forum_post(uuid, text, boolean)', 'forum_vote(uuid)',
     'forum_delete_own(uuid)', 'file_access(text, text, text)']
+  loop
+    execute format('revoke execute on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated', f);
+  end loop;
+end $$;
+
+-- =====================================================================
+-- 14. Version 5: special access to quizzes, teaching assistants
+-- =====================================================================
+alter table public.quiz_access  enable row level security;
+alter table public.course_staff enable row level security;
+do $$
+declare t text;
+begin
+  foreach t in array array['quiz_access', 'course_staff'] loop
+    execute format('drop policy if exists lecturer_all on public.%I', t);
+    execute format('create policy lecturer_all on public.%I for all to authenticated
+                    using (public.is_lecturer()) with check (public.is_lecturer())', t);
+  end loop;
+end $$;
+
+-- What a teaching assistant may read directly. Everything they may change
+-- goes through functions that check public.require_staff(course).
+drop policy if exists ta_own on public.course_staff;
+create policy ta_own on public.course_staff for select to authenticated using (user_id = auth.uid());
+drop policy if exists ta_courses on public.courses;
+create policy ta_courses on public.courses for select to authenticated using (public.is_ta(id));
+drop policy if exists ta_enrollments on public.enrollments;
+create policy ta_enrollments on public.enrollments for select to authenticated using (public.is_ta(course_id));
+drop policy if exists ta_roster on public.roster;
+create policy ta_roster on public.roster for select to authenticated using (public.ta_sees_index(index_no));
+drop policy if exists ta_profiles on public.profiles;
+create policy ta_profiles on public.profiles for select to authenticated
+  using (role = 'student' and public.ta_sees_index(index_no));
+drop policy if exists ta_groups on public.group_options;
+create policy ta_groups on public.group_options for select to authenticated using (public.is_ta_user());
+drop policy if exists ta_quizzes on public.quizzes;
+create policy ta_quizzes on public.quizzes for select to authenticated using (public.is_ta(course_id));
+drop policy if exists ta_quiz_access on public.quiz_access;
+create policy ta_quiz_access on public.quiz_access for select to authenticated
+  using (public.is_ta((select course_id from public.quizzes where id = quiz_id)));
+drop policy if exists ta_attempts on public.attempts;
+create policy ta_attempts on public.attempts for select to authenticated
+  using (public.is_ta((select course_id from public.quizzes where id = quiz_id)));
+drop policy if exists ta_assignments on public.assignments;
+create policy ta_assignments on public.assignments for select to authenticated using (public.is_ta(course_id));
+drop policy if exists ta_submissions on public.submissions;
+create policy ta_submissions on public.submissions for select to authenticated
+  using (public.is_ta((select course_id from public.assignments where id = assignment_id)));
+drop policy if exists ta_announcements on public.announcements;
+create policy ta_announcements on public.announcements for select to authenticated using (public.is_ta(course_id));
+drop policy if exists ta_announce on public.announcements;
+create policy ta_announce on public.announcements for insert to authenticated with check (public.is_ta(course_id));
+
+-- ---------- managing teaching assistants (lecturer only) ----------
+create or replace function public.course_staff_list(p_course uuid)
+returns table (email text, full_name text, activated boolean, last_sign_in timestamptz)
+language plpgsql stable security definer set search_path = public, auth as $$
+#variable_conflict use_column
+begin
+  perform public.require_lecturer();
+  return query
+    select s.email, coalesce(nullif(p.full_name, ''), s.full_name), s.user_id is not null, u.last_sign_in_at
+      from public.course_staff s
+      left join public.profiles p on p.id = s.user_id
+      left join auth.users u on u.id = s.user_id
+     where s.course_id = p_course
+     order by s.created_at;
+end;
+$$;
+
+create or replace function public.add_staff(p_course uuid, p_email text, p_name text) returns void
+language plpgsql security definer set search_path = public, auth as $$
+declare v_email text := lower(trim(coalesce(p_email, ''))); v_uid uuid; v_role text; v_base text;
+begin
+  perform public.require_lecturer();
+  if v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'Enter a valid email address.'; end if;
+  if v_email = lower((select value from public.app_settings where key = 'lecturer_email')) then
+    raise exception 'That is your own lecturer account.';
+  end if;
+  select value into v_base from public.app_settings where key = 'student_email_base';
+  if split_part(v_email, '@', 2) = lower(split_part(v_base, '@', 2))
+     and split_part(v_email, '@', 1) like lower(split_part(v_base, '@', 1)) || '+%' then
+    raise exception 'That is a student sign-in address. Use the TA''s own email.';
+  end if;
+  select u.id, p.role into v_uid, v_role from auth.users u left join public.profiles p on p.id = u.id
+   where lower(u.email) = v_email;
+  if v_uid is not null and coalesce(v_role, '') <> 'ta' then
+    raise exception 'That email already belongs to another account on this site.';
+  end if;
+  insert into public.course_staff (course_id, email, full_name, user_id)
+  values (p_course, v_email, trim(coalesce(p_name, '')), v_uid)
+  on conflict (course_id, email) do update set full_name = coalesce(nullif(excluded.full_name, ''), course_staff.full_name);
+end;
+$$;
+
+create or replace function public.remove_staff(p_course uuid, p_email text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public.require_lecturer();
+  delete from public.course_staff where course_id = p_course and email = lower(trim(p_email));
+end;
+$$;
+
+-- ---------- special access (lecturer only) ----------
+-- p_rows: [{"index_no":"...","opens_at":"...","closes_at":"...","extra_attempts":1,"note":"Sick"}]
+create or replace function public.save_quiz_access(p_quiz uuid, p_rows jsonb) returns int
+language plpgsql security definer set search_path = public as $$
+declare r jsonb; n int := 0; v_idx text; v_course uuid;
+begin
+  perform public.require_lecturer();
+  select course_id into v_course from public.quizzes where id = p_quiz;
+  for r in select * from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) loop
+    v_idx := public.norm_index(r->>'index_no');
+    if not exists (select 1 from public.enrollments where course_id = v_course and index_no = v_idx) then
+      raise exception 'Index number % is not on this course.', v_idx;
+    end if;
+    insert into public.quiz_access (quiz_id, index_no, opens_at, closes_at, extra_attempts, note)
+    values (p_quiz, v_idx, nullif(r->>'opens_at', '')::timestamptz, nullif(r->>'closes_at', '')::timestamptz,
+            greatest(0, least(coalesce((r->>'extra_attempts')::int, 0), 10)), left(coalesce(r->>'note', ''), 200))
+    on conflict (quiz_id, index_no) do update
+      set opens_at = excluded.opens_at, closes_at = excluded.closes_at,
+          extra_attempts = excluded.extra_attempts, note = excluded.note;
+    n := n + 1;
+  end loop;
+  return n;
+end;
+$$;
+
+grant execute on function public.check_staff_email(text) to anon, authenticated;
+revoke execute on function public.quiz_open_to(uuid, text, text) from public, anon;
+grant execute on function public.quiz_open_to(uuid, text, text) to authenticated;
+do $$
+declare f text;
+begin
+  foreach f in array array[
+    'course_staff_list(uuid)', 'add_staff(uuid, text, text)', 'remove_staff(uuid, text)',
+    'save_quiz_access(uuid, jsonb)', 'is_ta(uuid)', 'is_staff(uuid)', 'is_ta_user()', 'ta_sees_index(text)']
   loop
     execute format('revoke execute on function public.%s from public, anon', f);
     execute format('grant execute on function public.%s to authenticated', f);

@@ -6,7 +6,7 @@ import { Confirm, Empty, ErrorNote, Loading, useAction, useLoad } from './ui.jsx
 
 // Course Q&A board. Students post (anonymous to classmates by default) and upvote;
 // the lecturer answers, hides or deletes.
-export default function Forum({ course, lecturer }) {
+export default function Forum({ course, lecturer, canDelete = true }) {
   const { data, error, loading, reload, setData } = useLoad(() => rpc('forum_list', { p_course: course.id }), [course.id]);
   const [sort, setSort] = useState('top');
   const [show, setShow] = useState('all');
@@ -40,11 +40,11 @@ export default function Forum({ course, lecturer }) {
     setData((list) => list.map((x) => (x.id === p.id ? { ...x, voted: on, votes: x.votes + (on ? 1 : -1) } : x)));
   }
   async function saveAnswer(p) {
-    const ok = await act(() => run(supabase.from('forum_posts').update({ answer: answer.trim() || null, answered_at: answer.trim() ? new Date().toISOString() : null }).eq('id', p.id)), 'Answer saved.');
+    const ok = await act(() => rpc('forum_answer', { p_post: p.id, p_answer: answer }), 'Answer saved.');
     if (ok !== undefined) { setAnswering(null); reload(); }
   }
   async function hide(p) {
-    const ok = await act(() => run(supabase.from('forum_posts').update({ hidden: !p.hidden }).eq('id', p.id)), p.hidden ? 'Shown again.' : 'Hidden from students.');
+    const ok = await act(() => rpc('forum_hide', { p_post: p.id, p_hidden: !p.hidden }), p.hidden ? 'Shown again.' : 'Hidden from students.');
     if (ok !== undefined) reload();
   }
   async function remove() {
@@ -115,7 +115,7 @@ export default function Forum({ course, lecturer }) {
                 {lecturer && answering !== p.id && <button type="button" className="btn btn-sm btn-ghost" onClick={() => { setAnswering(p.id); setAnswer(p.answer || ''); }}>{p.answer ? 'Edit answer' : 'Answer'}</button>}
                 {lecturer && <button type="button" className="btn btn-sm btn-ghost" onClick={() => hide(p)}>{p.hidden ? 'Show' : 'Hide'}</button>}
                 {lecturer && p.answer && <button type="button" className="btn btn-sm btn-ghost" onClick={() => share(p)}>Share on WhatsApp</button>}
-                {(lecturer || (p.mine && !p.answer)) && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setRemoving(p)}>Delete</button>}
+                {((lecturer && canDelete) || (p.mine && !p.answer)) && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setRemoving(p)}>Delete</button>}
               </div>
             </div>
           </article>

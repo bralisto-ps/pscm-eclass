@@ -8,7 +8,7 @@ import { Topbar } from '../../components/Layout.jsx';
 import { Bar, ErrorNote, Field, Loading, Modal, Swatch, useAction, useLoad } from '../../components/ui.jsx';
 
 export default function Dashboard() {
-  const { profile } = useAuth();
+  const { profile, isTA } = useAuth();
   const { data, error, loading, reload } = useLoad(() => rpc('lecturer_overview'), []);
   const [creating, setCreating] = useState(false);
   const courses = (data || []).filter((c) => !c.archived);
@@ -20,10 +20,13 @@ export default function Dashboard() {
 
   return (
     <>
-      <Topbar title={`${greeting()}, ${(profile.full_name || '').split(' ').slice(-1)[0] || 'Lecturer'}`} sub="Lecturer dashboard">
-        <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
-          <Icon name="plus" /> New course
-        </button>
+      <Topbar title={`${greeting()}, ${(isTA ? (profile.full_name || '').split(' ')[0] : (profile.full_name || '').split(' ').slice(-1)[0]) || 'Lecturer'}`}
+        sub={isTA ? 'Teaching assistant' : 'Lecturer dashboard'}>
+        {!isTA && (
+          <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+            <Icon name="plus" /> New course
+          </button>
+        )}
       </Topbar>
       <div className="page stack-lg">
         {loading && <Loading />}
@@ -43,7 +46,12 @@ export default function Dashboard() {
               </div>
             </section>
 
-            {courses.length === 0 ? (
+            {courses.length === 0 && isTA ? (
+              <div className="card stack">
+                <h2>No courses yet</h2>
+                <p className="muted">The lecturer has not added you to a course yet, or has removed you. Courses you help with will appear here.</p>
+              </div>
+            ) : courses.length === 0 ? (
               <div className="card stack">
                 <h2>Get started in four steps</h2>
                 <ol className="stack-sm" style={{ margin: 0, paddingLeft: 20, lineHeight: 1.7 }}>
