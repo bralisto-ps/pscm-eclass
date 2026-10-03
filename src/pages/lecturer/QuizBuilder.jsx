@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { rpc, run, supabase } from '../../lib/supabase.js';
+import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
 import { fillVars, fmtNumber, fromLocalInput, toLocalInput } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
@@ -36,7 +36,8 @@ export default function QuizBuilder() {
     const { count } = await supabase.from('attempts').select('id', { count: 'exact', head: true }).eq('quiz_id', quizId);
     const windows = await run(supabase.from('quiz_windows').select('*').eq('quiz_id', quizId));
     const opts = await run(supabase.from('group_options').select('name').eq('kind', 'stream').order('name'));
-    const groups = { streams: opts.map((o) => o.name) };
+    const classes = quiz ? await rpcAll('course_classes', { p_course: quiz.course_id }) : [];
+    const groups = { streams: opts.map((o) => o.name), classes };
     return { quiz, questions, attempts: count || 0, windows, groups };
   }, [quizId]);
   const [editing, setEditing] = useState(null); // question id or 'new'
@@ -149,7 +150,7 @@ export default function QuizBuilder() {
           </main>
 
           <div className="stack" style={{ alignSelf: 'start' }}>
-            <Settings quiz={quiz} count={questions.length} windows={data.windows} streams={data.groups.streams} onSaved={(q) => setData((d) => ({ ...d, quiz: { ...d.quiz, ...q } }))} />
+            <Settings quiz={quiz} count={questions.length} windows={data.windows} streams={data.groups.streams} classes={data.groups.classes} onSaved={(q) => setData((d) => ({ ...d, quiz: { ...d.quiz, ...q } }))} />
             <SpecialAccess quiz={quiz} restricted={quiz.restricted} />
           </div>
         </div>
@@ -442,7 +443,10 @@ function QuestionEditor({ number, initial, quizId, isNew, onCancel, onSaved }) {
 }
 
 // ---------------- settings ----------------
-function Settings({ quiz, count, windows, streams, onSaved }) {
+const classKey = (programme, stream) => `${(programme || '').toLowerCase()}|${(stream || '').toLowerCase()}`;
+const classLabel = (c) => `${c.programme || 'No programme'} · ${c.stream || 'No stream'}`;
+
+function Settings({ quiz, count, windows, streams, classes, onSaved }) {
   const [act, busy] = useAction();
   const [f, setF] = useState(() => ({
     title: quiz.title, instructions: quiz.instructions, reference: quiz.reference,
@@ -452,14 +456,28 @@ function Settings({ quiz, count, windows, streams, onSaved }) {
     published: quiz.published, results_released: quiz.results_released, show_answers: quiz.show_answers,
     restricted: quiz.restricted, lockdown: quiz.lockdown, max_exits: quiz.max_exits ?? 0, no_backtrack: quiz.no_backtrack, pool_size: quiz.pool_size ?? '',
   }));
-  const [perStream, setPerStream] = useState(windows.length > 0);
+  const streamWins = windows.filter((w) => (w.programme ?? '*') === '*');
+  const classWins = windows.filter((w) => (w.programme ?? '*') !== '*');
+  // 'all' = same times for everyone, 'stream' = per stream, 'class' = per programme + stream
+  const [mode, setMode] = useState(classWins.length ? 'class' : streamWins.length ? 'stream' : 'all');
+  const perStream = mode === 'stream';
+  const setPerStream = (on) => setMode(on ? 'stream' : 'all');
   const [win, setWin] = useState(() => {
-    const names = [...new Set([...streams, ...windows.map((w) => w.stream)])];
+    const names = [...new Set([...streams, ...streamWins.map((w) => w.stream)])];
     return names.map((st) => {
-      const w = windows.find((x) => x.stream.toLowerCase() === st.toLowerCase());
-      return { stream: st, on: windows.length ? !!w : true, opens_at: toLocalInput(w?.opens_at), closes_at: toLocalInput(w?.closes_at) };
+      const w = streamWins.find((x) => x.stream.toLowerCase() === st.toLowerCase());
+      return { stream: st, on: streamWins.length ? !!w : true, opens_at: toLocalInput(w?.opens_at), closes_at: toLocalInput(w?.closes_at) };
     });
   });
+  const [cwin, setCwin] = useState(() => {
+    const list = [...classes];
+    classWins.forEach((w) => { if (!list.some((c) => classKey(c.programme, c.stream) === classKey(w.programme, w.stream))) list.push({ programme: w.programme, stream: w.stream, students: 0 }); });
+    return list.map((c) => {
+      const w = classWins.find((x) => classKey(x.programme, x.stream) === classKey(c.programme, c.stream));
+      return { ...c, on: classWins.length ? !!w : true, opens_at: toLocalInput(w?.opens_at), closes_at: toLocalInput(w?.closes_at) };
+    });
+  });
+  const setC = (i, k, v) => { setCwin(cwin.map((w, j) => (j === i ? { ...w, [k]: v } : w))); setDirty(true); };
   const [dirty, setDirty] = useState(false);
   const set = (k) => (e) => {
     setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
@@ -481,16 +499,20 @@ function Settings({ quiz, count, windows, streams, onSaved }) {
     }
     if (row.published && count === 0) throw new Error('Add at least one question before publishing.');
     if (row.pool_size && row.pool_size > count) throw new Error(`The question bank has only ${count} questions — the number per student cannot be more than that.`);
-    const chosen = perStream ? win.filter((w) => w.on) : [];
-    if (perStream && !chosen.length) throw new Error('Tick at least one stream, or choose "Same times for everyone".');
+    const chosen = mode === 'stream' ? win.filter((w) => w.on).map((w) => ({ ...w, programme: '*' }))
+      : mode === 'class' ? cwin.filter((w) => w.on) : [];
+    if (mode === 'stream' && !chosen.length) throw new Error('Tick at least one stream, or choose "Same times for everyone".');
+    if (mode === 'class' && !chosen.length) throw new Error('Tick at least one class, or choose "Same times for everyone".');
     for (const w of chosen) {
-      if (w.opens_at && w.closes_at && new Date(w.closes_at) <= new Date(w.opens_at)) throw new Error(`For ${w.stream}, the closing time must be after the opening time.`);
+      if (w.opens_at && w.closes_at && new Date(w.closes_at) <= new Date(w.opens_at)) {
+        throw new Error(`For ${mode === 'class' ? classLabel(w) : w.stream}, the closing time must be after the opening time.`);
+      }
     }
     const saved = await run(supabase.from('quizzes').update(row).eq('id', quiz.id).select().single());
     await run(supabase.from('quiz_windows').delete().eq('quiz_id', quiz.id));
     if (chosen.length) {
       await run(supabase.from('quiz_windows').insert(chosen.map((w) => ({
-        quiz_id: quiz.id, stream: w.stream, opens_at: fromLocalInput(w.opens_at), closes_at: fromLocalInput(w.closes_at),
+        quiz_id: quiz.id, programme: w.programme, stream: w.stream, opens_at: fromLocalInput(w.opens_at), closes_at: fromLocalInput(w.closes_at),
       }))));
     }
     onSaved(saved);
@@ -509,16 +531,33 @@ function Settings({ quiz, count, windows, streams, onSaved }) {
         <span className="eyebrow">Who and when</span>
         <label className="check"><input type="checkbox" checked={f.restricted} onChange={set('restricted')} />
           <span><strong>Only students given special access</strong> — for a resit or a make-up quiz. Add them under Special access below.</span></label>
-        {streams.length === 0 && (
+        {streams.length === 0 && classes.length <= 1 && (
           <span className="tiny muted">To set different times for Regular, Weekend or Evening students, first create streams on the course's Students tab.</span>
         )}
-        {streams.length > 0 && (
+        {(streams.length > 0 || classes.length > 1) && (
           <div className="chips" role="group" aria-label="Timing">
-            <button type="button" className="chip" aria-pressed={!perStream} onClick={() => { setPerStream(false); setDirty(true); }}>Same times for everyone</button>
-            <button type="button" className="chip" aria-pressed={perStream} onClick={() => { setPerStream(true); setDirty(true); }}>Different times per stream</button>
+            <button type="button" className="chip" aria-pressed={mode === 'all'} onClick={() => { setMode('all'); setDirty(true); }}>Same times for everyone</button>
+            {streams.length > 0 && <button type="button" className="chip" aria-pressed={mode === 'stream'} onClick={() => { setPerStream(true); setDirty(true); }}>Different times per stream</button>}
+            {classes.length > 1 && <button type="button" className="chip" aria-pressed={mode === 'class'} onClick={() => { setMode('class'); setDirty(true); }}>Different times per class</button>}
           </div>
         )}
-        {!perStream ? (
+        {mode === 'class' ? (
+          <div className="stack-sm">
+            {cwin.map((w, i) => (
+              <div key={classKey(w.programme, w.stream)} className="stack-sm" style={{ background: 'var(--surface-2)', padding: 10, borderRadius: 8 }}>
+                <label className="check"><input type="checkbox" checked={w.on} onChange={(e) => setC(i, 'on', e.target.checked)} />
+                  <span><strong>{classLabel(w)}</strong> <span className="tiny muted">{w.students ? `${w.students} student${w.students === 1 ? '' : 's'}` : ''}</span></span></label>
+                {w.on && (
+                  <div className="grid-2" style={{ gap: 8 }}>
+                    <Field label="Opens"><input className="input" type="datetime-local" value={w.opens_at} onChange={(e) => setC(i, 'opens_at', e.target.value)} aria-label={`Opens for ${classLabel(w)}`} /></Field>
+                    <Field label="Closes"><input className="input" type="datetime-local" value={w.closes_at} onChange={(e) => setC(i, 'closes_at', e.target.value)} aria-label={`Closes for ${classLabel(w)}`} /></Field>
+                  </div>
+                )}
+              </div>
+            ))}
+            <span className="tiny muted">Each class is a programme and stream together. Unticked classes cannot see or take this quiz.</span>
+          </div>
+        ) : !perStream ? (
           <div className="grid-2" style={{ gap: 10 }}>
             <Field label="Opens"><input className="input" type="datetime-local" value={f.opens_at} onChange={set('opens_at')} /></Field>
             <Field label="Closes"><input className="input" type="datetime-local" value={f.closes_at} onChange={set('closes_at')} /></Field>

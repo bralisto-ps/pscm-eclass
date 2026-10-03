@@ -34,7 +34,7 @@ function QuizList({ course, ta }) {
   const [act, busy] = useAction();
   const [removing, setRemoving] = useState(null);
   const { data, error, loading, reload } = useLoad(
-    () => run(supabase.from('quizzes').select(`*, ${ta ? '' : 'questions(count), '}attempts(count), quiz_windows(count), quiz_access(count)`)
+    () => run(supabase.from('quizzes').select(`*, ${ta ? '' : 'questions(count), '}attempts(count), quiz_windows(programme), quiz_access(count)`)
       .eq('course_id', course.id).order('created_at', { ascending: false })),
     [course.id],
   );
@@ -91,6 +91,10 @@ function QuizList({ course, ta }) {
             <tbody>
               {data.map((q) => {
                 const st = quizStatus(q);
+                const nWin = q.quiz_windows?.length || 0;
+                const byClass = (q.quiz_windows || []).some((w) => w.programme !== '*');
+                const winLabel = byClass ? 'Set per class' : 'Set per stream';
+                const winSub = `${nWin} ${byClass ? 'class' : 'stream'}${nWin > 1 ? (byClass ? 'es' : 's') : ''}`;
                 return (
                   <tr key={q.id}>
                     <td>
@@ -104,9 +108,9 @@ function QuizList({ course, ta }) {
                     <td><span className={`badge ${st.cls}`}>{st.label}</span></td>
                     <td className="small nowrap">
                       {q.restricted ? `Only ${q.quiz_access?.[0]?.count ?? 0} student${q.quiz_access?.[0]?.count === 1 ? '' : 's'}`
-                        : q.quiz_windows?.[0]?.count ? 'Set per stream' : q.opens_at ? fmtDateTime(q.opens_at) : 'Any time'}
+                        : nWin ? winLabel : q.opens_at ? fmtDateTime(q.opens_at) : 'Any time'}
                       <div className="tiny muted">
-                        {q.restricted ? 'special access only' : q.quiz_windows?.[0]?.count ? `${q.quiz_windows[0].count} stream${q.quiz_windows[0].count > 1 ? 's' : ''}` : q.closes_at ? `to ${fmtDateTime(q.closes_at)}` : 'no closing time'}
+                        {q.restricted ? 'special access only' : nWin ? winSub : q.closes_at ? `to ${fmtDateTime(q.closes_at)}` : 'no closing time'}
                         {!q.restricted && q.quiz_access?.[0]?.count ? ` · +${q.quiz_access[0].count} special` : ''}
                       </div>
                     </td>

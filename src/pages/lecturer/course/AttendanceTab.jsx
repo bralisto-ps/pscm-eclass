@@ -6,14 +6,28 @@ import Icon from '../../../components/Icon.jsx';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad } from '../../../components/ui.jsx';
 import { ALL_GROUPS, GroupFilters, matchesGroup } from '../../../components/Groups.jsx';
 
+// Same rule as the database: chosen classes win over chosen streams; nothing chosen = everyone.
+export function sessionFor(session, student) {
+  const classes = session.classes || [];
+  if (classes.length) {
+    const key = `${(student.programme || '').trim().toLowerCase()}|${(student.stream || '').trim().toLowerCase()}`;
+    return classes.some((c) => { const [p, st] = c.split('|'); return `${(p || '').trim().toLowerCase()}|${(st || '').trim().toLowerCase()}` === key; });
+  }
+  const streams = session.streams || [];
+  return !streams.length || streams.map((x) => x.trim().toLowerCase()).includes((student.stream || '').trim().toLowerCase());
+}
+const classText = (c) => { const [p, st] = c.split('|'); return `${p || 'No programme'} · ${st || 'No stream'}`; };
+export const sessionWho = (s) => (s.classes?.length ? s.classes.map(classText).join(', ') : s.streams?.length ? s.streams.join(', ') : 'Everyone');
+
 export default function AttendanceTab({ course }) {
   const { data, error, loading, reload } = useLoad(async () => {
-    const [sessions, students, opts] = await Promise.all([
+    const [sessions, students, opts, classes] = await Promise.all([
       rpc('course_attendance_sessions', { p_course: course.id }),
       rpcAll('course_attendance', { p_course: course.id }),
       run(supabase.from('group_options').select('name').eq('kind', 'stream').order('name')),
+      rpcAll('course_classes', { p_course: course.id }),
     ]);
-    return { sessions, students, streams: opts.map((o) => o.name) };
+    return { sessions, students, streams: opts.map((o) => o.name), classes };
   }, [course.id]);
   const [live, setLive] = useState(null);
   const [starting, setStarting] = useState(false);
@@ -42,7 +56,7 @@ export default function AttendanceTab({ course }) {
     const sess = [...data.sessions].reverse();
     const header = ['Index number', 'Name', 'Programme', 'Stream', 'Attended', 'Out of', 'Percent', ...sess.map((s) => `${s.title}`)];
     const line = (r) => [r.index_no, r.full_name, r.programme, r.stream, r.attended, r.applicable, pct(r) ?? '',
-      ...sess.map((s) => (r.sessions.includes(s.id) ? 'P' : (!s.streams.length || s.streams.map((x) => x.toLowerCase()).includes((r.stream || '').toLowerCase()) ? 'A' : '')))];
+      ...sess.map((s) => (r.sessions.includes(s.id) ? 'P' : sessionFor(s, r) ? 'A' : ''))];
     downloadWorkbook(`${course.code} attendance.xlsx`, [
       { name: 'Attendance', rows: [header, ...data.students.map(line)], widths: [16, 30, 18, 12, 10, 8, 9, ...sess.map(() => 14)] },
     ]);
@@ -76,7 +90,7 @@ export default function AttendanceTab({ course }) {
         {data.sessions.length === 0 ? <Empty icon="calendar">No attendance taken yet.</Empty> : (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>Session</th><th>When</th><th>Streams</th><th className="num">Present</th><th>To check</th><th /></tr></thead>
+              <thead><tr><th>Session</th><th>When</th><th>Who</th><th className="num">Present</th><th>To check</th><th /></tr></thead>
               <tbody>
                 {data.sessions.map((s) => {
                   const open = new Date(s.opens_at).getTime() <= now && new Date(s.closes_at).getTime() > now;
@@ -84,7 +98,7 @@ export default function AttendanceTab({ course }) {
                     <tr key={s.id}>
                       <td><strong>{s.title}</strong> {open && <span className="badge badge-teal">Open now</span>}</td>
                       <td className="small">{fmtDateTime(s.opens_at)}</td>
-                      <td className="small muted">{s.streams.length ? s.streams.join(', ') : 'Everyone'}</td>
+                      <td className="small muted" style={{ maxWidth: 220 }}>{sessionWho(s)}</td>
                       <td className="num">{s.present}</td>
                       <td>
                         <div className="row" style={{ gap: 4 }}>
@@ -152,7 +166,7 @@ export default function AttendanceTab({ course }) {
         </div>
       </section>
 
-      {starting && <StartModal course={course} streams={data.streams} onClose={() => setStarting(false)} onStarted={(id) => { setStarting(false); setLive(id); reload(); }} />}
+      {starting && <StartModal course={course} streams={data.streams} classes={data.classes} onClose={() => setStarting(false)} onStarted={(id) => { setStarting(false); setLive(id); reload(); }} />}
       {live && <LiveView sessionId={live} course={course} onClose={() => { setLive(null); reload(); }} />}
       {checking && <SessionCheck sessionId={checking} course={course} onClose={() => { setChecking(null); reload(); }} />}
       {viewing && <RegisterModal session={viewing} course={course} students={data.students} onClose={() => setViewing(null)} onChanged={reload} />}
@@ -160,34 +174,60 @@ export default function AttendanceTab({ course }) {
   );
 }
 
-function StartModal({ course, streams, onClose, onStarted }) {
+function StartModal({ course, streams, classes, onClose, onStarted }) {
   const [act, busy] = useAction();
   const [title, setTitle] = useState(`Lecture — ${new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}`);
   const [minutes, setMinutes] = useState(10);
   const [chosen, setChosen] = useState([]);
   const [askRow, setAskRow] = useState(true);
+  const [who, setWho] = useState('all'); // all | streams | classes
+  const [pickedClasses, setPickedClasses] = useState([]);
+  const keyOf = (c) => `${c.programme}|${c.stream}`;
   async function start() {
-    const id = await act(() => rpc('start_attendance', { p_course: course.id, p_title: title, p_streams: chosen, p_minutes: Number(minutes) || 10, p_ask_row: askRow }));
+    if (who === 'streams' && !chosen.length) throw new Error('Tick at least one stream, or choose Everyone.');
+    if (who === 'classes' && !pickedClasses.length) throw new Error('Tick at least one class, or choose Everyone.');
+    const id = await act(() => rpc('start_attendance', {
+      p_course: course.id, p_title: title, p_minutes: Number(minutes) || 10, p_ask_row: askRow,
+      p_streams: who === 'streams' ? chosen : [], p_classes: who === 'classes' ? pickedClasses : [],
+    }));
     if (id) onStarted(id);
   }
   return (
     <Modal title="Start attendance" onClose={onClose}
-      footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button><button type="button" className="btn btn-primary" onClick={start} disabled={busy}>Start and show code</button></>}>
+      footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button><button type="button" className="btn btn-primary" onClick={() => act(start)} disabled={busy}>Start and show code</button></>}>
       <Field label="Session name"><input className="input" value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
       <Field label="Open for (minutes)"><input className="input" type="number" min="1" max="240" style={{ maxWidth: 140 }} value={minutes} onChange={(e) => setMinutes(e.target.value)} /></Field>
       <label className="check"><input type="checkbox" checked={askRow} onChange={(e) => setAskRow(e.target.checked)} />
         <span>Ask each student for their <strong>row number</strong> — so you can count heads in a row and compare</span></label>
-      {streams.length > 0 && (
+      {(streams.length > 0 || classes.length > 1) && (
         <div className="field">
-          <span className="field-label">Which streams are in this class?</span>
-          <div className="row-wrap">
-            {streams.map((s) => (
-              <label key={s} className="check" style={{ marginRight: 12 }}>
-                <input type="checkbox" checked={chosen.includes(s)} onChange={(e) => setChosen(e.target.checked ? [...chosen, s] : chosen.filter((x) => x !== s))} /> {s}
-              </label>
-            ))}
+          <span className="field-label">Who is in this lecture?</span>
+          <div className="chips" role="group" aria-label="Who is in this lecture">
+            <button type="button" className="chip" aria-pressed={who === 'all'} onClick={() => setWho('all')}>Everyone</button>
+            {streams.length > 0 && <button type="button" className="chip" aria-pressed={who === 'streams'} onClick={() => setWho('streams')}>Some streams</button>}
+            {classes.length > 1 && <button type="button" className="chip" aria-pressed={who === 'classes'} onClick={() => setWho('classes')}>Some classes</button>}
           </div>
-          <span className="tiny muted">Leave all unticked for everyone. Students in other streams can't check in and aren't counted absent.</span>
+          {who === 'streams' && (
+            <div className="row-wrap" style={{ marginTop: 8 }}>
+              {streams.map((s) => (
+                <label key={s} className="check" style={{ marginRight: 12 }}>
+                  <input type="checkbox" checked={chosen.includes(s)} onChange={(e) => setChosen(e.target.checked ? [...chosen, s] : chosen.filter((x) => x !== s))} /> {s}
+                </label>
+              ))}
+            </div>
+          )}
+          {who === 'classes' && (
+            <div className="stack-sm" style={{ marginTop: 8 }}>
+              {classes.map((c) => (
+                <label key={keyOf(c)} className="check">
+                  <input type="checkbox" checked={pickedClasses.includes(keyOf(c))}
+                    onChange={(e) => setPickedClasses(e.target.checked ? [...pickedClasses, keyOf(c)] : pickedClasses.filter((x) => x !== keyOf(c)))} />
+                  <span>{c.programme || 'No programme'} · {c.stream || 'No stream'} <span className="tiny muted">({c.students})</span></span>
+                </label>
+              ))}
+            </div>
+          )}
+          <span className="tiny muted">Students outside the chosen group can't check in and aren't counted absent.</span>
         </div>
       )}
     </Modal>
@@ -240,7 +280,7 @@ function LiveView({ sessionId, course, onClose }) {
         <div>
           <div className="mono small" style={{ opacity: 0.75 }}>{course.code}</div>
           <div style={{ fontSize: 20, fontWeight: 600 }}>{info?.title || 'Attendance'}</div>
-          {info?.streams?.length > 0 && <div className="small" style={{ opacity: 0.75 }}>For: {info.streams.join(', ')}</div>}
+          {(info?.streams?.length > 0 || info?.classes?.length > 0) && <div className="small" style={{ opacity: 0.75 }}>For: {sessionWho(info)}</div>}
         </div>
         <div className="row-wrap">
           {info?.count > 0 && <button type="button" className="btn btn-light" onClick={() => setSpot(true)}>Spot check</button>}
@@ -466,7 +506,7 @@ function RegisterModal({ session, course, students, onClose, onChanged }) {
   const changed = useRef(false);
   const [q, setQ] = useState('');
   const [present, setPresent] = useState(() => new Set(students.filter((s) => s.sessions.includes(session.id)).map((s) => s.index_no)));
-  const applicable = students.filter((s) => !session.streams.length || session.streams.map((x) => x.toLowerCase()).includes((s.stream || '').toLowerCase()));
+  const applicable = students.filter((s) => sessionFor(session, s));
   const shown = applicable.filter((s) => !q.trim() || s.full_name.toLowerCase().includes(q.toLowerCase()) || s.index_no.toLowerCase().includes(q.toLowerCase()));
 
   async function toggle(s) {

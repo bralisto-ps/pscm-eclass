@@ -270,6 +270,11 @@ create table if not exists public.course_staff (
   created_at timestamptz not null default now(),
   primary key (course_id, email)
 );
+-- Version 6: quiz times per class (programme + stream). '*' = any programme.
+alter table public.quiz_windows add column if not exists programme text not null default '*';
+alter table public.quiz_windows drop constraint if exists quiz_windows_pkey;
+alter table public.quiz_windows add constraint quiz_windows_pkey primary key (quiz_id, programme, stream);
+
 alter table public.profiles drop constraint if exists profiles_role_check;
 alter table public.profiles add constraint profiles_role_check check (role in ('student', 'lecturer', 'ta'));
 alter table public.responses   add column if not exists marked_by uuid references public.profiles on delete set null;
@@ -323,12 +328,16 @@ $$;
 -- Can this student take this quiz? (special access, restricted quizzes, stream windows)
 create or replace function public.quiz_open_to(p_quiz uuid, p_index text, p_stream text) returns boolean
 language sql stable security definer set search_path = public as $$
+  with st as (
+    select coalesce((select programme from public.roster where index_no = p_index), '') as programme,
+           coalesce(p_stream, (select stream from public.roster where index_no = p_index), '') as stream)
   select case
     when exists (select 1 from public.quiz_access a where a.quiz_id = p_quiz and a.index_no = p_index) then true
     when (select restricted from public.quizzes where id = p_quiz) then false
     when not exists (select 1 from public.quiz_windows w where w.quiz_id = p_quiz) then true
-    else exists (select 1 from public.quiz_windows w
-                  where w.quiz_id = p_quiz and lower(trim(w.stream)) = lower(trim(coalesce(p_stream, ''))))
+    else exists (select 1 from public.quiz_windows w, st
+                  where w.quiz_id = p_quiz and lower(trim(w.stream)) = lower(trim(st.stream))
+                    and (w.programme = '*' or lower(trim(w.programme)) = lower(trim(st.programme))))
   end;
 $$;
 
@@ -663,12 +672,15 @@ create or replace function public.quiz_window_for(p_quiz uuid, p_uid uuid)
 returns table (allowed boolean, opens_at timestamptz, closes_at timestamptz)
 language sql stable security definer set search_path = public as $$
   with st as (
-    select r.index_no, r.stream from public.roster r join public.profiles p on p.index_no = r.index_no where p.id = p_uid
+    select r.index_no, r.stream, r.programme from public.roster r join public.profiles p on p.index_no = r.index_no where p.id = p_uid
   ), acc as (
     select x.* from public.quiz_access x, st where x.quiz_id = p_quiz and x.index_no = st.index_no
   ), mine as (
+    -- a row for the student's own class wins over a row for their whole stream
     select w.* from public.quiz_windows w, st
      where w.quiz_id = p_quiz and lower(trim(w.stream)) = lower(trim(st.stream))
+       and (w.programme = '*' or lower(trim(w.programme)) = lower(trim(st.programme)))
+     order by (w.programme = '*') limit 1
   ), n as (select count(*) as c from public.quiz_windows where quiz_id = p_quiz),
   base as (
     select case when q.restricted then false when n.c = 0 then true else exists (select 1 from mine) end as allowed,
@@ -1159,11 +1171,15 @@ begin
   if v = '' then raise exception 'Enter a name.'; end if;
   if p_kind = 'programme' then
     update public.roster set programme = v where programme = p_old;
+    update public.quiz_windows w set programme = v
+     where w.programme = p_old
+       and not exists (select 1 from public.quiz_windows x where x.quiz_id = w.quiz_id and x.programme = v and x.stream = w.stream);
+    delete from public.quiz_windows where programme = p_old;
   elsif p_kind = 'stream' then
     update public.roster set stream = v where stream = p_old;
     update public.quiz_windows w set stream = v
      where w.stream = p_old
-       and not exists (select 1 from public.quiz_windows x where x.quiz_id = w.quiz_id and x.stream = v);
+       and not exists (select 1 from public.quiz_windows x where x.quiz_id = w.quiz_id and x.programme = w.programme and x.stream = v);
     delete from public.quiz_windows where stream = p_old;
   else
     raise exception 'Unknown group type.';
@@ -1180,6 +1196,7 @@ begin
   perform public.require_lecturer();
   if p_kind = 'programme' then
     update public.roster set programme = '' where programme = p_name;
+    delete from public.quiz_windows where programme = p_name;
   elsif p_kind = 'stream' then
     update public.roster set stream = '' where stream = p_name;
     delete from public.quiz_windows where stream = p_name;
@@ -1511,6 +1528,8 @@ create table if not exists public.attendance (
 -- Version 5: seat row, phone and review status for each check-in
 alter table public.attendance_sessions add column if not exists ask_row     boolean not null default true;
 alter table public.attendance_sessions add column if not exists head_counts jsonb   not null default '{}'::jsonb;
+-- Version 6: sessions for chosen classes, each written 'programme|stream'
+alter table public.attendance_sessions add column if not exists classes     text[]  not null default '{}';
 alter table public.attendance add column if not exists row_no      int;
 alter table public.attendance add column if not exists device      text;
 alter table public.attendance add column if not exists status      text not null default 'ok';
@@ -1595,18 +1614,32 @@ language sql immutable as $$
       or lower(trim(coalesce(p_stream, ''))) in (select lower(trim(x)) from unnest(p_streams) x);
 $$;
 
+-- Is a student (programme, stream) part of a session? Classes win over streams.
+create or replace function public.session_for(p_streams text[], p_classes text[], p_programme text, p_stream text)
+returns boolean
+language sql immutable as $$
+  select case
+    when cardinality(coalesce(p_classes, '{}')) > 0 then
+      lower(trim(coalesce(p_programme, ''))) || '|' || lower(trim(coalesce(p_stream, '')))
+        in (select lower(trim(split_part(x, '|', 1))) || '|' || lower(trim(split_part(x, '|', 2))) from unnest(p_classes) x)
+    else public.stream_in(p_stream, p_streams)
+  end;
+$$;
+
 drop function if exists public.start_attendance(uuid, text, text[], int);
+drop function if exists public.start_attendance(uuid, text, text[], int, boolean);
 create or replace function public.start_attendance(p_course uuid, p_title text, p_streams text[], p_minutes int,
-                                                   p_ask_row boolean default true)
+                                                   p_ask_row boolean default true, p_classes text[] default '{}')
 returns uuid
 language plpgsql security definer set search_path = public as $$
 declare v uuid;
 begin
   perform public.require_staff(p_course);
-  insert into public.attendance_sessions (course_id, title, streams, closes_at, ask_row)
+  insert into public.attendance_sessions (course_id, title, streams, closes_at, ask_row, classes)
   values (p_course, coalesce(nullif(trim(p_title), ''), to_char(now(), 'Dy DD Mon, HH24:MI')),
-          coalesce(p_streams, '{}'), now() + make_interval(mins => greatest(1, least(coalesce(p_minutes, 10), 240))),
-          coalesce(p_ask_row, true))
+          case when cardinality(coalesce(p_classes, '{}')) > 0 then '{}' else coalesce(p_streams, '{}') end,
+          now() + make_interval(mins => greatest(1, least(coalesce(p_minutes, 10), 240))),
+          coalesce(p_ask_row, true), coalesce(p_classes, '{}'))
   returning id into v;
   return v;
 end;
@@ -1622,13 +1655,13 @@ begin
   select count(*) filter (where status <> 'rejected'), count(*) filter (where status = 'review')
     into v_count, v_review from public.attendance where session_id = p_session;
   select count(*) into v_expected from public.enrollments e join public.roster r on r.index_no = e.index_no
-   where e.course_id = s.course_id and public.stream_in(r.stream, s.streams);
+   where e.course_id = s.course_id and public.session_for(s.streams, s.classes, r.programme, r.stream);
   return jsonb_build_object(
     'open', now() between s.opens_at and s.closes_at,
     'code', case when now() between s.opens_at and s.closes_at then public.attendance_code(s.secret, v_slot) end,
     'seconds_left', 30 - (floor(extract(epoch from now()))::bigint % 30),
     'closes_at', s.closes_at, 'count', v_count, 'review', v_review, 'expected', v_expected,
-    'title', s.title, 'streams', s.streams, 'ask_row', s.ask_row, 'server_now', now(),
+    'title', s.title, 'streams', s.streams, 'classes', s.classes, 'ask_row', s.ask_row, 'server_now', now(),
     'rows', coalesce((select jsonb_object_agg(x.row_no::text, x.n) from (
                select row_no, count(*) as n from public.attendance
                 where session_id = p_session and status <> 'rejected' and row_no is not null
@@ -1652,13 +1685,13 @@ drop function if exists public.check_in(uuid, text);
 create or replace function public.check_in(p_course uuid, p_code text, p_row int default null, p_device text default null)
 returns jsonb
 language plpgsql security definer set search_path = public as $$
-declare v_idx text; v_stream text; v_slot bigint := public.attendance_slot(); s public.attendance_sessions; v_fails int;
+declare v_idx text; v_stream text; v_prog text; v_slot bigint := public.attendance_slot(); s public.attendance_sessions; v_fails int;
         v_code text := regexp_replace(coalesce(p_code, ''), '\D', '', 'g');
         v_dev text := left(nullif(trim(coalesce(p_device, '')), ''), 100);
         v_asks boolean;
 begin
   if not public.is_enrolled(p_course) then raise exception 'You are not on this course.'; end if;
-  select r.index_no, r.stream into v_idx, v_stream
+  select r.index_no, r.stream, r.programme into v_idx, v_stream, v_prog
     from public.profiles p join public.roster r on r.index_no = p.index_no where p.id = auth.uid();
   select count(*) into v_fails from public.attendance_failures
    where student_id = auth.uid() and course_id = p_course and at > now() - interval '10 minutes';
@@ -1667,14 +1700,14 @@ begin
   end if;
 
   select bool_or(x.ask_row) into v_asks from public.attendance_sessions x
-   where x.course_id = p_course and now() between x.opens_at and x.closes_at and public.stream_in(v_stream, x.streams);
+   where x.course_id = p_course and now() between x.opens_at and x.closes_at and public.session_for(x.streams, x.classes, v_prog, v_stream);
   if v_asks is null then
     return jsonb_build_object('ok', false, 'message', 'Attendance is not open for you right now.');
   end if;
 
   select * into s from public.attendance_sessions x
    where x.course_id = p_course and now() between x.opens_at and x.closes_at
-     and public.stream_in(v_stream, x.streams)
+     and public.session_for(x.streams, x.classes, v_prog, v_stream)
      and v_code in (public.attendance_code(x.secret, v_slot), public.attendance_code(x.secret, v_slot - 1))
    order by x.opens_at desc limit 1;
   if not found then
@@ -1710,18 +1743,18 @@ language sql stable security definer set search_path = public as $$
     join public.profiles p on p.id = auth.uid()
     join public.roster r on r.index_no = p.index_no
    where now() between s.opens_at and s.closes_at
-     and public.is_enrolled(c.id) and public.stream_in(r.stream, s.streams)
+     and public.is_enrolled(c.id) and public.session_for(s.streams, s.classes, r.programme, r.stream)
      and not exists (select 1 from public.attendance a where a.session_id = s.id and a.index_no = r.index_no);
 $$;
 
 create or replace function public.my_attendance(p_course uuid) returns jsonb
 language sql stable security definer set search_path = public as $$
-  with me as (select r.index_no, r.stream from public.profiles p join public.roster r on r.index_no = p.index_no where p.id = auth.uid()),
+  with me as (select r.index_no, r.stream, r.programme from public.profiles p join public.roster r on r.index_no = p.index_no where p.id = auth.uid()),
   ss as (
     select s.id, s.title, s.opens_at, s.closes_at, s.ask_row,
            (select a.status from public.attendance a, me where a.session_id = s.id and a.index_no = me.index_no) as status
       from public.attendance_sessions s, me
-     where s.course_id = p_course and s.opens_at <= now() and public.stream_in(me.stream, s.streams)
+     where s.course_id = p_course and s.opens_at <= now() and public.session_for(s.streams, s.classes, me.programme, me.stream)
        and public.is_enrolled(p_course)),
   ss2 as (select ss.*, coalesce(ss.status = 'ok', false) as present from ss)
   select jsonb_build_object(
@@ -1743,7 +1776,7 @@ begin
            (select count(*)::int from public.attendance a join public.attendance_sessions s on s.id = a.session_id
              where s.course_id = p_course and a.index_no = r.index_no and a.status = 'ok'),
            (select count(*)::int from public.attendance_sessions s
-             where s.course_id = p_course and s.opens_at <= now() and public.stream_in(r.stream, s.streams)),
+             where s.course_id = p_course and s.opens_at <= now() and public.session_for(s.streams, s.classes, r.programme, r.stream)),
            coalesce((select array_agg(a.session_id) from public.attendance a join public.attendance_sessions s on s.id = a.session_id
                       where s.course_id = p_course and a.index_no = r.index_no and a.status = 'ok'), '{}')
       from public.enrollments e join public.roster r on r.index_no = e.index_no
@@ -1772,7 +1805,7 @@ language plpgsql stable security definer set search_path = public as $$
 begin
   perform public.require_staff(p_course);
   return coalesce((select jsonb_agg(jsonb_build_object(
-      'id', s.id, 'title', s.title, 'streams', s.streams, 'opens_at', s.opens_at, 'closes_at', s.closes_at,
+      'id', s.id, 'title', s.title, 'streams', s.streams, 'classes', s.classes, 'opens_at', s.opens_at, 'closes_at', s.closes_at,
       'ask_row', s.ask_row,
       'present', (select count(*) from public.attendance a where a.session_id = s.id and a.status = 'ok'),
       'review', (select count(*) from public.attendance a where a.session_id = s.id and a.status = 'review'),
@@ -1884,7 +1917,7 @@ begin
         select count(*) as n, count(a.index_no) as att
           from public.attendance_sessions s
           left join public.attendance a on a.session_id = s.id and a.index_no = st.index_no and a.status = 'ok'
-         where s.course_id = p_course and s.opens_at <= now() and public.stream_in(st.stream, s.streams)) ap
+         where s.course_id = p_course and s.opens_at <= now() and public.session_for(s.streams, s.classes, st.programme, st.stream)) ap
      where c.kind = 'attendance'
     union all
     select c.id, st.index_no,
@@ -2109,7 +2142,7 @@ begin
       (select case when count(*) >= 3 then round(count(at.index_no) * 100.0 / count(*), 0) end
          from public.attendance_sessions s
          left join public.attendance at on at.session_id = s.id and at.index_no = st.index_no and at.status = 'ok'
-        where s.course_id = p_course and s.opens_at <= now() and public.stream_in(st.stream, s.streams)) as att
+        where s.course_id = p_course and s.opens_at <= now() and public.session_for(s.streams, s.classes, st.programme, st.stream)) as att
     from st)
   select m.index_no, m.full_name, m.programme, m.stream, m.last_sign_in_at, m.missed, m.avg_pct, m.att,
          array_remove(array[
@@ -2241,7 +2274,7 @@ do $$
 declare f text;
 begin
   foreach f in array array[
-    'start_attendance(uuid, text, text[], int, boolean)', 'attendance_live(uuid)', 'extend_attendance(uuid, int)',
+    'start_attendance(uuid, text, text[], int, boolean, text[])', 'attendance_live(uuid)', 'extend_attendance(uuid, int)',
     'check_in(uuid, text, int, text)', 'course_attendance_sessions(uuid)', 'attendance_session_detail(uuid)',
     'attendance_spot(uuid, int)', 'attendance_review(uuid, text[], text, text)', 'attendance_head_count(uuid, int, int)',
     'forum_answer(uuid, text)', 'forum_hide(uuid, boolean)', 'mark_submission(uuid, numeric, text)', 'my_open_attendance()', 'my_attendance(uuid)', 'course_attendance(uuid)',
@@ -2287,6 +2320,9 @@ drop policy if exists ta_groups on public.group_options;
 create policy ta_groups on public.group_options for select to authenticated using (public.is_ta_user());
 drop policy if exists ta_quizzes on public.quizzes;
 create policy ta_quizzes on public.quizzes for select to authenticated using (public.is_ta(course_id));
+drop policy if exists ta_quiz_windows on public.quiz_windows;
+create policy ta_quiz_windows on public.quiz_windows for select to authenticated
+  using (public.is_ta((select course_id from public.quizzes where id = quiz_id)));
 drop policy if exists ta_quiz_access on public.quiz_access;
 create policy ta_quiz_access on public.quiz_access for select to authenticated
   using (public.is_ta((select course_id from public.quizzes where id = quiz_id)));
@@ -2378,6 +2414,22 @@ begin
 end;
 $$;
 
+-- ---------- classes (programme + stream pairs) on a course ----------
+create or replace function public.course_classes(p_course uuid)
+returns table (programme text, stream text, students int)
+language plpgsql stable security definer set search_path = public as $$
+#variable_conflict use_column
+begin
+  perform public.require_staff(p_course);
+  return query
+    select r.programme, r.stream, count(*)::int
+      from public.enrollments e join public.roster r on r.index_no = e.index_no
+     where e.course_id = p_course
+     group by r.programme, r.stream
+     order by r.programme, r.stream;
+end;
+$$;
+
 grant execute on function public.check_staff_email(text) to anon, authenticated;
 revoke execute on function public.quiz_open_to(uuid, text, text) from public, anon;
 grant execute on function public.quiz_open_to(uuid, text, text) to authenticated;
@@ -2386,7 +2438,7 @@ declare f text;
 begin
   foreach f in array array[
     'course_staff_list(uuid)', 'add_staff(uuid, text, text)', 'remove_staff(uuid, text)',
-    'save_quiz_access(uuid, jsonb)', 'is_ta(uuid)', 'is_staff(uuid)', 'is_ta_user()', 'ta_sees_index(text)']
+    'save_quiz_access(uuid, jsonb)', 'course_classes(uuid)', 'is_ta(uuid)', 'is_staff(uuid)', 'is_ta_user()', 'ta_sees_index(text)']
   loop
     execute format('revoke execute on function public.%s from public, anon', f);
     execute format('grant execute on function public.%s to authenticated', f);
