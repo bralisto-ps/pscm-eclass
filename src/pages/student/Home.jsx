@@ -44,7 +44,10 @@ export default function StudentHome() {
             <main className="stack-lg">
               {data.openAtt.map((a) => (
                 <section key={a.session_id} className="notice notice-info row-wrap" style={{ padding: '14px 18px' }} aria-label="Attendance open">
-                  <span style={{ flex: 1, minWidth: 200 }}><strong>Attendance is open for {a.course_code}</strong> — {a.title}. Type the code shown in class.</span>
+                  <span style={{ flex: 1, minWidth: 200 }}>
+                    <strong>Attendance is open for {a.course_code}</strong> — {a.title}.
+                    {a.lat != null ? " 📍 GPS Geofence active (hall verification required)." : " Type the code shown in class."}
+                  </span>
                   <button type="button" className="btn btn-primary" onClick={() => setCheckIn(a)}>Check in</button>
                 </section>
               ))}

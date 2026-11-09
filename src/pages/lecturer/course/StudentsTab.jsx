@@ -359,47 +359,133 @@ function GroupManager({ programmes, streams, students, onChanged }) {
   const [act, busy] = useAction();
   const [renaming, setRenaming] = useState(null); // { kind, name, value }
   const [removing, setRemoving] = useState(null);
-  const [newName, setNewName] = useState({ programme: '', stream: '' });
-  const count = (kind, name) => students.filter((r) => (kind === 'programme' ? r.programme : r.stream) === name).length;
+  const [newName, setNewName] = useState({ programme: "", stream: "" });
+  const [showAllProg, setShowAllProg] = useState(false);
+  const [showAllStream, setShowAllStream] = useState(false);
+
+  const count = (kind, name) => students.filter((r) => (kind === "programme" ? r.programme : r.stream) === name).length;
 
   async function add(kind) {
     const name = newName[kind].trim();
     if (!name) return;
-    const ok = await act(() => run(supabase.from('group_options').upsert({ kind, name }, { onConflict: 'kind,name', ignoreDuplicates: true })), `${name} added.`);
-    if (ok !== undefined) { setNewName({ ...newName, [kind]: '' }); onChanged(); }
+    const ok = await act(() => run(supabase.from("group_options").upsert({ kind, name }, { onConflict: "kind,name", ignoreDuplicates: true })), `${name} added.`);
+    if (ok !== undefined) { setNewName({ ...newName, [kind]: "" }); onChanged(); }
   }
+
   async function rename() {
-    const ok = await act(() => rpc('rename_group', { p_kind: renaming.kind, p_old: renaming.name, p_new: renaming.value }), 'Renamed.');
+    const ok = await act(() => rpc("rename_group", { p_kind: renaming.kind, p_old: renaming.name, p_new: renaming.value }), "Renamed.");
     if (ok !== undefined) { setRenaming(null); onChanged(); }
   }
+
   async function remove() {
-    const ok = await act(() => rpc('delete_group', { p_kind: removing.kind, p_name: removing.name }), 'Removed.');
+    const ok = await act(() => rpc("delete_group", { p_kind: removing.kind, p_name: removing.name }), "Removed.");
     if (ok !== undefined) { setRemoving(null); onChanged(); }
   }
 
-  const column = (kind, title, list, example) => (
-    <div className="stack-sm" style={{ flex: 1, minWidth: 260 }}>
-      <span className="eyebrow">{title}</span>
-      <div className="stack-sm" style={{ gap: 6 }}>
-        {list.length === 0 && <span className="small muted">None yet — add one below, e.g. {example}.</span>}
-        {list.map((name) => (
-          <div key={name} className="between" style={{ padding: '6px 10px', border: '1px solid var(--line)', borderRadius: 8, background: 'var(--surface)' }}>
-            <span className="small"><strong>{name}</strong> <span className="muted">· {count(kind, name)} in this course</span></span>
-            <span className="row" style={{ gap: 2 }}>
-              <button type="button" className="icon-btn plain" aria-label={`Rename ${name}`} onClick={() => setRenaming({ kind, name, value: name })}><Icon name="edit" size={16} /></button>
-              <button type="button" className="icon-btn plain" aria-label={`Remove ${name}`} onClick={() => setRemoving({ kind, name })}><Icon name="trash" size={16} /></button>
+  const column = (kind, title, list, example) => {
+    const isProg = kind === "programme";
+    const showAll = isProg ? showAllProg : showAllStream;
+    const setShowAll = isProg ? setShowAllProg : setShowAllStream;
+    const active = list.filter((name) => count(kind, name) > 0);
+    const unused = list.filter((name) => count(kind, name) === 0);
+    const displayList = showAll ? list : active;
+
+    return (
+      <div className="stack-sm" style={{ flex: 1, minWidth: 260 }}>
+        <div className="between" style={{ alignItems: "baseline" }}>
+          <span className="eyebrow">{title}</span>
+          {unused.length > 0 && (
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              style={{ fontSize: 12, padding: "2px 8px", color: "var(--teal-700)" }}
+              onClick={() => setShowAll(!showAll)}
+            >
+              {showAll ? "Show active only" : `+ ${unused.length} other in university`}
+            </button>
+          )}
+        </div>
+        <div className="stack-sm" style={{ gap: 6 }}>
+          {displayList.length === 0 && (
+            <span className="small muted">
+              No active {title.toLowerCase()} in this course yet.
+              {unused.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  style={{ fontSize: 12, marginLeft: 8 }}
+                  onClick={() => setShowAll(true)}
+                >
+                  View all ({unused.length})
+                </button>
+              )}
             </span>
-          </div>
-        ))}
+          )}
+          {displayList.map((name) => {
+            const cnt = count(kind, name);
+            return (
+              <div
+                key={name}
+                className="between"
+                style={{
+                  padding: "6px 10px",
+                  border: "1px solid var(--line)",
+                  borderRadius: 8,
+                  background: cnt > 0 ? "var(--surface)" : "rgba(0,0,0,0.02)",
+                  opacity: cnt > 0 ? 1 : 0.7,
+                }}
+              >
+                <span className="small">
+                  <strong>{name}</strong>{" "}
+                  <span className={cnt > 0 ? "muted" : "tiny muted"}>
+                    · {cnt} in this course
+                  </span>
+                </span>
+                <span className="row" style={{ gap: 2 }}>
+                  <button
+                    type="button"
+                    className="icon-btn plain"
+                    aria-label={`Rename ${name}`}
+                    onClick={() => setRenaming({ kind, name, value: name })}
+                  >
+                    <Icon name="edit" size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn plain"
+                    aria-label={`Remove ${name}`}
+                    onClick={() => setRemoving({ kind, name })}
+                  >
+                    <Icon name="trash" size={16} />
+                  </button>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <div className="row" style={{ gap: 6, marginTop: 4 }}>
+          <label className="sr-only" htmlFor={`new-${kind}`}>New {kind}</label>
+          <input
+            id={`new-${kind}`}
+            className="input"
+            style={{ minHeight: 40 }}
+            value={newName[kind]}
+            placeholder={`Add ${kind}, e.g. ${example}`}
+            onChange={(e) => setNewName({ ...newName, [kind]: e.target.value })}
+            onKeyDown={(e) => e.key === "Enter" && add(kind)}
+          />
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={busy || !newName[kind].trim()}
+            onClick={() => add(kind)}
+          >
+            <Icon name="plus" size={16} /> Add
+          </button>
+        </div>
       </div>
-      <div className="row" style={{ gap: 6 }}>
-        <label className="sr-only" htmlFor={`new-${kind}`}>New {kind}</label>
-        <input id={`new-${kind}`} className="input" style={{ minHeight: 40 }} value={newName[kind]} placeholder={`Add ${kind}, e.g. ${example}`}
-          onChange={(e) => setNewName({ ...newName, [kind]: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && add(kind)} />
-        <button type="button" className="btn btn-sm" disabled={busy || !newName[kind].trim()} onClick={() => add(kind)}><Icon name="plus" size={16} /> Add</button>
-      </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <section className="card stack">

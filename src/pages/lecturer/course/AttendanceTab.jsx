@@ -66,16 +66,12 @@ export default function AttendanceTab({ course }) {
     <div className="stack-lg" style={{ maxWidth: 1100 }}>
       <section className="card between" style={{ flexWrap: 'wrap', gap: 16 }}>
         <div className="stack-sm" style={{ maxWidth: 620 }}>
-          <h2>Take attendance with a code</h2>
+          <h2>Take attendance with rotating code & GPS</h2>
           <p className="small muted">
-            Start a session in class and project the screen. Students open the course on their phones, tap <strong>Check in</strong>, type the
-            6-digit code and the row they are sitting in. The code changes every 30 seconds, so a code forwarded to someone outside the room
-            stops working almost at once.
+            Start a session in class and project the screen. Students open the course on their phones, tap <strong>Check in</strong>, verify their physical GPS presence in the lecture hall, and type the rotating 6-digit code. The code changes every 30 seconds to prevent forwarding outside the room.
           </p>
           <p className="small muted">
-            To catch the rest: count heads in a row and compare with the row count on screen, use <strong>Spot check</strong> to call out five
-            random names, and look at check-ins held because <strong>one phone checked in two students</strong>. Held check-ins do not count
-            until you accept them.
+            To catch anomalies: enforce <strong>GPS Geofencing</strong> to restrict check-ins strictly to students physically inside the hall, compare row numbers with head counts, use <strong>Spot check</strong> to verify random students, and inspect held check-ins where multiple students checked in from one device.
           </p>
         </div>
         {openSession ? (

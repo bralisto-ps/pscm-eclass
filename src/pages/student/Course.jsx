@@ -16,6 +16,7 @@ const TABS = [
   { id: 'materials', label: 'Materials' },
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'assignments', label: 'Assignments' },
+  { id: 'attendance', label: 'Attendance' },
   { id: 'grades', label: 'My grades' },
   { id: 'qa', label: 'Q&A' },
   { id: 'messages', label: 'Messages' },
@@ -80,6 +81,9 @@ export default function StudentCourse() {
         {tab === 'materials' && <Materials data={data} onQuizzes={() => setTab('quizzes')} graded={graded} />}
         {tab === 'quizzes' && <Quizzes quizzes={data.quizzes} reload={reload} />}
         {tab === 'assignments' && <Assignments assignments={data.assignments} reload={reload} />}
+        {tab === 'attendance' && (
+          <StudentAttendanceView attendance={data.attendance} course={course} onCheckIn={() => setCheckingIn(true)} />
+        )}
         {tab === 'grades' && (
           <div className="stack-lg" style={{ maxWidth: 900 }}>
             {data.ca && <CACard ca={data.ca} />}
@@ -540,5 +544,99 @@ function AttendanceCard({ attendance }) {
         </div>
       ))}
     </section>
+  );
+}
+
+
+function StudentAttendanceView({ attendance, course, onCheckIn }) {
+  const openNow = attendance?.open_now;
+  const sessions = attendance?.sessions || [];
+  const attended = attendance?.attended || 0;
+  const total = attendance?.total || 0;
+  const pctv = total > 0 ? Math.round((attended / total) * 100) : 100;
+
+  return (
+    <div className="stack-lg" style={{ maxWidth: 860 }}>
+      {openNow ? (
+        <section className="card" style={{ background: "var(--teal-50, #f0fdfa)", border: "2px solid var(--teal, #0d9488)", padding: "20px 24px" }}>
+          <div className="between" style={{ flexWrap: "wrap", gap: 16 }}>
+            <div className="stack-sm" style={{ flex: 1, minWidth: 260 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: "#10b981", boxShadow: "0 0 0 4px rgba(16, 185, 129, 0.2)" }} />
+                <span className="eyebrow" style={{ color: "var(--teal-800, #115e59)" }}>Live Attendance Session In Progress</span>
+              </div>
+              <h2 style={{ margin: "4px 0", fontSize: 22 }}>Attendance is Open for {course.code}</h2>
+              <p className="small muted" style={{ margin: 0 }}>
+                Your lecturer has opened attendance with GPS Geofence and rotating code. Tap below to verify your location and submit.
+              </p>
+            </div>
+            <button type="button" className="btn btn-primary" style={{ fontSize: 16, padding: "10px 24px" }} onClick={onCheckIn}>
+              <Icon name="check" size={18} /> Check In Now
+            </button>
+          </div>
+        </section>
+      ) : (
+        <section className="card-soft between" style={{ padding: "16px 20px", flexWrap: "wrap", gap: 12 }}>
+          <div className="row" style={{ gap: 10 }}>
+            <Icon name="clock" size={20} className="muted" />
+            <div>
+              <strong>No live attendance session right now</strong>
+              <div className="tiny muted">When your lecturer starts attendance in class, the check-in prompt will activate here automatically.</div>
+            </div>
+          </div>
+          <button type="button" className="btn btn-sm" onClick={onCheckIn}>
+            <Icon name="check" size={14} /> Enter code
+          </button>
+        </section>
+      )}
+
+      <section className="card stack">
+        <div className="between" style={{ flexWrap: "wrap" }}>
+          <div>
+            <span className="eyebrow">My Attendance Record</span>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
+              <span className="mono" style={{ fontSize: 32, fontWeight: 700 }}>{pctv}%</span>
+              <span className="muted">({attended} of {total} lectures attended)</span>
+            </div>
+          </div>
+          <span className={`badge ${pctv >= 75 ? "badge-teal" : pctv >= 50 ? "badge-amber" : "badge-red"}`} style={{ fontSize: 13, alignSelf: "center" }}>
+            {pctv >= 75 ? "Good standing" : pctv >= 50 ? "Attendance Warning" : "At Risk (<50%)"}
+          </span>
+        </div>
+        <div className="bar-track" style={{ height: 8, background: "var(--line-2)" }}>
+          <div className="bar-fill" style={{ width: `${Math.min(100, pctv)}%`, background: pctv >= 75 ? "var(--teal, #0d9488)" : pctv >= 50 ? "var(--amber, #f59e0b)" : "var(--red, #ef4444)" }} />
+        </div>
+      </section>
+
+      <section className="card-flush">
+        <div className="card-head">
+          <h2>Attendance Log</h2>
+          <span className="small muted">{sessions.length} sessions</span>
+        </div>
+        {sessions.length === 0 ? (
+          <div style={{ padding: "32px 20px", textAlign: "center" }} className="muted small">
+            No attendance sessions held yet for this course.
+          </div>
+        ) : (
+          sessions.map((x) => (
+            <div key={x.id} className="list-row small" style={{ padding: "12px 18px" }}>
+              <span className="list-main">
+                <span className="title" style={{ fontWeight: 600 }}>{x.title}</span>
+                <span className="tiny muted">{fmtDateTime(x.opens_at)}</span>
+              </span>
+              {x.status === "ok" ? (
+                <span className="badge badge-teal"><Icon name="check" size={13} /> Present</span>
+              ) : x.status === "review" ? (
+                <span className="badge badge-amber" title="Your lecturer is checking this check-in">Being checked</span>
+              ) : x.status === "rejected" ? (
+                <span className="badge badge-red" title="Your check-in was not accepted">Not accepted</span>
+              ) : (
+                <span className="badge badge-subtle">Absent</span>
+              )}
+            </div>
+          ))
+        )}
+      </section>
+    </div>
   );
 }
