@@ -39,7 +39,7 @@ export default function MaterialsTab({ course }) {
   if (error) return <ErrorNote error={error} onRetry={reload} />;
 
   const general = data.materials.filter((m) => !m.module_id);
-  const usedBytes = data.materials.reduce((s, m) => s + (m.size_bytes || 0), 0);
+  const usedBytes = data.totalUsed ?? data.materials.reduce((s, m) => s + (m.size_bytes || 0), 0);
   const nextWeek = Math.max(0, ...data.modules.map((m) => m.week_no || 0)) + 1;
 
   async function doRemove() {
@@ -62,7 +62,7 @@ export default function MaterialsTab({ course }) {
     <div className="stack-lg" style={{ maxWidth: 980 }}>
       <div className="between" style={{ flexWrap: 'wrap' }}>
         <p className="small muted" style={{ maxWidth: 560 }}>
-          Organise materials by week. Files you upload here use this course's share of the {STORAGE_LIMIT_LABEL} free storage
+          Organise materials by week. Files you upload here use your total {STORAGE_LIMIT_LABEL} storage
           ({fmtBytes(usedBytes) || '0 KB'} used) — for videos, upload to YouTube (unlisted) or Google Drive and add the link instead.
         </p>
         <button type="button" className="btn btn-primary" onClick={() => setEditingWeek({ week_no: nextWeek })}>

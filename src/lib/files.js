@@ -5,8 +5,9 @@
 // so older Supabase files keep working after switching.
 import { supabase, friendlyError } from './supabase.js';
 
-export const usingR2 = (import.meta.env.VITE_FILES_BACKEND || '').toLowerCase() === 'r2';
-export const STORAGE_LIMIT_LABEL = usingR2 ? '10 GB (Cloudflare)' : '100 GB (Supabase Pro)';
+// Using Supabase Pro 100 GB storage as primary; past files on R2 starting with 'r2:' continue to open seamlessly
+export const usingR2 = false;
+export const STORAGE_LIMIT_LABEL = '100 GB (Supabase Pro)';
 
 async function callFiles(body) {
   const { data, error } = await supabase.functions.invoke('files', { body });
