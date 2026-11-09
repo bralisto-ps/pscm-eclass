@@ -1,3 +1,4 @@
+import { getLetter, TargetGradeCalculator } from './Grades.jsx';
 import Messages from '../../components/Messages.jsx';
 import { useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -89,6 +90,7 @@ export default function StudentCourse() {
             <div className="stack-lg" style={{ maxWidth: 900 }}>
               {data.ca && <CACard ca={data.ca} />}
               <GradesTable quizzes={graded} assignments={data.assignments} />
+              <TargetGradeCalculator course={course} quizzes={graded} assignments={data.assignments} />
               <AttendanceCard attendance={data.attendance} />
             </div>
           )}
@@ -468,20 +470,33 @@ export function GradesTable({ quizzes, assignments }) {
     <div className="card-flush table-wrap" style={{ maxWidth: 900 }}>
       <table className="table">
         <thead>
-          <tr><th>Item</th><th>Type</th><th>Status</th><th className="num">Score</th><th className="num">%</th></tr>
+          <tr>
+            <th>Item</th><th>Type</th><th>Status</th><th className="num">Score</th><th className="num">%</th><th className="num">Grade</th>
+          </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.type + r.id}>
-              <td>{r.title}</td>
-              <td className="muted">{r.type}</td>
-              <td>
-                <span className={`badge ${r.status === 'Released' ? 'badge-teal' : r.status.startsWith('Not') ? '' : 'badge-amber'}`}>{r.status}</span>
-              </td>
-              <td className="num">{r.score !== null && r.score !== undefined ? `${fmtNumber(r.score)} / ${fmtNumber(r.max)}` : '—'}</td>
-              <td className="num">{r.score !== null && r.score !== undefined ? `${pct(r.score, r.max)}%` : '—'}</td>
-            </tr>
-          ))}
+          {rows.map((r) => {
+            const p = r.score !== null && r.score !== undefined && r.max > 0 ? Math.round((Number(r.score) / Number(r.max)) * 100) : null;
+            const letter = p !== null ? getLetter(p) : '—';
+            return (
+              <tr key={r.type + r.id}>
+                <td>{r.title}</td>
+                <td className="muted">{r.type}</td>
+                <td>
+                  <span className={`badge ${r.status === 'Released' ? 'badge-teal' : r.status.startsWith('Not') ? '' : 'badge-amber'}`}>{r.status}</span>
+                </td>
+                <td className="num">{r.score !== null && r.score !== undefined ? `${fmtNumber(r.score)} / ${fmtNumber(r.max)}` : '—'}</td>
+                <td className="num">{p !== null ? `${p}%` : '—'}</td>
+                <td className="num">
+                  {p !== null ? (
+                    <strong style={{ color: p >= 80 ? 'var(--teal-dark)' : p >= 70 ? '#2563eb' : p >= 60 ? '#d97706' : p >= 50 ? '#ca8a04' : 'var(--red-ink)' }}>
+                      {letter}
+                    </strong>
+                  ) : '—'}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
