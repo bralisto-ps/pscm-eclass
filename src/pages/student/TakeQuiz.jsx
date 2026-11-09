@@ -211,6 +211,12 @@ function Runner({ initial }) {
   const [submitting, setSubmitting] = useState(false);
   const [finished, setFinished] = useState(null);
   const [fatal, setFatal] = useState('');
+  const perQSeconds = quiz.question_time_limit ? Number(quiz.question_time_limit) : null;
+  const [qRemaining, setQRemaining] = useState(perQSeconds);
+
+  useEffect(() => {
+    setQRemaining(perQSeconds);
+  }, [current, perQSeconds]);
   const [blurred, setBlurred] = useState(false);
   const [selfiePrompt, setSelfiePrompt] = useState(false);
   const [selfieDone, setSelfieDone] = useState(() => {
@@ -312,7 +318,7 @@ function Runner({ initial }) {
     }
   }, [attempt.id, flushAll, submitting]);
 
-  // countdown
+  // overall countdown
   useEffect(() => {
     const t = setInterval(() => {
       const left = deadline - (Date.now() + offset);
@@ -324,6 +330,26 @@ function Runner({ initial }) {
     }, 500);
     return () => clearInterval(t);
   }, [deadline, offset, submit]);
+
+  // per-question countdown
+  useEffect(() => {
+    if (!perQSeconds || doneRef.current) return undefined;
+    const t = setInterval(() => {
+      setQRemaining((prev) => {
+        if (prev === null) return null;
+        if (prev <= 1) {
+          if (current < questions.length - 1) {
+            go(current + 1);
+          } else {
+            submit(true);
+          }
+          return perQSeconds;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(t);
+  }, [perQSeconds, current, questions.length, submit]);
 
   // strict mode: record leaving the quiz, block copying
   const recordExit = useCallback(async (kind) => {
@@ -468,6 +494,7 @@ function Runner({ initial }) {
             </div>
           </div>
           <div className="row">
+            {perQSeconds && <span className="badge badge-amber" style={{ marginRight: 8 }}><Icon name="clock" size={13} /> {qRemaining}s left for Q{current + 1}</span>}
             <span className="small muted hide-sm">{answeredCount} of {questions.length} answered</span>
             <span className={`timer ${low ? 'low' : ''}`} role="timer" aria-label="Time left">
               <Icon name="clock" size={16} /> {clock(remaining)}

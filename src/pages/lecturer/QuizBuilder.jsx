@@ -457,7 +457,7 @@ function Settings({ quiz, count, windows, streams, classes, onSaved }) {
     duration_minutes: quiz.duration_minutes, max_attempts: quiz.max_attempts, is_practice: quiz.is_practice,
     shuffle_questions: quiz.shuffle_questions, shuffle_options: quiz.shuffle_options,
     published: quiz.published, results_released: quiz.results_released, show_answers: quiz.show_answers,
-    restricted: quiz.restricted, lockdown: quiz.lockdown, max_exits: quiz.max_exits ?? 0, no_backtrack: quiz.no_backtrack, pool_size: quiz.pool_size ?? '',
+    restricted: quiz.restricted, lockdown: quiz.lockdown, max_exits: quiz.max_exits ?? 0, no_backtrack: quiz.no_backtrack, pool_size: quiz.pool_size ?? '', question_time_limit: quiz.question_time_limit ?? '',
   }));
   const streamWins = windows.filter((w) => (w.programme ?? '*') === '*');
   const classWins = windows.filter((w) => (w.programme ?? '*') !== '*');
@@ -496,6 +496,7 @@ function Settings({ quiz, count, windows, streams, classes, onSaved }) {
       duration_minutes: Math.max(1, Number(f.duration_minutes) || 30), max_attempts: Math.max(1, Number(f.max_attempts) || 1),
       max_exits: Math.max(0, Number(f.max_exits) || 0),
       pool_size: f.pool_size === '' || Number(f.pool_size) <= 0 ? null : Math.floor(Number(f.pool_size)),
+      question_time_limit: f.question_time_limit === '' || Number(f.question_time_limit) <= 0 ? null : Math.floor(Number(f.question_time_limit)),
     };
     if (row.opens_at && row.closes_at && new Date(row.closes_at) <= new Date(row.opens_at)) {
       throw new Error('The closing time must be after the opening time.');
@@ -582,7 +583,8 @@ function Settings({ quiz, count, windows, streams, classes, onSaved }) {
           </div>
         )}
         <div className="grid-2" style={{ gap: 10 }}>
-          <Field label="Time limit (min)"><input className="input" type="number" min="1" value={f.duration_minutes} onChange={set('duration_minutes')} /></Field>
+          <Field label="Total time (min)"><input className="input" type="number" min="1" value={f.duration_minutes} onChange={set('duration_minutes')} /></Field>
+          <Field label="Time per question (sec)"><input className="input" type="number" min="0" placeholder="Optional (e.g. 60)" value={f.question_time_limit} onChange={set('question_time_limit')} /></Field>
           <Field label="Attempts"><input className="input" type="number" min="1" value={f.max_attempts} onChange={set('max_attempts')} disabled={f.is_practice} /></Field>
         </div>
       </div>

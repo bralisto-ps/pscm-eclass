@@ -449,6 +449,7 @@ alter table public.enrollments   enable row level security;
 alter table public.modules       enable row level security;
 alter table public.materials     enable row level security;
 alter table public.announcements enable row level security;
+alter table public.quizzes add column if not exists question_time_limit int default null;
 alter table public.quizzes       enable row level security;
 alter table public.questions     enable row level security;
 alter table public.attempts      enable row level security;
