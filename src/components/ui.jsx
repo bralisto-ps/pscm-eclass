@@ -225,3 +225,38 @@ export function Confirm({ title, message, confirmLabel = 'Confirm', danger, onCo
     </Modal>
   );
 }
+
+
+export class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error("ErrorBoundary caught:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="card stack" style={{ margin: "20px 0", border: "1px solid var(--red-ink, #dc2626)" }}>
+          <div className="row" style={{ gap: 10 }}>
+            <span style={{ fontSize: 24 }}>⚠️</span>
+            <div>
+              <h3 style={{ margin: "0 0 4px" }}>Something went wrong loading this section</h3>
+              <p className="small muted" style={{ margin: 0 }}>{this.state.error?.message || "An unexpected error occurred."}</p>
+            </div>
+          </div>
+          <div>
+            <button type="button" className="btn btn-sm" onClick={() => this.setState({ hasError: false, error: null })}>
+              Try again
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}

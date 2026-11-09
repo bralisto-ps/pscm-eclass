@@ -6,7 +6,7 @@ import { useAuth } from '../../lib/auth.jsx';
 import { fmtDateTime } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import { removeFiles } from '../../lib/files.js';
-import { Confirm, Empty, ErrorNote, Field, Loading, Modal, Tabs, useAction, useLoad } from '../../components/ui.jsx';
+import { Confirm, Empty, ErrorBoundary, ErrorNote, Field, Loading, Modal, Tabs, useAction, useLoad } from '../../components/ui.jsx';
 import { CourseForm } from './Dashboard.jsx';
 import MaterialsTab from './course/MaterialsTab.jsx';
 import QuizzesTab from './course/QuizzesTab.jsx';
@@ -66,16 +66,18 @@ export default function ManageCourse() {
         <Tabs dark tabs={tabs} value={tab} onChange={(t) => setParams({ tab: t }, { replace: true })} />
       </header>
       <div className="page">
-        {tab === 'materials' && <MaterialsTab course={course} />}
-        {tab === 'quizzes' && <QuizzesTab course={course} ta={isTA} />}
-        {tab === 'assignments' && <AssignmentsTab course={course} ta={isTA} />}
-        {tab === 'attendance' && <AttendanceTab course={course} />}
-        {tab === 'ca' && <CATab course={course} onCourseChanged={reload} />}
-        {tab === 'students' && <StudentsTab course={course} ta={isTA} />}
-        {tab === 'qa' && <Forum course={course} lecturer canDelete={!isTA} />}
-        {tab === 'messages' && <Messages course={course} isLecturer />}
-        {tab === 'announcements' && <AnnouncementsTab course={course} ta={isTA} />}
-        {tab === 'settings' && !isTA && <SettingsTab course={course} reload={reload} />}
+        <ErrorBoundary key={tab}>
+          {tab === 'materials' && <MaterialsTab course={course} />}
+          {tab === 'quizzes' && <QuizzesTab course={course} ta={isTA} />}
+          {tab === 'assignments' && <AssignmentsTab course={course} ta={isTA} />}
+          {tab === 'attendance' && <AttendanceTab course={course} />}
+          {tab === 'ca' && <CATab course={course} onCourseChanged={reload} />}
+          {tab === 'students' && <StudentsTab course={course} ta={isTA} />}
+          {tab === 'qa' && <Forum course={course} lecturer canDelete={!isTA} />}
+          {tab === 'messages' && <Messages course={course} isLecturer />}
+          {tab === 'announcements' && <AnnouncementsTab course={course} ta={isTA} />}
+          {tab === 'settings' && !isTA && <SettingsTab course={course} reload={reload} />}
+        </ErrorBoundary>
       </div>
     </>
   );

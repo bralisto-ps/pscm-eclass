@@ -9,7 +9,7 @@ import { useAuth } from '../../lib/auth.jsx';
 import { fmtBytes, fmtDateTime, fmtFull, fmtNumber, hostOf, pct, relative } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import {
-  Empty, ErrorNote, Field, KindTag, Loading, Modal, Tabs, useAction, useLoad, useToast,
+  Empty, ErrorBoundary, ErrorNote, Field, KindTag, Loading, Modal, Tabs, useAction, useLoad, useToast,
 } from '../../components/ui.jsx';
 
 const TABS = [
@@ -78,22 +78,24 @@ export default function StudentCourse() {
       </header>
 
       <div className="page">
-        {tab === 'materials' && <Materials data={data} onQuizzes={() => setTab('quizzes')} graded={graded} />}
-        {tab === 'quizzes' && <Quizzes quizzes={data.quizzes} reload={reload} />}
-        {tab === 'assignments' && <Assignments assignments={data.assignments} reload={reload} />}
-        {tab === 'attendance' && (
-          <StudentAttendanceView attendance={data.attendance} course={course} onCheckIn={() => setCheckingIn(true)} />
-        )}
-        {tab === 'grades' && (
-          <div className="stack-lg" style={{ maxWidth: 900 }}>
-            {data.ca && <CACard ca={data.ca} />}
-            <GradesTable quizzes={graded} assignments={data.assignments} />
-            <AttendanceCard attendance={data.attendance} />
-          </div>
-        )}
-        {tab === 'qa' && <Forum course={course} />}
-        {tab === 'messages' && <Messages course={course} />}
-        {tab === 'announcements' && <Announcements news={data.news} />}
+        <ErrorBoundary key={tab}>
+          {tab === 'materials' && <Materials data={data} onQuizzes={() => setTab('quizzes')} graded={graded} />}
+          {tab === 'quizzes' && <Quizzes quizzes={data.quizzes} reload={reload} />}
+          {tab === 'assignments' && <Assignments assignments={data.assignments} reload={reload} />}
+          {tab === 'attendance' && (
+            <StudentAttendanceView attendance={data.attendance} course={course} onCheckIn={() => setCheckingIn(true)} />
+          )}
+          {tab === 'grades' && (
+            <div className="stack-lg" style={{ maxWidth: 900 }}>
+              {data.ca && <CACard ca={data.ca} />}
+              <GradesTable quizzes={graded} assignments={data.assignments} />
+              <AttendanceCard attendance={data.attendance} />
+            </div>
+          )}
+          {tab === 'qa' && <Forum course={course} />}
+          {tab === 'messages' && <Messages course={course} />}
+          {tab === 'announcements' && <Announcements news={data.news} />}
+        </ErrorBoundary>
       </div>
       {checkingIn && <CheckInModal courseId={course.id} courseCode={course.code} askRow={data.attendance?.ask_row} onClose={() => setCheckingIn(false)} onDone={reload} />}
     </>
