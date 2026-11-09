@@ -6,12 +6,45 @@ import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad } from './u
 
 export default function Messages({ course, isLecturer, studentIndex, studentName }) {
   const { data, error, loading, reload } = useLoad(async () => {
-    let q = supabase
-      .from('course_messages')
-      .select('*, profiles:student_id(full_name, index_no)')
-      .eq('course_id', course.id)
-      .order('created_at', { ascending: false });
-    return run(q);
+    try {
+      const msgs = await run(
+        supabase
+          .from('course_messages')
+          .select('*')
+          .eq('course_id', course.id)
+          .order('created_at', { ascending: false })
+      );
+      if (!msgs || !msgs.length) return [];
+      const studentIds = [...new Set(msgs.map((m) => m.student_id).filter(Boolean))];
+      if (studentIds.length > 0) {
+        try {
+          const profs = await run(
+            supabase
+              .from('profiles')
+              .select('id, full_name, index_no')
+              .in('id', studentIds)
+          );
+          const profMap = new Map((profs || []).map((p) => [p.id, p]));
+          return msgs.map((m) => ({
+            ...m,
+            profiles: profMap.get(m.student_id) || { full_name: 'Student', index_no: '' },
+          }));
+        } catch (profErr) {
+          console.warn('Could not hydrate message student profiles:', profErr);
+          return msgs.map((m) => ({
+            ...m,
+            profiles: { full_name: 'Student', index_no: '' },
+          }));
+        }
+      }
+      return msgs;
+    } catch (err) {
+      if (err?.message?.includes('course_messages') || err?.code === '42P01') {
+        console.warn('course_messages table not ready:', err);
+        return [];
+      }
+      throw err;
+    }
   }, [course.id]);
 
   const [sending, setSending] = useState(false);
@@ -133,6 +166,7 @@ function NewMessageModal({ courseId, onClose, onSent }) {
     if (!message.trim()) throw new Error('Please enter your message.');
     await act(async () => {
       const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('You must be signed in to send a message.');
       await run(
         supabase.from('course_messages').insert({
           course_id: courseId,

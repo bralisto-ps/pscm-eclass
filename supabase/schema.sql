@@ -2457,13 +2457,29 @@ end $$;
 create table if not exists public.course_messages (
   id uuid primary key default gen_random_uuid(),
   course_id uuid not null references public.courses on delete cascade,
-  student_id uuid not null references auth.users on delete cascade,
+  student_id uuid not null references public.profiles(id) on delete cascade,
   subject text not null default '',
   message text not null,
   reply text,
   replied_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+-- Ensure foreign key constraint for PostgREST schema cache if student_id was referencing auth.users
+do $ begin
+  if not exists (
+    select 1 from information_schema.table_constraints
+    where constraint_name = 'course_messages_student_id_profiles_fkey'
+  ) then
+    begin
+      alter table public.course_messages
+        add constraint course_messages_student_id_profiles_fkey
+        foreign key (student_id) references public.profiles(id) on delete cascade;
+    exception when others then
+      null;
+    end;
+  end if;
+end $;
 alter table public.course_messages enable row level security;
 
 drop policy if exists student_messages_policy on public.course_messages;
