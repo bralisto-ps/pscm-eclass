@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { Component, createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import Icon from './Icon.jsx';
 
 // ---------- data loading ----------
@@ -227,7 +227,7 @@ export function Confirm({ title, message, confirmLabel = 'Confirm', danger, onCo
 }
 
 
-export class ErrorBoundary extends React.Component {
+export class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
     this.state = { hasError: false, error: null };
