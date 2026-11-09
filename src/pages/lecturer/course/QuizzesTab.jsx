@@ -43,7 +43,7 @@ function QuizList({ course, ta }) {
 
   async function create() {
     const q = await act(() =>
-      run(supabase.from('quizzes').insert({ course_id: course.id, title: 'Untitled quiz', duration_minutes: 30 }).select().single()),
+      run(supabase.from('quizzes').insert({ course_id: course.id, title: 'Untitled quiz', duration_minutes: 30, lockdown: true, question_time_limit: 60, shuffle_questions: true, shuffle_options: true }).select().single()),
     );
     if (q) navigate(`/teach/quiz/${q.id}`);
   }

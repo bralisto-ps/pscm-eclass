@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { rpc } from '../../lib/supabase.js';
+import { rpc, run, supabase } from '../../lib/supabase.js';
 import { fillVars, fmtNumber, initials } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import { ErrorNote, Loading, Modal, Swatch, useLoad } from '../../components/ui.jsx';
@@ -28,11 +28,17 @@ function writeFlags(id, set) {
 }
 
 
-function AntiCameraShield({ text, blurred }) {
-  const safe = String(text).replace(/[<>&'"]/g, '');
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='380' height='220'><text x='30' y='120' transform='rotate(-18 190 110)' fill='rgba(20,33,46,0.08)' font-family='Arial, sans-serif' font-size='16' font-weight='bold'>${safe}</text></svg>`;
-  const meshSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='6' height='6'><circle cx='1.5' cy='1.5' r='0.6' fill='rgba(0,0,0,0.035)'/><circle cx='4.5' cy='4.5' r='0.6' fill='rgba(0,0,0,0.035)'/></svg>`;
-
+function AntiCameraShield({ text, blurred, onResume }) {
+  const safe = String(text || 'CONFIDENTIAL EXAM · E-CLASS PSCM').replace(/[<>&'"]/g, '');
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='440' height='260'>
+    <text x='30' y='120' transform='rotate(-20 220 130)' fill='rgba(15,23,42,0.18)' font-family='Arial, sans-serif' font-size='18' font-weight='700'>${safe}</text>
+    <text x='50' y='210' transform='rotate(-20 220 130)' fill='rgba(13,148,136,0.16)' font-family='Arial, sans-serif' font-size='13' font-weight='600'>PSCM SECURE EXAM · DO NOT PHOTOGRAPH</text>
+  </svg>`;
+  const meshSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'>
+    <circle cx='2' cy='2' r='1.2' fill='rgba(0,0,0,0.065)'/>
+    <circle cx='6' cy='6' r='1.2' fill='rgba(0,0,0,0.065)'/>
+    <line x1='0' y1='4' x2='8' y2='4' stroke='rgba(0,0,0,0.035)' stroke-width='0.5'/>
+  </svg>`;
   return (
     <>
       <div aria-hidden="true" style={{
@@ -43,15 +49,34 @@ function AntiCameraShield({ text, blurred }) {
         position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 29,
         backgroundImage: `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(meshSvg)}")`,
       }} />
+      <div aria-hidden="true" style={{
+        position: 'fixed', bottom: 12, right: 16, zIndex: 31, pointerEvents: 'none',
+        background: 'rgba(15, 23, 42, 0.85)', color: '#fff', padding: '6px 12px',
+        borderRadius: 8, fontSize: 11, fontWeight: 600, letterSpacing: '0.5px',
+        display: 'flex', alignItems: 'center', gap: 6, boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+      }}>
+        <span>🔒 ANTI-CHEAT ACTIVE</span>
+        <span style={{ opacity: 0.7 }}>·</span>
+        <span style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{safe}</span>
+      </div>
       {blurred && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 45,
-          background: 'rgba(255,255,255,0.75)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center'
+        <div onClick={onResume} style={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: 'rgba(255,255,255,0.88)', backdropFilter: 'blur(32px)', WebkitBackdropFilter: 'blur(32px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center',
+          cursor: 'pointer',
         }}>
-          <div className="card stack" style={{ maxWidth: 440, padding: 32 }}>
-            <h2 style={{ margin: 0 }}>Exam content protected</h2>
-            <p className="small muted">The window is currently not in focus. Click anywhere on this screen to return to your quiz.</p>
+          <div className="card stack" style={{ maxWidth: 460, padding: 36, boxShadow: '0 25px 50px -12px rgba(0,0,0,0.3)', border: '2px solid var(--amber, #f59e0b)' }}>
+            <div style={{ width: 60, height: 60, borderRadius: '50%', background: '#fef3c7', color: '#d97706', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto', fontSize: 30 }}>
+              ⚠️
+            </div>
+            <h2 style={{ margin: '8px 0 0', color: '#111827' }}>Exam Content Protected & Blurred</h2>
+            <p className="small muted" style={{ margin: '8px 0 16px', lineHeight: 1.6 }}>
+              The quiz window is currently not in focus or you switched to another tab. All screen exits and unfocus events are logged for your lecturer.
+            </p>
+            <button type="button" className="btn btn-primary" style={{ minHeight: 44, fontWeight: 600 }} onClick={(e) => { e.stopPropagation(); onResume?.(); }}>
+              Click Here to Resume Exam
+            </button>
           </div>
         </div>
       )}
@@ -147,7 +172,44 @@ function clock(ms) {
 
 export default function TakeQuiz() {
   const { attemptId } = useParams();
-  const { data, error, loading, reload } = useLoad(() => rpc('get_attempt', { p_attempt: attemptId, p_device: deviceLabel() }), [attemptId]);
+  const { data, error, loading, reload } = useLoad(async () => {
+    const res = await rpc('get_attempt', { p_attempt: attemptId, p_device: deviceLabel() });
+    if (!res) return null;
+    try {
+      if (res.quiz?.id) {
+        const { data: qRow } = await supabase
+          .from('quizzes')
+          .select('question_time_limit, lockdown, max_exits, no_backtrack, title')
+          .eq('id', res.quiz.id)
+          .maybeSingle();
+        if (qRow) {
+          res.quiz = {
+            ...res.quiz,
+            question_time_limit: qRow.question_time_limit ?? res.quiz.question_time_limit,
+            lockdown: qRow.lockdown ?? res.quiz.lockdown,
+            max_exits: qRow.max_exits ?? res.quiz.max_exits,
+            no_backtrack: qRow.no_backtrack ?? res.quiz.no_backtrack,
+          };
+        }
+      }
+      if (!res.student || !res.student.name) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const { data: prof } = await supabase
+            .from('profiles')
+            .select('full_name, index_no')
+            .eq('id', user.id)
+            .maybeSingle();
+          if (prof) {
+            res.student = { name: prof.full_name || 'Student', index_no: prof.index_no || '' };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Could not hydrate extra quiz settings:', e);
+    }
+    return res;
+  }, [attemptId]);
 
   if (loading) return <Loading label="Opening your quiz…" />;
   if (error) {
@@ -217,6 +279,7 @@ function Runner({ initial }) {
   useEffect(() => {
     setQRemaining(perQSeconds);
   }, [current, perQSeconds]);
+  const [antiCaptureMode, setAntiCaptureMode] = useState(true);
   const [blurred, setBlurred] = useState(false);
   const [selfiePrompt, setSelfiePrompt] = useState(false);
   const [selfieDone, setSelfieDone] = useState(() => {
@@ -224,22 +287,30 @@ function Runner({ initial }) {
   });
 
   useEffect(() => {
-    if (!strict) return undefined;
-    const onBlur = () => setBlurred(true);
-    const onFocus = () => setBlurred(false);
+    const onBlur = () => {
+      setBlurred(true);
+      if (strict) recordExit('blur');
+    };
+    const onFocus = () => {
+      setBlurred(false);
+    };
+    const onVis = () => {
+      if (document.hidden) {
+        setBlurred(true);
+        if (strict) recordExit('tab');
+      } else {
+        setBlurred(false);
+      }
+    };
     window.addEventListener('blur', onBlur);
     window.addEventListener('focus', onFocus);
-    const onVis = () => {
-      if (document.hidden) setBlurred(true);
-      else setBlurred(false);
-    };
     document.addEventListener('visibilitychange', onVis);
     return () => {
       window.removeEventListener('blur', onBlur);
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVis);
     };
-  }, [strict]);
+  }, [strict, recordExit]);
 
   const midpoint = Math.floor(questions.length / 2);
   useEffect(() => {
@@ -334,22 +405,34 @@ function Runner({ initial }) {
   // per-question countdown
   useEffect(() => {
     if (!perQSeconds || doneRef.current) return undefined;
+    setQRemaining(perQSeconds);
     const t = setInterval(() => {
       setQRemaining((prev) => {
         if (prev === null) return null;
         if (prev <= 1) {
-          if (current < questions.length - 1) {
-            go(current + 1);
-          } else {
-            submit(true);
-          }
-          return perQSeconds;
+          clearInterval(t);
+          return 0;
         }
         return prev - 1;
       });
     }, 1000);
     return () => clearInterval(t);
-  }, [perQSeconds, current, questions.length, submit]);
+  }, [perQSeconds, current]);
+
+  // Handle per-question timer expiry: auto-save and advance
+  useEffect(() => {
+    if (perQSeconds && qRemaining === 0 && !doneRef.current) {
+      const qid = questions[current]?.id;
+      if (qid && qid in latest.current) {
+        saveNow(qid);
+      }
+      if (current < questions.length - 1) {
+        go(current + 1);
+      } else {
+        submit(true);
+      }
+    }
+  }, [qRemaining, perQSeconds, current, questions.length, submit]);
 
   // strict mode: record leaving the quiz, block copying
   const recordExit = useCallback(async (kind) => {
@@ -469,7 +552,7 @@ function Runner({ initial }) {
 
   return (
     <div className={`quiz-shell ${strict ? 'strict' : ''}`}>
-      {student && <AntiCameraShield text={`${student.name} · ${student.index_no || ''}`} blurred={blurred} />}
+      <AntiCameraShield text={student?.name ? `${student.name} · ${student.index_no || ''}` : 'CONFIDENTIAL EXAM · E-CLASS PSCM'} blurred={blurred} onResume={() => setBlurred(false)} />
       {selfiePrompt && <SelfieModal attemptId={attempt.id} onDone={() => { setSelfiePrompt(false); setSelfieDone(true); }} />}
       {needFs && (
         <div className="fs-gate" role="dialog" aria-modal="true" aria-label="Full screen required">
@@ -493,8 +576,22 @@ function Runner({ initial }) {
               <span className="tiny muted">{quiz.course_code} · answers save automatically{strict ? ' · strict mode' : ''}</span>
             </div>
           </div>
-          <div className="row">
-            {perQSeconds && <span className="badge badge-amber" style={{ marginRight: 8 }}><Icon name="clock" size={13} /> {qRemaining}s left for Q{current + 1}</span>}
+          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+            <button
+              type="button"
+              className={`chip ${antiCaptureMode ? 'chip-active' : ''}`}
+              onClick={() => setAntiCaptureMode((v) => !v)}
+              title="Toggle anti-camera large font split presentation"
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                background: antiCaptureMode ? 'var(--teal-50, #f0fdfa)' : undefined,
+                borderColor: antiCaptureMode ? 'var(--teal, #0d9488)' : undefined,
+                color: antiCaptureMode ? 'var(--teal-dark, #0d9488)' : undefined,
+              }}
+            >
+              <Icon name="shield" size={13} /> {antiCaptureMode ? 'Anti-Capture: Large' : 'Standard View'}
+            </button>
             <span className="small muted hide-sm">{answeredCount} of {questions.length} answered</span>
             <span className={`timer ${low ? 'low' : ''}`} role="timer" aria-label="Time left">
               <Icon name="clock" size={16} /> {clock(remaining)}
@@ -513,7 +610,67 @@ function Runner({ initial }) {
       )}
 
       <div className="quiz-body">
-        <main className="question-card">
+        <main className="question-card" style={{ filter: blurred ? 'blur(16px)' : 'none', transition: 'filter 0.2s' }}>
+          {perQSeconds && (
+            <div
+              style={{
+                marginBottom: 16,
+                padding: '10px 16px',
+                borderRadius: 10,
+                background: qRemaining <= 5 ? '#fef2f2' : qRemaining <= 15 ? '#fffbeb' : '#f0fdf4',
+                border: `1.5px solid ${qRemaining <= 5 ? '#ef4444' : qRemaining <= 15 ? '#f59e0b' : '#10b981'}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                boxShadow: qRemaining <= 5 ? '0 0 12px rgba(239,68,68,0.25)' : 'none',
+                transition: 'all 0.3s ease',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Icon
+                  name="clock"
+                  size={18}
+                  style={{
+                    color: qRemaining <= 5 ? '#ef4444' : qRemaining <= 15 ? '#d97706' : '#15803d',
+                  }}
+                />
+                <div>
+                  <strong
+                    style={{
+                      fontSize: 14,
+                      color: qRemaining <= 5 ? '#b91c1c' : qRemaining <= 15 ? '#b45309' : '#166534',
+                    }}
+                  >
+                    {qRemaining <= 5 ? '⚠️ Time expiring for this question: ' : 'Question Timer: '}
+                    {qRemaining}s remaining
+                  </strong>
+                  <span className="tiny muted" style={{ display: 'block' }}>
+                    Auto-advances when timer reaches 0
+                  </span>
+                </div>
+              </div>
+              <div
+                style={{
+                  flex: 1,
+                  maxWidth: 200,
+                  height: 10,
+                  borderRadius: 5,
+                  background: 'rgba(0,0,0,0.08)',
+                  overflow: 'hidden',
+                }}
+              >
+                <div
+                  style={{
+                    height: '100%',
+                    width: `${Math.min(100, Math.max(0, ((qRemaining ?? 0) / perQSeconds) * 100))}%`,
+                    background: qRemaining <= 5 ? '#ef4444' : qRemaining <= 15 ? '#f59e0b' : '#10b981',
+                    transition: 'width 1s linear',
+                  }}
+                />
+              </div>
+            </div>
+          )}
           <div className="between" style={{ flexWrap: 'wrap' }}>
             <span className="eyebrow">Question {current + 1} of {questions.length}</span>
             <div className="row-wrap">
@@ -521,10 +678,66 @@ function Runner({ initial }) {
               {Object.keys(q.vars || {}).length > 0 && <span className="badge">Figures unique to you</span>}
             </div>
           </div>
-
-          <div className="question-text">{fillVars(q.prompt, q.vars)}</div>
-
-          <div className="answer-box">
+          <div
+            className="question-text"
+            style={{
+              fontSize: antiCaptureMode ? '1.75rem' : '1.125rem',
+              lineHeight: 1.75,
+              letterSpacing: '-0.015em',
+              fontWeight: antiCaptureMode ? 500 : 400,
+              color: '#0f172a',
+              padding: antiCaptureMode ? '36px 30px' : '20px',
+              background: 'var(--surface)',
+              borderRadius: '12px',
+              border: '1px solid var(--line-2)',
+              minHeight: antiCaptureMode ? '52vh' : 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              boxShadow: antiCaptureMode ? '0 2px 10px rgba(0,0,0,0.04)' : 'none',
+              transition: 'all 0.2s ease',
+            }}
+          >
+            <div style={{ wordBreak: 'break-word' }}>{fillVars(q.prompt, q.vars)}</div>
+            {antiCaptureMode && (
+              <div
+                style={{
+                  marginTop: 40,
+                  paddingTop: 16,
+                  borderTop: '1px dashed var(--line-2)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  fontSize: '0.92rem',
+                  color: 'var(--teal-dark, #0d9488)',
+                  fontWeight: 600,
+                }}
+              >
+                <Icon name="chevronDown" size={18} />
+                <span>Scroll down to view answer options ↓</span>
+              </div>
+            )}
+          </div>
+          <div
+            className="answer-box"
+            style={{
+              marginTop: antiCaptureMode ? '56px' : '18px',
+              padding: '24px 22px',
+              scrollMarginTop: '80px',
+              border: '1.5px solid var(--line-2)',
+            }}
+          >
+            <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span className="eyebrow" style={{ color: 'var(--teal-dark, #0d9488)', fontWeight: 700, fontSize: 13 }}>
+                {q.kind === 'mcq' ? 'Select One Option:' : 'Your Answer:'}
+              </span>
+              {antiCaptureMode && (
+                <span className="tiny muted">
+                  Answer choices isolated below fold
+                </span>
+              )}
+            </div>
             <AnswerInput q={q} value={answers[q.id]} onChange={setAnswer} onBlur={() => saveNow(q.id)} />
             <span className="save-state" aria-live="polite" style={{ color: st === 'error' ? 'var(--red-ink)' : 'var(--muted)' }}>
               {st === 'saving' && 'Saving…'}

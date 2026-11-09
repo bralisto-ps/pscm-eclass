@@ -802,7 +802,7 @@ begin
     'quiz', jsonb_build_object('id', qz.id, 'title', qz.title, 'instructions', qz.instructions,
                                'reference', qz.reference, 'course_id', c.id, 'course_code', c.code,
                                'course_color', c.color, 'lockdown', qz.lockdown,
-                               'max_exits', qz.max_exits, 'no_backtrack', qz.no_backtrack),
+                               'max_exits', qz.max_exits, 'no_backtrack', qz.no_backtrack, 'question_time_limit', qz.question_time_limit),
     'student', jsonb_build_object('name', pr.full_name, 'index_no', pr.index_no),
     'questions', coalesce(qs, '[]'::jsonb));
 end;

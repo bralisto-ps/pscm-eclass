@@ -598,15 +598,45 @@ function Settings({ quiz, count, windows, streams, classes, onSaved }) {
         )}
         <div className="grid-2" style={{ gap: 10 }}>
           <Field label="Total time (min)"><input className="input" type="number" min="1" value={f.duration_minutes} onChange={set('duration_minutes')} /></Field>
-          <Field label="Time per question (sec)"><input className="input" type="number" min="0" placeholder="Optional (e.g. 60)" value={f.question_time_limit} onChange={set('question_time_limit')} /></Field>
+          <div className="stack-sm">
+            <Field label="Time per question (sec)">
+              <input className="input" type="number" min="0" placeholder="Optional (e.g. 60)" value={f.question_time_limit} onChange={set('question_time_limit')} />
+            </Field>
+            <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
+              {[
+                { label: 'Off', val: '' },
+                { label: '30s', val: '30' },
+                { label: '45s', val: '45' },
+                { label: '60s', val: '60' },
+                { label: '90s', val: '90' },
+              ].map((opt) => (
+                <button
+                  key={opt.label}
+                  type="button"
+                  className="chip"
+                  style={{ fontSize: 11, padding: '2px 8px', minHeight: 24 }}
+                  aria-pressed={String(f.question_time_limit || '') === opt.val}
+                  onClick={() => { setF({ ...f, question_time_limit: opt.val }); setDirty(true); }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <Field label="Attempts"><input className="input" type="number" min="1" value={f.max_attempts} onChange={set('max_attempts')} disabled={f.is_practice} /></Field>
         </div>
       </div>
 
       <div className="stack-sm" style={{ borderTop: '1px solid var(--line-2)', paddingTop: 14 }}>
-        <span className="eyebrow">Exam security</span>
+        <div className="between" style={{ alignItems: 'center' }}>
+          <span className="eyebrow">Exam Security & Anti-Cheating Suite</span>
+          <span className="badge badge-teal" style={{ fontSize: 11 }}>Active</span>
+        </div>
+        <div style={{ padding: '8px 12px', background: 'rgba(13, 148, 136, 0.05)', borderRadius: 6, fontSize: 12, color: 'var(--teal-900, #134e4a)', lineHeight: 1.5 }}>
+          🛡️ Includes high-contrast student index watermark, automatic screen blur on window/tab switch, per-question countdown auto-advance, and anti-capture large-font layout requiring scrolling for options.
+        </div>
         <label className="check"><input type="checkbox" checked={f.lockdown} onChange={set('lockdown')} />
-          <span><strong>Strict mode</strong> — opens full screen, blocks copy, paste and right-click, and warns and records every time a student leaves the quiz</span></label>
+          <span><strong>Strict lockdown mode</strong> — enforces full screen, disables copy/paste, and auto-logs all tab/window exits</span></label>
         {f.lockdown && (
           <label className="row-wrap small" style={{ gap: 8, paddingLeft: 28 }}>
             <span className="nowrap">Auto-submit after</span>

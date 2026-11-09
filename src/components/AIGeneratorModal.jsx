@@ -43,6 +43,9 @@ export default function AIGeneratorModal({ courseId, quizId, start = 1, onClose,
   const [title, setTitle] = useState('');
   const [duration, setDuration] = useState(20);
   const [count, setCount] = useState(5);
+  const [antiCheat, setAntiCheat] = useState(true);
+  const [timePerQ, setTimePerQ] = useState('60');
+  const [noBacktrack, setNoBacktrack] = useState(true);
   const [generatedText, setGeneratedText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [act, busy] = useAction();
@@ -132,6 +135,11 @@ Answer: A`);
                 duration_minutes: Number(duration) || 20,
                 published: false,
                 results_released: false,
+                lockdown: antiCheat,
+                question_time_limit: timePerQ ? Number(timePerQ) : null,
+                no_backtrack: noBacktrack,
+                shuffle_questions: true,
+                shuffle_options: true,
               })
               .select()
               .single()
@@ -212,26 +220,79 @@ Answer: A`);
         </div>
 
         {isNewQuiz && (
-          <div className="grid-2">
-            <Field label="Quiz title">
-              <input
-                className="input"
-                placeholder="e.g. Inventory Management Quiz"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-              />
-            </Field>
-            <Field label="Duration (minutes)">
-              <input
-                className="input mono"
-                type="number"
-                min="5"
-                max="180"
-                value={duration}
-                onChange={(e) => setDuration(e.target.value)}
-              />
-            </Field>
-          </div>
+          <>
+            <div className="grid-2">
+              <Field label="Quiz title">
+                <input
+                  className="input"
+                  placeholder="e.g. Inventory Management Quiz"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+              </Field>
+              <Field label="Duration (minutes)">
+                <input
+                  className="input mono"
+                  type="number"
+                  min="5"
+                  max="180"
+                  value={duration}
+                  onChange={(e) => setDuration(e.target.value)}
+                />
+              </Field>
+            </div>
+            <div
+              className="stack-sm"
+              style={{
+                padding: '12px 16px',
+                borderRadius: 8,
+                background: 'rgba(13, 148, 136, 0.05)',
+                border: '1px solid var(--teal-200, #99f6e4)',
+              }}
+            >
+              <div className="between" style={{ alignItems: 'center' }}>
+                <strong className="small" style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--teal-900, #134e4a)' }}>
+                  <Icon name="shield" size={16} /> Exam Anti-Cheating & Security Suite
+                </strong>
+                <span className="badge badge-teal" style={{ fontSize: 11 }}>Active on this quiz</span>
+              </div>
+              <div className="grid-2" style={{ gap: 10, marginTop: 4 }}>
+                <label className="check small">
+                  <input type="checkbox" checked={antiCheat} onChange={(e) => setAntiCheat(e.target.checked)} />
+                  <span><strong>Strict Lockdown & Camera Shield</strong> (Watermark, window blur, exit logging)</span>
+                </label>
+                <label className="check small">
+                  <input type="checkbox" checked={noBacktrack} onChange={(e) => setNoBacktrack(e.target.checked)} />
+                  <span><strong>No Going Back</strong> (Question locks once student answers)</span>
+                </label>
+              </div>
+              <div style={{ marginTop: 6 }}>
+                <span className="small muted" style={{ display: 'block', marginBottom: 4 }}>
+                  Time limit per question:
+                </span>
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  {[
+                    { label: 'No limit', val: '' },
+                    { label: '30s', val: '30' },
+                    { label: '45s', val: '45' },
+                    { label: '60s (Recommended)', val: '60' },
+                    { label: '90s', val: '90' },
+                    { label: '120s', val: '120' },
+                  ].map((opt) => (
+                    <button
+                      key={opt.label}
+                      type="button"
+                      className="chip"
+                      aria-pressed={timePerQ === opt.val}
+                      onClick={() => setTimePerQ(opt.val)}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </>
         )}
 
         <Field label="Topic, chapter title, or paste lecture notes *">
