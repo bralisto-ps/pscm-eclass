@@ -49,6 +49,7 @@ function AntiCameraShield({ text, blurred, onResume }) {
         position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 29,
         backgroundImage: `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(meshSvg)}")`,
       }} />
+      <div className="anti-camera-scanline" aria-hidden="true" />
       <div aria-hidden="true" style={{
         position: 'fixed', bottom: 12, right: 16, zIndex: 31, pointerEvents: 'none',
         background: 'rgba(15, 23, 42, 0.85)', color: '#fff', padding: '6px 12px',
@@ -279,7 +280,7 @@ function Runner({ initial }) {
   useEffect(() => {
     setQRemaining(perQSeconds);
   }, [current, perQSeconds]);
-  const [antiCaptureMode, setAntiCaptureMode] = useState(true);
+  const antiCaptureMode = true; // Permanently enforced for all exams
   const [blurred, setBlurred] = useState(false);
   const [selfiePrompt, setSelfiePrompt] = useState(false);
   const [selfieDone, setSelfieDone] = useState(() => {
@@ -577,21 +578,23 @@ function Runner({ initial }) {
             </div>
           </div>
           <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-            <button
-              type="button"
-              className={`chip ${antiCaptureMode ? 'chip-active' : ''}`}
-              onClick={() => setAntiCaptureMode((v) => !v)}
-              title="Toggle anti-camera large font split presentation"
+            <span
+              className="chip chip-active"
+              title="Anti-capture view is automatically enforced so questions and options cannot be photographed together in one shot"
               style={{
                 fontSize: 12,
                 fontWeight: 600,
-                background: antiCaptureMode ? 'var(--teal-50, #f0fdfa)' : undefined,
-                borderColor: antiCaptureMode ? 'var(--teal, #0d9488)' : undefined,
-                color: antiCaptureMode ? 'var(--teal-dark, #0d9488)' : undefined,
+                background: 'var(--teal-50, #f0fdfa)',
+                borderColor: 'var(--teal, #0d9488)',
+                color: 'var(--teal-dark, #0d9488)',
+                cursor: 'default',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
               }}
             >
-              <Icon name="shield" size={13} /> {antiCaptureMode ? 'Anti-Capture: Large' : 'Standard View'}
-            </button>
+              <Icon name="shield" size={13} /> Anti-Capture (Enforced)
+            </span>
             <button
               type="button"
               className="chip"
