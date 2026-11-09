@@ -1,3 +1,4 @@
+import AIGeneratorModal from "../../components/AIGeneratorModal.jsx";
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
@@ -83,6 +84,19 @@ export default function QuizBuilder() {
     <>
       <Topbar title={quiz.title} sub={`${quiz.courses.code} · ${questions.length} questions · ${fmtNumber(total)} marks`}>
         <span className={`badge ${st.cls}`}>{st.label}</span>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => setAiGenerating(true)}
+          style={{
+            background: "linear-gradient(135deg, #0d9488 0%, #6366f1 100%)",
+            borderColor: "transparent",
+            color: "#fff",
+            fontWeight: 600,
+          }}
+        >
+          <Icon name="sparkles" size={16} /> Generate with AI ✨
+        </button>
         <Link to={`/teach/course/${quiz.courses.id}?tab=quizzes`} className="btn"><Icon name="chevronLeft" /> Quizzes</Link>
         <Link to={`/teach/quiz/${quiz.id}/results`} className="btn btn-dark"><Icon name="chart" /> Results</Link>
       </Topbar>
@@ -690,121 +704,3 @@ function PasteModal({ quizId, start, onClose, onDone }) {
   );
 }
 
-function AIGeneratorModal({ quizId, start, onClose, onDone }) {
-  const [topic, setTopic] = useState('');
-  const [count, setCount] = useState(3);
-  const [generatedText, setGeneratedText] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [act, busy] = useAction();
-
-  const parsed = useMemo(() => parseMcq(generatedText), [generatedText]);
-
-  async function handleGenerate() {
-    if (!topic.trim()) return;
-    setIsGenerating(true);
-    const cleanTopic = topic.trim();
-    const keywords = cleanTopic.split(/\s+/).filter((w) => w.length > 3);
-    const primary = keywords[0] || 'the core subject';
-    const secondary = keywords[1] || 'operational management';
-
-    const questionsList = [];
-    for (let i = 1; i <= count; i++) {
-      if (i === 1) {
-        questionsList.push(`1. Which of the following best defines the primary objective of ${cleanTopic}?
-A) Minimizing overall operational efficiency
-B) Maximizing value, efficiency and strategic alignment *
-C) Eliminating internal quality audits
-D) Increasing uncoordinated process delays
-Answer: B`);
-      } else if (i === 2) {
-        questionsList.push(`2. In the context of ${cleanTopic}, what is a critical risk factor when managing ${secondary}?
-A) Over-reliance on inaccurate forecasting data *
-B) Excessive customer satisfaction
-C) Zero inventory holding costs
-D) Immediate automated throughput
-Answer: A`);
-      } else if (i === 3) {
-        questionsList.push(`3. When evaluating performance metrics for ${cleanTopic}, which quantitative metric is most commonly prioritized?
-A) Random variance index
-B) Total cycle time and resource utilization *
-C) Unaudited anecdotal reports
-D) Arbitrary target milestones
-Answer: B`);
-      } else if (i === 4) {
-        questionsList.push(`4. A primary operational challenge in implementing ${cleanTopic} across an organization is:
-A) Cross-functional coordination and change management *
-B) Instantaneous stakeholder consensus
-C) Negative cost of implementation
-D) Complete absence of operational variance
-Answer: A`);
-      } else {
-        questionsList.push(`${i}. Which strategic decision directly impacts ${cleanTopic} in enterprise management?
-A) Short-term speculative trading
-B) Aligning resource allocation with long-term objectives *
-C) Disregarding supply and demand indicators
-D) Decentralized unmonitored spending
-Answer: B`);
-      }
-    }
-    setGeneratedText(questionsList.join('\n\n'));
-    setIsGenerating(false);
-  }
-
-  async function save() {
-    const rows = parsed.filter((p) => p.correct >= 0).map((p, i) => ({
-      quiz_id: quizId, kind: 'mcq', position: start + i, prompt: p.prompt, marks: 1, topic: topic.trim().slice(0, 50),
-      options: p.options.map((t, k) => ({ id: LETTERS[k], text: t })), answer: { correct: LETTERS[p.correct] },
-    }));
-    const ok = await act(() => run(supabase.from('questions').insert(rows)), `${rows.length} questions added to quiz.`);
-    if (ok !== undefined) {
-      onDone();
-      onClose();
-    }
-  }
-
-  return (
-    <Modal title="AI Quiz Question Generator" onClose={onClose} wide
-      footer={
-        <>
-          <button type="button" className="btn" onClick={onClose}>Cancel</button>
-          {generatedText && (
-            <button type="button" className="btn btn-primary" onClick={save} disabled={busy || !parsed.length}>
-              Add {parsed.length} questions to quiz
-            </button>
-          )}
-        </>
-      }>
-      <div className="stack">
-        <p className="small muted">
-          Enter a topic (e.g. <em>"Inventory Control & EOQ Model"</em>, <em>"Procurement Contracts"</em>) or paste lecture notes. AI generates multiple-choice questions with answer keys ready to insert into your quiz.
-        </p>
-
-        <Field label="Topic or lecture notes *">
-          <textarea className="input" rows={3} placeholder="e.g. Supply Chain Risk Management, Bullwhip Effect, Linear Programming..." value={topic} onChange={(e) => setTopic(e.target.value)} autoFocus />
-        </Field>
-
-        <div className="between" style={{ flexWrap: 'wrap', gap: 12 }}>
-          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-            <span className="small muted">Questions:</span>
-            {[3, 5, 8].map((n) => (
-              <button key={n} type="button" className="chip" aria-pressed={count === n} onClick={() => setCount(n)}>
-                {n} questions
-              </button>
-            ))}
-          </div>
-          <button type="button" className="btn btn-primary btn-sm" onClick={handleGenerate} disabled={!topic.trim() || isGenerating}>
-            <Icon name="sparkles" size={16} /> {isGenerating ? 'Generating…' : 'Generate questions'}
-          </button>
-        </div>
-
-        {generatedText && (
-          <div className="stack-sm" style={{ marginTop: 12 }}>
-            <span className="eyebrow">Review & Edit Generated Questions ({parsed.length} found):</span>
-            <textarea className="textarea mono" style={{ minHeight: 220, fontSize: 13 }} value={generatedText} onChange={(e) => setGeneratedText(e.target.value)} />
-            <span className="tiny muted">You can edit any prompt, option, or correct answer before adding them to your quiz.</span>
-          </div>
-        )}
-      </div>
-    </Modal>
-  );
-}

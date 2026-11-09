@@ -1,3 +1,4 @@
+import AIGeneratorModal from "../../../components/AIGeneratorModal.jsx";
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { run, supabase } from '../../../lib/supabase.js';
@@ -33,6 +34,7 @@ function QuizList({ course, ta }) {
   const navigate = useNavigate();
   const [act, busy] = useAction();
   const [removing, setRemoving] = useState(null);
+  const [aiModal, setAiModal] = useState(false);
   const { data, error, loading, reload } = useLoad(
     () => run(supabase.from('quizzes').select(`*, ${ta ? '' : 'questions(count), '}attempts(count), quiz_windows(programme), quiz_access(count)`)
       .eq('course_id', course.id).order('created_at', { ascending: false })),
@@ -77,11 +79,58 @@ function QuizList({ course, ta }) {
           {ta ? 'Open a quiz\'s results to see the gradebook and mark written answers.'
             : 'Quizzes are marked automatically. Calculation questions can give every student their own figures, so answers can\'t be copied.'}
         </p>
-        {!ta && <button type="button" className="btn btn-primary" onClick={create} disabled={busy}><Icon name="plus" /> New quiz</button>}
+        {!ta && (
+          <div className="row-wrap" style={{ gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setAiModal(true)}
+              style={{
+                background: "linear-gradient(135deg, #0d9488 0%, #6366f1 100%)",
+                borderColor: "transparent",
+                color: "#fff",
+                fontWeight: 600,
+                boxShadow: "0 2px 8px rgba(99, 102, 241, 0.25)",
+              }}
+            >
+              <Icon name="sparkles" size={16} /> Generate Quiz with AI ✨
+            </button>
+            <button type="button" className="btn" onClick={create} disabled={busy}>
+              <Icon name="plus" /> New manual quiz
+            </button>
+          </div>
+        )}
       </div>
 
       {data.length === 0 ? (
-        <div className="card"><Empty icon="quiz" title="No quizzes yet">Create a quiz, add questions, then publish it with an opening and closing time.</Empty></div>
+        <div className="card stack" style={{ textAlign: "center", padding: "36px 20px", alignItems: "center" }}>
+          <div style={{ width: 54, height: 54, borderRadius: "50%", background: "var(--teal-50)", display: "grid", placeItems: "center", color: "var(--teal)" }}>
+            <Icon name="sparkles" size={28} />
+          </div>
+          <h2>No quizzes yet in {course.code}</h2>
+          <p className="muted small" style={{ maxWidth: 460 }}>
+            Generate multiple-choice questions instantly from any topic or lecture notes using AI, or create an empty quiz manually.
+          </p>
+          <div className="row-wrap" style={{ gap: 10, justifyContent: "center", marginTop: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setAiModal(true)}
+              style={{
+                background: "linear-gradient(135deg, #0d9488 0%, #6366f1 100%)",
+                borderColor: "transparent",
+                color: "#fff",
+                fontWeight: 600,
+                boxShadow: "0 2px 8px rgba(99, 102, 241, 0.25)",
+              }}
+            >
+              <Icon name="sparkles" size={16} /> Generate Quiz with AI ✨
+            </button>
+            <button type="button" className="btn" onClick={create} disabled={busy}>
+              <Icon name="plus" /> New manual quiz
+            </button>
+          </div>
+        </div>
       ) : (
         <div className="card-flush table-wrap">
           <table className="table">

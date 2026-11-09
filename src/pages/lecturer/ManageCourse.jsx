@@ -19,7 +19,7 @@ import Forum from '../../components/Forum.jsx';
 
 const TABS = [
   { id: 'materials', label: 'Materials' },
-  { id: 'quizzes', label: 'Quizzes' },
+  { id: 'quizzes', label: 'Quizzes ✨ AI' },
   { id: 'assignments', label: 'Assignments' },
   { id: 'attendance', label: 'Attendance' },
   { id: 'ca', label: 'CA' },

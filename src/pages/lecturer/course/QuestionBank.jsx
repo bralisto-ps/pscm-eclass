@@ -1,3 +1,4 @@
+import AIGeneratorModal from "../../../components/AIGeneratorModal.jsx";
 import { useMemo, useState } from 'react';
 import { run, supabase } from '../../../lib/supabase.js';
 import { fmtNumber } from '../../../lib/format.js';
@@ -23,6 +24,7 @@ export default function QuestionBank({ course }) {
   const [copying, setCopying] = useState(false);
   const [random, setRandom] = useState(false);
   const [tagging, setTagging] = useState(false);
+  const [aiModal, setAiModal] = useState(false);
 
   const topics = useMemo(() => {
     const m = new Map();
@@ -65,6 +67,19 @@ export default function QuestionBank({ course }) {
             </select>
           </div>
           <div className="row-wrap">
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              onClick={() => setAiModal(true)}
+              style={{
+                background: "linear-gradient(135deg, #0d9488 0%, #6366f1 100%)",
+                borderColor: "transparent",
+                color: "#fff",
+                fontWeight: 600,
+              }}
+            >
+              <Icon name="sparkles" size={16} /> Generate with AI ✨
+            </button>
             <button type="button" className="btn btn-sm" onClick={() => setRandom(true)} disabled={!data.questions.length}>Add random set to a quiz…</button>
           </div>
         </div>
