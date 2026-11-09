@@ -28,14 +28,108 @@ function writeFlags(id, set) {
 }
 
 
-function Watermark({ text }) {
+function AntiCameraShield({ text, blurred }) {
   const safe = String(text).replace(/[<>&'"]/g, '');
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='380' height='220'><text x='30' y='120' transform='rotate(-18 190 110)' fill='rgba(20,33,46,0.075)' font-family='Arial, sans-serif' font-size='17' font-weight='bold'>${safe}</text></svg>`;
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='380' height='220'><text x='30' y='120' transform='rotate(-18 190 110)' fill='rgba(20,33,46,0.08)' font-family='Arial, sans-serif' font-size='16' font-weight='bold'>${safe}</text></svg>`;
+  const meshSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='6' height='6'><circle cx='1.5' cy='1.5' r='0.6' fill='rgba(0,0,0,0.035)'/><circle cx='4.5' cy='4.5' r='0.6' fill='rgba(0,0,0,0.035)'/></svg>`;
+
   return (
-    <div aria-hidden="true" style={{
-      position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 30,
-      backgroundImage: `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}")`,
-    }} />
+    <>
+      <div aria-hidden="true" style={{
+        position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 30,
+        backgroundImage: `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}")`,
+      }} />
+      <div aria-hidden="true" style={{
+        position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 29,
+        backgroundImage: `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(meshSvg)}")`,
+      }} />
+      {blurred && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 45,
+          background: 'rgba(255,255,255,0.75)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center'
+        }}>
+          <div className="card stack" style={{ maxWidth: 440, padding: 32 }}>
+            <h2 style={{ margin: 0 }}>Exam content protected</h2>
+            <p className="small muted">The window is currently not in focus. Click anywhere on this screen to return to your quiz.</p>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function SelfieModal({ attemptId, onDone }) {
+  const [videoStream, setVideoStream] = useState(null);
+  const [photo, setPhoto] = useState(null);
+  const [err, setErr] = useState('');
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    let s = null;
+    navigator.mediaDevices?.getUserMedia?.({ video: { facingMode: 'user', width: 320, height: 240 } })
+      .then((stream) => {
+        s = stream;
+        setVideoStream(stream);
+        if (videoRef.current) videoRef.current.srcObject = stream;
+      })
+      .catch((e) => setErr('Camera access not available or blocked: ' + e.message));
+
+    return () => {
+      s?.getTracks?.().forEach((t) => t.stop());
+    };
+  }, []);
+
+  function takePhoto() {
+    if (!videoRef.current) return;
+    const video = videoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth || 320;
+    canvas.height = video.videoHeight || 240;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+    setPhoto(dataUrl);
+    try {
+      localStorage.setItem(`selfie_img:${attemptId}`, dataUrl);
+      localStorage.setItem(`selfie:${attemptId}`, 'done');
+    } catch {}
+  }
+
+  function finish() {
+    localStorage.setItem(`selfie:${attemptId}`, 'done');
+    videoStream?.getTracks?.().forEach((t) => t.stop());
+    onDone();
+  }
+
+  return (
+    <Modal title="Identity Verification Check"
+      footer={
+        photo ? (
+          <button type="button" className="btn btn-primary" onClick={finish}>Continue Exam</button>
+        ) : (
+          <>
+            {err && <button type="button" className="btn btn-ghost" onClick={finish}>Skip (Camera Unavailable)</button>}
+            <button type="button" className="btn btn-primary" onClick={takePhoto} disabled={!videoStream}>
+              Take Verification Photo
+            </button>
+          </>
+        )
+      }>
+      <div className="stack" style={{ textAlign: 'center', alignItems: 'center' }}>
+        <p className="small muted">Please face the camera directly to verify your identity before continuing.</p>
+        {photo ? (
+          <div style={{ maxWidth: 280, borderRadius: 8, overflow: 'hidden', border: '2px solid var(--teal)' }}>
+            <img src={photo} alt="Verification selfie" style={{ width: '100%', display: 'block' }} />
+          </div>
+        ) : (
+          <div style={{ width: 280, height: 210, background: '#111', borderRadius: 8, overflow: 'hidden', position: 'relative' }}>
+            <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            {err && <div style={{ position: 'absolute', inset: 0, padding: 12, color: '#fff', fontSize: 13, display: 'flex', alignItems: 'center' }}>{err}</div>}
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -117,6 +211,36 @@ function Runner({ initial }) {
   const [submitting, setSubmitting] = useState(false);
   const [finished, setFinished] = useState(null);
   const [fatal, setFatal] = useState('');
+  const [blurred, setBlurred] = useState(false);
+  const [selfiePrompt, setSelfiePrompt] = useState(false);
+  const [selfieDone, setSelfieDone] = useState(() => {
+    try { return localStorage.getItem(`selfie:${attempt.id}`) === 'done'; } catch { return false; }
+  });
+
+  useEffect(() => {
+    if (!strict) return undefined;
+    const onBlur = () => setBlurred(true);
+    const onFocus = () => setBlurred(false);
+    window.addEventListener('blur', onBlur);
+    window.addEventListener('focus', onFocus);
+    const onVis = () => {
+      if (document.hidden) setBlurred(true);
+      else setBlurred(false);
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [strict]);
+
+  const midpoint = Math.floor(questions.length / 2);
+  useEffect(() => {
+    if (strict && !selfieDone && current >= midpoint && questions.length >= 2) {
+      setSelfiePrompt(true);
+    }
+  }, [current, strict, selfieDone, midpoint, questions.length]);
 
   const latest = useRef({});     // question id → latest value not yet confirmed saved
   const inflight = useRef({});   // question id → true while saving
@@ -319,7 +443,8 @@ function Runner({ initial }) {
 
   return (
     <div className={`quiz-shell ${strict ? 'strict' : ''}`}>
-      {student && <Watermark text={`${student.name} · ${student.index_no || ''}`} />}
+      {student && <AntiCameraShield text={`${student.name} · ${student.index_no || ''}`} blurred={blurred} />}
+      {selfiePrompt && <SelfieModal attemptId={attempt.id} onDone={() => { setSelfiePrompt(false); setSelfieDone(true); }} />}
       {needFs && (
         <div className="fs-gate" role="dialog" aria-modal="true" aria-label="Full screen required">
           <div className="card stack" style={{ maxWidth: 460, textAlign: 'center', alignItems: 'center' }}>

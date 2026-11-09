@@ -182,13 +182,37 @@ function StartModal({ course, streams, classes, onClose, onStarted }) {
   const [askRow, setAskRow] = useState(true);
   const [who, setWho] = useState('all'); // all | streams | classes
   const [pickedClasses, setPickedClasses] = useState([]);
+  const [useGps, setUseGps] = useState(false);
+  const [coords, setCoords] = useState(null);
+  const [gpsStatus, setGpsStatus] = useState('');
   const keyOf = (c) => `${c.programme}|${c.stream}`;
+
+  function pinLocation() {
+    if (!navigator.geolocation) {
+      setGpsStatus('Geolocation not supported on this device.');
+      return;
+    }
+    setGpsStatus('Acquiring current location…');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setUseGps(true);
+        setGpsStatus(`Pinned (${pos.coords.latitude.toFixed(4)}°, ${pos.coords.longitude.toFixed(4)}°)`);
+      },
+      (err) => setGpsStatus('Location error: ' + err.message),
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  }
+
   async function start() {
     if (who === 'streams' && !chosen.length) throw new Error('Tick at least one stream, or choose Everyone.');
     if (who === 'classes' && !pickedClasses.length) throw new Error('Tick at least one class, or choose Everyone.');
     const id = await act(() => rpc('start_attendance', {
       p_course: course.id, p_title: title, p_minutes: Number(minutes) || 10, p_ask_row: askRow,
       p_streams: who === 'streams' ? chosen : [], p_classes: who === 'classes' ? pickedClasses : [],
+      p_lat: (useGps && coords) ? coords.lat : null,
+      p_lng: (useGps && coords) ? coords.lng : null,
+      p_radius: 100
     }));
     if (id) onStarted(id);
   }
@@ -199,6 +223,20 @@ function StartModal({ course, streams, classes, onClose, onStarted }) {
       <Field label="Open for (minutes)"><input className="input" type="number" min="1" max="240" style={{ maxWidth: 140 }} value={minutes} onChange={(e) => setMinutes(e.target.value)} /></Field>
       <label className="check"><input type="checkbox" checked={askRow} onChange={(e) => setAskRow(e.target.checked)} />
         <span>Ask each student for their <strong>row number</strong> — so you can count heads in a row and compare</span></label>
+      <div className="card-soft stack-sm" style={{ padding: 12, marginTop: 8 }}>
+        <label className="check">
+          <input type="checkbox" checked={useGps} onChange={(e) => setUseGps(e.target.checked)} />
+          <span>Enforce <strong>GPS Location Geofence</strong> (Students must be in the lecture hall)</span>
+        </label>
+        {useGps && (
+          <div className="row-wrap" style={{ gap: 8, alignItems: 'center', marginTop: 6 }}>
+            <button type="button" className="btn btn-sm" onClick={pinLocation}>
+              <Icon name="map-pin" size={16} /> Pin hall location from my device
+            </button>
+            {gpsStatus && <span className="tiny muted">{gpsStatus}</span>}
+          </div>
+        )}
+      </div>
       {(streams.length > 0 || classes.length > 1) && (
         <div className="field">
           <span className="field-label">Who is in this lecture?</span>

@@ -23,11 +23,23 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     let active = true;
+    const safetyTimer = setTimeout(() => {
+      if (active) {
+        console.warn('Auth check safety timeout reached, unlocking screen');
+        setLoading(false);
+      }
+    }, 4000);
+
     supabase.auth.getSession().then(async ({ data }) => {
       if (!active) return;
       setSession(data.session);
       await loadProfile(data.session);
       if (active) setLoading(false);
+    }).catch((err) => {
+      console.error('Session load error:', err);
+      if (active) setLoading(false);
+    }).finally(() => {
+      clearTimeout(safetyTimer);
     });
     const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
       setSession(sess);

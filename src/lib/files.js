@@ -6,7 +6,7 @@
 import { supabase, friendlyError } from './supabase.js';
 
 export const usingR2 = (import.meta.env.VITE_FILES_BACKEND || '').toLowerCase() === 'r2';
-export const STORAGE_LIMIT_LABEL = usingR2 ? '10 GB' : '1 GB';
+export const STORAGE_LIMIT_LABEL = usingR2 ? '10 GB (Cloudflare)' : '100 GB (Supabase Pro)';
 
 async function callFiles(body) {
   const { data, error } = await supabase.functions.invoke('files', { body });

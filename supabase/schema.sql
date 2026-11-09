@@ -1528,6 +1528,9 @@ create table if not exists public.attendance (
 -- Version 5: seat row, phone and review status for each check-in
 alter table public.attendance_sessions add column if not exists ask_row     boolean not null default true;
 alter table public.attendance_sessions add column if not exists head_counts jsonb   not null default '{}'::jsonb;
+alter table public.attendance_sessions add column if not exists lat double precision;
+alter table public.attendance_sessions add column if not exists lng double precision;
+alter table public.attendance_sessions add column if not exists radius_meters int not null default 100;
 -- Version 6: sessions for chosen classes, each written 'programme|stream'
 alter table public.attendance_sessions add column if not exists classes     text[]  not null default '{}';
 alter table public.attendance add column if not exists row_no      int;
@@ -1737,7 +1740,7 @@ create or replace function public.my_open_attendance() returns jsonb
 language sql stable security definer set search_path = public as $$
   select coalesce(jsonb_agg(jsonb_build_object('session_id', s.id, 'course_id', c.id, 'course_code', c.code,
                                                'title', s.title, 'closes_at', s.closes_at,
-                                               'ask_row', s.ask_row) order by s.closes_at), '[]'::jsonb)
+                                               'ask_row', s.ask_row, 'lat', s.lat, 'lng', s.lng, 'radius_meters', coalesce(s.radius_meters, 100)) order by s.closes_at), '[]'::jsonb)
     from public.attendance_sessions s
     join public.courses c on c.id = s.course_id
     join public.profiles p on p.id = auth.uid()

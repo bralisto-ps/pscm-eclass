@@ -25,6 +25,7 @@ export default function StudentsTab({ course, ta }) {
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
   const [importing, setImporting] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [resetting, setResetting] = useState(null);
   const [removing, setRemoving] = useState(null);
   const [editing, setEditing] = useState(null);
@@ -98,6 +99,7 @@ export default function StudentsTab({ course, ta }) {
           </div>
           <div className="row-wrap">
             {data.length > 0 && <button type="button" className="btn btn-sm" onClick={exportList}><Icon name="download" size={16} /> Export</button>}
+            {!ta && <button type="button" className="btn btn-sm" onClick={() => setAdding(true)}><Icon name="plus" size={16} /> Add student</button>}
             {!ta && <button type="button" className="btn btn-sm btn-primary" onClick={() => setImporting(true)}><Icon name="upload" size={16} /> Upload class list</button>}
           </div>
         </div>
@@ -160,6 +162,7 @@ export default function StudentsTab({ course, ta }) {
         <strong> Activate your account</strong>, enter their index number and choose a password.
       </div>
 
+      {adding && <AddStudentModal course={course} programmes={programmes} streams={streams} onClose={() => setAdding(false)} onDone={reload} />}
       {importing && <ImportModal course={course} onClose={() => setImporting(false)} onDone={reload} />}
       {resetting && <ResetModal student={resetting} onClose={() => setResetting(null)} />}
       {editing && <EditModal student={editing} programmes={programmes} streams={streams} onClose={() => setEditing(null)} onSaved={reload} />}
@@ -416,22 +419,75 @@ function GroupManager({ programmes, streams, students, onChanged }) {
   );
 }
 
+function AddStudentModal({ course, programmes, streams, onClose, onDone }) {
+  const [act, busy] = useAction();
+  const [f, setF] = useState({ index_no: '', full_name: '', programme: '', stream: '' });
+
+  async function save(e) {
+    e?.preventDefault();
+    const idx = f.index_no.trim();
+    const name = f.full_name.trim();
+    if (!idx) throw new Error('Please enter an index number.');
+    if (!name) throw new Error('Please enter the student full name.');
+
+    await act(() => rpc('import_roster', {
+      p_course: course.id,
+      p_rows: [{ index_no: idx, full_name: name, programme: f.programme, stream: f.stream }]
+    }), 'Student added to course.');
+    onDone();
+    onClose();
+  }
+
+  return (
+    <Modal title="Add student to course" onClose={onClose}
+      footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button><button type="button" className="btn btn-primary" onClick={save} disabled={busy}>Add student</button></>}>
+      <form onSubmit={save} className="stack">
+        <Field label="Index number *">
+          <input className="input mono" placeholder="e.g. PSCM/2024/001" value={f.index_no} onChange={(e) => setF({ ...f, index_no: e.target.value })} required autoFocus />
+        </Field>
+        <Field label="Full name *">
+          <input className="input" placeholder="e.g. John Mensah" value={f.full_name} onChange={(e) => setF({ ...f, full_name: e.target.value })} required />
+        </Field>
+        <div className="grid-2">
+          <GroupSelect label="Programme (optional)" value={f.programme} options={programmes} onChange={(v) => setF({ ...f, programme: v ?? '' })} />
+          <GroupSelect label="Stream (optional)" value={f.stream} options={streams} onChange={(v) => setF({ ...f, stream: v ?? '' })} />
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function EditModal({ student, programmes, streams, onClose, onSaved }) {
   const [act, busy] = useAction();
-  const [f, setF] = useState({ name: student.full_name, programme: student.programme || '', stream: student.stream || '' });
+  const [f, setF] = useState({ index_no: student.index_no, name: student.full_name, programme: student.programme || '', stream: student.stream || '' });
   async function save() {
-    const ok = await act(() => rpc('update_student', { p_index: student.index_no, p_name: f.name, p_programme: f.programme, p_stream: f.stream }), 'Student updated.');
+    const idx = f.index_no.trim();
+    const name = f.name.trim();
+    if (!idx) throw new Error('Index number cannot be empty.');
+    if (!name) throw new Error('Full name cannot be empty.');
+    const ok = await act(() => rpc('update_student', {
+      p_index: student.index_no,
+      p_name: name,
+      p_programme: f.programme,
+      p_stream: f.stream,
+      p_new_index: idx !== student.index_no ? idx : null
+    }), 'Student updated.');
     if (ok !== undefined) { onSaved(); onClose(); }
   }
   return (
-    <Modal title={`Edit ${student.index_no}`} onClose={onClose}
-      footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button><button type="button" className="btn btn-primary" onClick={save} disabled={busy}>Save</button></>}>
-      <Field label="Full name"><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+    <Modal title={`Edit student`} onClose={onClose}
+      footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button><button type="button" className="btn btn-primary" onClick={save} disabled={busy}>Save changes</button></>}>
+      <Field label="Index number">
+        <input className="input mono" value={f.index_no} onChange={(e) => setF({ ...f, index_no: e.target.value })} />
+      </Field>
+      <Field label="Full name">
+        <input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+      </Field>
       <div className="grid-2">
         <GroupSelect label="Programme" value={f.programme} options={programmes} onChange={(v) => setF({ ...f, programme: v ?? '' })} />
         <GroupSelect label="Stream" value={f.stream} options={streams} onChange={(v) => setF({ ...f, stream: v ?? '' })} />
       </div>
-      <p className="small muted">Programme and stream apply to this student in all your courses.</p>
+      <p className="small muted">Updating the index number will automatically update all enrolled courses and grade records for this student.</p>
     </Modal>
   );
 }
