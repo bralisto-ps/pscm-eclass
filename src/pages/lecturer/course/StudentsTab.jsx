@@ -79,7 +79,19 @@ export default function StudentsTab({ course, ta }) {
         <div className="kpi"><span className="l">Not yet activated</span><span className="v" style={{ color: data.length - activated ? 'var(--amber-ink)' : undefined }}>{(data.length - activated).toLocaleString()}</span></div>
       </div>
 
-      {!ta && <GroupManager programmes={programmes} streams={streams} students={data} onChanged={reload} />}
+      {!ta && (
+        <details className="card" style={{ padding: '12px 18px', background: 'var(--surface)' }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Icon name="tag" size={16} /> Manage All Programmes & Streams
+            <span className="small muted">
+              ({[...new Set(data.map((r) => r.programme).filter(Boolean))].length} active in this course)
+            </span>
+          </summary>
+          <div style={{ marginTop: 14 }}>
+            <GroupManager programmes={programmes} streams={streams} students={data} onChanged={reload} />
+          </div>
+        </details>
+      )}
 
       <div className="card-flush">
         <div className="card-head" style={{ flexWrap: 'wrap' }}>

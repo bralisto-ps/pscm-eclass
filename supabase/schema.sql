@@ -2449,3 +2449,24 @@ begin
 end $$;
 
 -- Done.
+
+-- ---------------------------------------------------------------------
+-- 13. Private Course Messages (Student <-> Lecturer Office Hours)
+-- ---------------------------------------------------------------------
+create table if not exists public.course_messages (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid not null references public.courses on delete cascade,
+  student_id uuid not null references auth.users on delete cascade,
+  subject text not null default '',
+  message text not null,
+  reply text,
+  replied_at timestamptz,
+  created_at timestamptz not null default now()
+);
+alter table public.course_messages enable row level security;
+
+drop policy if exists student_messages_policy on public.course_messages;
+create policy student_messages_policy on public.course_messages
+  for all to authenticated
+  using (student_id = auth.uid() or public.is_lecturer())
+  with check (student_id = auth.uid() or public.is_lecturer());

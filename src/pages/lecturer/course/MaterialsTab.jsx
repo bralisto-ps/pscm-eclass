@@ -39,7 +39,8 @@ export default function MaterialsTab({ course }) {
   if (error) return <ErrorNote error={error} onRetry={reload} />;
 
   const general = data.materials.filter((m) => !m.module_id);
-  const usedBytes = data.totalUsed ?? data.materials.reduce((s, m) => s + (m.size_bytes || 0), 0);
+  const courseBytes = data.materials.reduce((s, m) => s + (m.size_bytes || 0), 0);
+  const totalAccountBytes = Math.max(courseBytes, data.totalUsed || 0);
   const nextWeek = Math.max(0, ...data.modules.map((m) => m.week_no || 0)) + 1;
 
   async function doRemove() {

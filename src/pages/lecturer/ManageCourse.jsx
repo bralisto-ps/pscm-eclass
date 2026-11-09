@@ -1,3 +1,4 @@
+import Messages from '../../components/Messages.jsx';
 import { useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
@@ -25,10 +26,11 @@ const TABS = [
   { id: 'students', label: 'Students' },
   { id: 'qa', label: 'Q&A' },
   { id: 'announcements', label: 'Announcements' },
+  { id: 'messages', label: 'Messages' },
   { id: 'settings', label: 'Settings' },
 ];
 // What a teaching assistant sees.
-const TA_TABS = ['quizzes', 'assignments', 'attendance', 'students', 'qa', 'announcements'];
+const TA_TABS = ['quizzes', 'assignments', 'attendance', 'students', 'qa', 'messages', 'announcements'];
 
 export default function ManageCourse() {
   const { courseId } = useParams();
@@ -71,6 +73,7 @@ export default function ManageCourse() {
         {tab === 'ca' && <CATab course={course} onCourseChanged={reload} />}
         {tab === 'students' && <StudentsTab course={course} ta={isTA} />}
         {tab === 'qa' && <Forum course={course} lecturer canDelete={!isTA} />}
+        {tab === 'messages' && <Messages course={course} isLecturer />}
         {tab === 'announcements' && <AnnouncementsTab course={course} ta={isTA} />}
         {tab === 'settings' && !isTA && <SettingsTab course={course} reload={reload} />}
       </div>

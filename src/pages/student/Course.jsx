@@ -1,3 +1,4 @@
+import Messages from '../../components/Messages.jsx';
 import { useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { rpc, run, supabase, safeFileName } from '../../lib/supabase.js';
@@ -17,6 +18,7 @@ const TABS = [
   { id: 'assignments', label: 'Assignments' },
   { id: 'grades', label: 'My grades' },
   { id: 'qa', label: 'Q&A' },
+  { id: 'messages', label: 'Messages' },
   { id: 'announcements', label: 'Announcements' },
 ];
 
@@ -86,6 +88,7 @@ export default function StudentCourse() {
           </div>
         )}
         {tab === 'qa' && <Forum course={course} />}
+        {tab === 'messages' && <Messages course={course} />}
         {tab === 'announcements' && <Announcements news={data.news} />}
       </div>
       {checkingIn && <CheckInModal courseId={course.id} courseCode={course.code} askRow={data.attendance?.ask_row} onClose={() => setCheckingIn(false)} onDone={reload} />}
