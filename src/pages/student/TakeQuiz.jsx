@@ -31,11 +31,11 @@ function writeFlags(id, set) {
 function AntiCameraShield({ text, blurred, onResume }) {
   const safe = String(text || 'CONFIDENTIAL EXAM · E-CLASS PSCM').replace(/[<>&'"]/g, '');
   const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='440' height='260'>
-    <text x='30' y='120' transform='rotate(-20 220 130)' fill='rgba(15,23,42,0.18)' font-family='Arial, sans-serif' font-size='18' font-weight='700'>${safe}</text>
-    <text x='50' y='210' transform='rotate(-20 220 130)' fill='rgba(13,148,136,0.16)' font-family='Arial, sans-serif' font-size='13' font-weight='600'>PSCM SECURE EXAM · DO NOT PHOTOGRAPH</text>
+    <text x='30' y='120' transform='rotate(-20 220 130)' fill='rgba(15,23,42,0.36)' font-family='Arial, sans-serif' font-size='22' font-weight='800' letter-spacing='0.5px'>${safe}</text>
+    <text x='50' y='210' transform='rotate(-20 220 130)' fill='rgba(180,83,9,0.32)' font-family='Arial, sans-serif' font-size='14' font-weight='700'>PSCM SECURE EXAM · DO NOT PHOTOGRAPH</text>
   </svg>`;
   const meshSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'>
-    <circle cx='2' cy='2' r='1.2' fill='rgba(0,0,0,0.065)'/>
+    <circle cx='2' cy='2' r='1.2' fill='rgba(0,0,0,0.11)'/>
     <circle cx='6' cy='6' r='1.2' fill='rgba(0,0,0,0.065)'/>
     <line x1='0' y1='4' x2='8' y2='4' stroke='rgba(0,0,0,0.035)' stroke-width='0.5'/>
   </svg>`;
@@ -273,7 +273,7 @@ function Runner({ initial }) {
   const [submitting, setSubmitting] = useState(false);
   const [finished, setFinished] = useState(null);
   const [fatal, setFatal] = useState('');
-  const perQSeconds = quiz.question_time_limit ? Number(quiz.question_time_limit) : null;
+  const perQSeconds = quiz.question_time_limit ? Number(quiz.question_time_limit) : (quiz.is_practice ? null : 60);
   const [qRemaining, setQRemaining] = useState(perQSeconds);
 
   useEffect(() => {
@@ -591,6 +591,15 @@ function Runner({ initial }) {
               }}
             >
               <Icon name="shield" size={13} /> {antiCaptureMode ? 'Anti-Capture: Large' : 'Standard View'}
+            </button>
+            <button
+              type="button"
+              className="chip"
+              onClick={() => setBlurred(true)}
+              title="Click to test the screen blur shield that activates when leaving this window"
+              style={{ fontSize: 11, padding: "3px 8px" }}
+            >
+              👁️ Test Blur
             </button>
             <span className="small muted hide-sm">{answeredCount} of {questions.length} answered</span>
             <span className={`timer ${low ? 'low' : ''}`} role="timer" aria-label="Time left">
