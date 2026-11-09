@@ -91,7 +91,7 @@ export default function CheckInModal({ courseId, courseCode, askRow: askRowProp,
       footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button>
         <button type="button" className="btn btn-primary" onClick={submit} disabled={busy}>{busy ? 'Checking…' : 'Check in'}</button></>}>
       <form onSubmit={submit} className="stack">
-        <p className="small muted">Type the 6-digit code shown on the screen in class. It changes every 30 seconds.</p>
+        <p className="small muted">Type the 6-digit code shown on screen. Your device automatically verifies your physical GPS presence in the lecture hall.</p>
         <label className="field">
           <span className="sr-only">Attendance code</span>
           <input className="input mono" autoFocus inputMode="numeric" autoComplete="one-time-code" maxLength={7}
