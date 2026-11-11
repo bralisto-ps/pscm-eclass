@@ -1,3 +1,4 @@
+import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
 import { getLetter, TargetGradeCalculator } from './Grades.jsx';
 import Messages from '../../components/Messages.jsx';
 import { useMemo, useRef, useState } from 'react';
@@ -236,6 +237,7 @@ function Quizzes({ quizzes }) {
   const navigate = useNavigate();
   const [act, busy] = useAction();
   const [starting, setStarting] = useState(null);
+  const [flashcardQuiz, setFlashcardQuiz] = useState(null);
 
   async function begin(q) {
     const id = await act(() => rpc('start_attempt', { p_quiz: q.id }));
@@ -244,8 +246,33 @@ function Quizzes({ quizzes }) {
 
   if (!quizzes.length) return <div className="card"><Empty icon="quiz" title="No quizzes yet">Quizzes will appear here when your lecturer publishes them.</Empty></div>;
 
+  const revisableCount = quizzes.filter((q) => q.is_practice || (q.released && q.best)).length;
+
   return (
     <div className="stack" style={{ maxWidth: 900 }}>
+      {revisableCount > 0 && (
+        <div className="card-soft between" style={{ padding: "14px 18px", background: "var(--teal-50)", border: "1px solid #99f6e4", flexWrap: "wrap", gap: 12 }}>
+          <div className="row" style={{ gap: 12 }}>
+            <div style={{ width: 36, height: 36, borderRadius: 8, background: "var(--teal)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <Icon name="layers" size={20} />
+            </div>
+            <div>
+              <strong style={{ color: "var(--teal-dark)" }}>Active Recall & Flashcard Revision Mode</strong>
+              <p className="tiny muted" style={{ margin: 0 }}>Reinforce key formulas and concepts using active recall flip-cards before your exams.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={() => {
+              const target = quizzes.find((q) => q.is_practice || (q.released && q.best));
+              if (target) setFlashcardQuiz(target);
+            }}
+          >
+            Launch Study Deck
+          </button>
+        </div>
+      )}
       {quizzes.map((q) => {
         const st = quizState(q);
         const released = q.released;

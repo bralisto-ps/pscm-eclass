@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { rpc, rpcAll, run, supabase } from '../../../lib/supabase.js';
 import { fmtNumber } from '../../../lib/format.js';
-import { downloadWorkbook, parseDelimited } from '../../../lib/sheets.js';
+import { downloadWorkbook, downloadText, parseDelimited } from '../../../lib/sheets.js';
 import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../../components/ui.jsx';
 import { ALL_GROUPS, GroupFilters, groupLabel, matchesGroup } from '../../../components/Groups.jsx';
@@ -12,12 +12,57 @@ const KINDS = [
   { id: 'attendance', label: 'Attendance' },
   { id: 'manual', label: 'Marks I enter (e.g. mid-semester exam)' },
 ];
+
 const kindLabel = (k) => ({ quizzes: 'Quizzes', assignments: 'Assignments', attendance: 'Attendance', manual: 'Entered marks' }[k] || k);
+
+export const GRADE_THRESHOLDS = {
+  'A': 80,
+  'B+': 75,
+  'B': 70,
+  'C+': 65,
+  'C': 60,
+  'D+': 55,
+  'D': 50,
+};
+
+export function getGradeLetter(score) {
+  if (score === null || score === undefined || score === '') return '—';
+  const n = Number(score);
+  if (Number.isNaN(n)) return '—';
+  if (n >= 80) return 'A';
+  if (n >= 75) return 'B+';
+  if (n >= 70) return 'B';
+  if (n >= 65) return 'C+';
+  if (n >= 60) return 'C';
+  if (n >= 55) return 'D+';
+  if (n >= 50) return 'D';
+  return 'E';
+}
+
+export function getGradeRemarks(score) {
+  if (score === null || score === undefined || score === '') return '—';
+  const n = Number(score);
+  if (Number.isNaN(n)) return '—';
+  if (n >= 80) return 'Excellent';
+  if (n >= 75) return 'Very Good';
+  if (n >= 70) return 'Good';
+  if (n >= 65) return 'Credit';
+  if (n >= 60) return 'Credit';
+  if (n >= 55) return 'Pass';
+  if (n >= 50) return 'Pass';
+  return 'Fail';
+}
 
 let tempId = 0;
 const blank = (kind, weight) => ({
-  key: `new-${++tempId}`, id: null, name: { quizzes: 'Quizzes', assignments: 'Assignments', attendance: 'Attendance', manual: 'Mid-semester exam' }[kind],
-  kind, weight, item_ids: [], drop_lowest: 0, max_score: kind === 'manual' ? 100 : 100,
+  key: `new-${++tempId}`,
+  id: null,
+  name: { quizzes: 'Quizzes', assignments: 'Assignments', attendance: 'Attendance', manual: 'Mid-semester exam' }[kind],
+  kind,
+  weight,
+  item_ids: [],
+  drop_lowest: 0,
+  max_score: kind === 'manual' ? 100 : 100,
 });
 
 export default function CATab({ course, onCourseChanged }) {
@@ -45,6 +90,8 @@ function CAInner({ course, data, reload, onCourseChanged }) {
   const [picking, setPicking] = useState(null);
   const [entering, setEntering] = useState(null);
   const [removing, setRemoving] = useState(null);
+  const [examModal, setExamModal] = useState(false);
+  const [examMarks, setExamMarks] = useState({}); // index_no -> number / string
   const [group, setGroup] = useState(ALL_GROUPS);
   const [q, setQ] = useState('');
 
@@ -57,13 +104,13 @@ function CAInner({ course, data, reload, onCourseChanged }) {
     const term = q.trim().toLowerCase();
     return data.rows.filter((r) => matchesGroup(r, group) && (!term || r.full_name.toLowerCase().includes(term) || r.index_no.toLowerCase().includes(term)));
   }, [data.rows, group, q]);
-  const avg = rows.length ? rows.reduce((s, r) => s + Number(r.total), 0) / rows.length : null;
 
+  const avg = rows.length ? rows.reduce((s, r) => s + Number(r.total), 0) / rows.length : null;
   const change = (key, patch) => { setComps(comps.map((c) => (c.key === key ? { ...c, ...patch } : c))); setDirty(true); };
   const add = (kind) => { setComps([...comps, blank(kind, 0)]); setDirty(true); };
 
   function useTemplate() {
-    setComps([blank('quizzes', 10), blank('assignments', 10), blank('attendance', 5), blank('manual', 15)]);
+    setComps([blank('quizzes', 15), blank('assignments', 10), blank('attendance', 5), blank('manual', 10)]);
     setSettings({ ...settings, ca_total: 40 });
     setDirty(true);
   }
@@ -98,28 +145,165 @@ function CAInner({ course, data, reload, onCourseChanged }) {
     if (ok !== undefined) onCourseChanged?.();
   }
 
-  function exportXlsx() {
-    const header = ['Index number', 'Name', 'Programme', 'Stream', ...saved.map((c) => `${c.name} (/${fmtNumber(c.weight)})`), `CA (/${fmtNumber(course.ca_total)})`];
-    const line = (r) => [r.index_no, r.full_name, r.programme, r.stream,
-      ...saved.map((c) => Number(r.parts?.[c.id]?.points ?? 0)), Number(Number(r.total).toFixed(dec))];
-    const widths = [16, 30, 18, 12, ...saved.map(() => 16), 12];
-    const sheets = [{ name: 'CA — all students', rows: [header, ...data.rows.map(line)], widths }];
-    const streams = [...new Set(data.rows.map((r) => r.stream || ''))].sort();
-    if (streams.length > 1) streams.forEach((st) => sheets.push({ name: groupLabel(st), rows: [header, ...data.rows.filter((r) => (r.stream || '') === st).map(line)], widths }));
-    sheets.push({ name: 'How CA is made up', rows: [['Part', 'Counts', 'Weight', 'Drop lowest', 'Marked out of'],
-      ...saved.map((c) => [c.name, kindLabel(c.kind) + (c.item_ids.length ? ` (${c.item_ids.length} chosen)` : ' (all)'), Number(c.weight), c.drop_lowest || '', c.kind === 'manual' ? Number(c.max_score) : ''])], widths: [28, 28, 10, 12, 14] });
-    downloadWorkbook(`${course.code} CA.xlsx`, sheets);
+  // Calculate official scaled CA (out of 40 marks)
+  function getCa40(r) {
+    const rawTotal = Number(r.total || 0);
+    const configuredTotal = Number(course.ca_total || 40);
+    if (configuredTotal === 40) return rawTotal;
+    return (rawTotal / configuredTotal) * 40;
+  }
+
+  // 1-Click Official Grade Sheet Export (Excel .xlsx with CA 40% + Final Exam 60%)
+  function exportOfficialXlsx() {
+    const header = [
+      'S/N',
+      'Index Number',
+      'Student Name',
+      'Programme',
+      'Stream',
+      ...saved.map((c) => `${c.name} (/${fmtNumber(c.weight)})`),
+      'CA Total (/40)',
+      'Final Exam (/60)',
+      'Total Score (/100)',
+      'Grade',
+      'Remarks',
+    ];
+
+    const widths = [6, 16, 32, 20, 14, ...saved.map(() => 16), 14, 15, 16, 10, 16];
+
+    const buildLine = (r, idx) => {
+      const ca40 = Number(getCa40(r).toFixed(dec || 1));
+      const ex = examMarks[r.index_no] !== undefined && examMarks[r.index_no] !== '' ? Number(examMarks[r.index_no]) : null;
+      const total100 = ex !== null ? Number((ca40 + ex).toFixed(dec || 1)) : null;
+      const grade = total100 !== null ? getGradeLetter(total100) : (ca40 >= 20 ? 'Pending Exam' : 'At Risk (<20)');
+      const remarks = total100 !== null ? getGradeRemarks(total100) : (ca40 < 20 ? 'At Risk (<50% CA)' : 'Good Standing');
+
+      return [
+        idx + 1,
+        r.index_no,
+        r.full_name,
+        r.programme || '',
+        r.stream || '',
+        ...saved.map((c) => Number(r.parts?.[c.id]?.points ?? 0)),
+        ca40,
+        ex !== null ? ex : '',
+        total100 !== null ? total100 : '',
+        grade,
+        remarks,
+      ];
+    };
+
+    const sheets = [
+      {
+        name: 'Master Grade Sheet (40-60)',
+        rows: [
+          header,
+          ...data.rows.map((r, i) => buildLine(r, i)),
+        ],
+        widths,
+      },
+    ];
+
+    // Per-stream sheets
+    const streams = [...new Set(data.rows.map((r) => r.stream || ''))].filter(Boolean).sort();
+    if (streams.length > 0) {
+      streams.forEach((st) => {
+        const streamRows = data.rows.filter((r) => (r.stream || '') === st);
+        sheets.push({
+          name: groupLabel(st).slice(0, 31),
+          rows: [
+            header,
+            ...streamRows.map((r, i) => buildLine(r, i)),
+          ],
+          widths,
+        });
+      });
+    }
+
+    // Summary Sheet
+    sheets.push({
+      name: 'Grading Scale & Distribution',
+      rows: [
+        ['OFFICIAL DEPARTMENTAL GRADING SCHEME', '', '', ''],
+        ['Continuous Assessment (CA)', '40%', 'Calculated from course quizzes, assignments & attendance', ''],
+        ['Final Examination', '60%', 'Semester Examination / Exams Office Entry', ''],
+        ['Total Mark', '100%', 'CA (40%) + Final Exam (60%)', ''],
+        ['', '', '', ''],
+        ['Grade Scale', 'Score Range', 'Remarks', 'Status'],
+        ['A', '80.00% – 100.00%', 'Excellent', 'Pass'],
+        ['B+', '75.00% – 79.99%', 'Very Good', 'Pass'],
+        ['B', '70.00% – 74.99%', 'Good', 'Pass'],
+        ['C+', '65.00% – 69.99%', 'Credit', 'Pass'],
+        ['C', '60.00% – 64.99%', 'Credit', 'Pass'],
+        ['D+', '55.00% – 59.99%', 'Pass', 'Pass'],
+        ['D', '50.00% – 54.99%', 'Pass (Lowest Pass)', 'Pass'],
+        ['E', '0.00% – 49.99%', 'Fail', 'Fail (<50%)'],
+      ],
+      widths: [24, 24, 40, 16],
+    });
+
+    downloadWorkbook(`${course.code}_Official_Grade_Sheet_CA40_Exam60.xlsx`, sheets);
+  }
+
+  // 1-Click Departmental CSV Export
+  function exportOfficialCsv() {
+    const header = ['S/N', 'Index Number', 'Student Name', 'Programme', 'Stream', 'CA_40', 'Exam_60', 'Total_100', 'Grade', 'Remarks'];
+    const lines = data.rows.map((r, i) => {
+      const ca40 = Number(getCa40(r).toFixed(dec || 1));
+      const ex = examMarks[r.index_no] !== undefined && examMarks[r.index_no] !== '' ? Number(examMarks[r.index_no]) : '';
+      const total100 = ex !== '' ? Number((ca40 + Number(ex)).toFixed(dec || 1)) : '';
+      const grade = total100 !== '' ? getGradeLetter(total100) : '';
+      const remarks = total100 !== '' ? getGradeRemarks(total100) : (ca40 < 20 ? 'At Risk (<50% CA)' : 'Good Standing');
+      return [
+        i + 1,
+        `"${r.index_no}"`,
+        `"${r.full_name}"`,
+        `"${r.programme || ''}"`,
+        `"${r.stream || ''}"`,
+        ca40,
+        ex,
+        total100,
+        grade,
+        remarks,
+      ].join(',');
+    });
+
+    downloadText(`${course.code}_Official_Grade_Sheet_CA40_Exam60.csv`, [header.join(','), ...lines].join('\n'), 'text/csv');
   }
 
   const itemsFor = (c) => (c.kind === 'quizzes' ? data.quizzes : data.assignments);
 
   return (
     <div className="stack-lg" style={{ maxWidth: 1180 }}>
+      {/* Official 40/60 Weighting Banner */}
+      <div className="card-soft between" style={{ padding: '16px 20px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 12, flexWrap: 'wrap', gap: 14 }}>
+        <div className="stack-sm" style={{ gap: 4 }}>
+          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+            <span className="badge badge-teal" style={{ fontWeight: 700 }}>Official Assessment Formula</span>
+            <span className="small strong">CA: 40% · Final Exam: 60% = 100% Total</span>
+          </div>
+          <p className="small muted">
+            Continuous Assessment is scaled to 40 marks. Letter grades follow institutional scale: A (80+), B+ (75+), B (70+), C+ (65+), C (60+), D+ (55+), D (50+), E (&lt;50).
+          </p>
+        </div>
+        <div className="row-wrap">
+          <button type="button" className="btn btn-sm" onClick={() => setExamModal(true)} title="Enter or preview final exam scores out of 60">
+            <Icon name="edit" size={15} /> Enter/Preview Exam (/60)
+          </button>
+          <button type="button" className="btn btn-sm" onClick={exportOfficialCsv} title="Download CSV for Registrar / SIS upload">
+            <Icon name="download" size={15} /> Export CSV
+          </button>
+          <button type="button" className="btn btn-sm btn-primary" onClick={exportOfficialXlsx} title="Download official multi-sheet Excel gradebook">
+            <Icon name="download" size={15} /> Export Grade Sheet (Excel)
+          </button>
+        </div>
+      </div>
+
       <section className="card stack">
         <div className="between" style={{ flexWrap: 'wrap' }}>
           <div className="stack-sm" style={{ gap: 2 }}>
-            <h2>How CA is worked out</h2>
-            <p className="small muted">Each part's percentage is scaled to its weight. A missed quiz or assignment counts as 0. A quiz that was not open to a student's stream is left out for that student.</p>
+            <h2>How CA (40%) is worked out</h2>
+            <p className="small muted">Each component's percentage is scaled to its weight. A missed quiz or assignment counts as 0.</p>
           </div>
           <div className="row-wrap">
             <label className="row small" style={{ gap: 6 }}>CA out of
@@ -137,7 +321,7 @@ function CAInner({ course, data, reload, onCourseChanged }) {
 
         {comps.length === 0 && (
           <div className="notice notice-info row-wrap">
-            <span style={{ flex: 1 }}>No parts yet. Start from a typical 40-mark split (quizzes 10, assignments 10, attendance 5, mid-semester 15) and adjust.</span>
+            <span style={{ flex: 1 }}>No parts yet. Start from a typical 40-mark split (quizzes 15, assignments 10, attendance 5, mid-semester 10) and adjust.</span>
             <button type="button" className="btn btn-sm btn-primary" onClick={useTemplate}>Use this template</button>
           </div>
         )}
@@ -189,7 +373,7 @@ function CAInner({ course, data, reload, onCourseChanged }) {
       <section className="card-flush">
         <div className="card-head" style={{ flexWrap: 'wrap' }}>
           <div className="row-wrap">
-            <h2>CA scores</h2>
+            <h2>CA Scores & Official Projections</h2>
             <label className="search">
               <span className="sr-only">Search</span>
               <Icon name="search" size={16} />
@@ -199,32 +383,72 @@ function CAInner({ course, data, reload, onCourseChanged }) {
           </div>
           <div className="row-wrap">
             {avg !== null && <span className="small muted">Average {fmtNumber(avg, 1)} / {fmtNumber(course.ca_total)}</span>}
-            <button type="button" className="btn btn-sm" onClick={exportXlsx} disabled={!saved.length}><Icon name="download" size={16} /> Export to Excel</button>
+            <button type="button" className="btn btn-sm" onClick={exportOfficialXlsx} disabled={!saved.length}><Icon name="download" size={16} /> Export Excel (40/60)</button>
             <button type="button" className={`btn btn-sm ${course.ca_released ? '' : 'btn-primary'}`} onClick={toggleRelease} disabled={!saved.length}>
               {course.ca_released ? 'Hide CA from students' : 'Show CA to students'}
             </button>
           </div>
         </div>
+
         {saved.length === 0 ? <Empty icon="chart" title="Set up the CA first">Add the parts above and save. Scores appear here straight away.</Empty> : (
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
-                  <th>Index no.</th><th>Name</th><th className="hide-sm">Group</th>
-                  {saved.map((c) => <th key={c.id} className="num" title={kindLabel(c.kind)}>{c.name}<div className="tiny" style={{ textTransform: 'none' }}>/ {fmtNumber(c.weight)}</div></th>)}
-                  <th className="num">CA<div className="tiny" style={{ textTransform: 'none' }}>/ {fmtNumber(course.ca_total)}</div></th>
+                  <th>Index no.</th>
+                  <th>Name</th>
+                  <th className="hide-sm">Group</th>
+                  {saved.map((c) => (
+                    <th key={c.id} className="num" title={kindLabel(c.kind)}>
+                      {c.name}<div className="tiny" style={{ textTransform: 'none' }}>/ {fmtNumber(c.weight)}</div>
+                    </th>
+                  ))}
+                  <th className="num">CA Total<div className="tiny" style={{ textTransform: 'none' }}>/ 40</div></th>
+                  <th className="num">Exam<div className="tiny" style={{ textTransform: 'none' }}>/ 60</div></th>
+                  <th className="num">Total<div className="tiny" style={{ textTransform: 'none' }}>/ 100</div></th>
+                  <th>Grade</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.slice(0, 400).map((r) => (
-                  <tr key={r.index_no}>
-                    <td className="mono small">{r.index_no}</td>
-                    <td>{r.full_name}</td>
-                    <td className="small muted hide-sm">{[r.programme, r.stream].filter(Boolean).join(' · ') || '—'}</td>
-                    {saved.map((c) => <td key={c.id} className="num" title={`${fmtNumber(r.parts?.[c.id]?.pct ?? 0, 1)}%`}>{fmtNumber(r.parts?.[c.id]?.points ?? 0)}</td>)}
-                    <td className="num strong">{Number(r.total).toFixed(dec)}</td>
-                  </tr>
-                ))}
+                {rows.slice(0, 400).map((r) => {
+                  const ca40 = Number(getCa40(r).toFixed(dec));
+                  const ex = examMarks[r.index_no] !== undefined && examMarks[r.index_no] !== '' ? Number(examMarks[r.index_no]) : null;
+                  const total100 = ex !== null ? Number((ca40 + ex).toFixed(dec)) : null;
+                  const grade = total100 !== null ? getGradeLetter(total100) : (ca40 >= 20 ? 'Pending' : 'At Risk');
+
+                  return (
+                    <tr key={r.index_no}>
+                      <td className="mono small">{r.index_no}</td>
+                      <td>{r.full_name}</td>
+                      <td className="small muted hide-sm">{[r.programme, r.stream].filter(Boolean).join(' · ') || '—'}</td>
+                      {saved.map((c) => (
+                        <td key={c.id} className="num" title={`${fmtNumber(r.parts?.[c.id]?.pct ?? 0, 1)}%`}>
+                          {fmtNumber(r.parts?.[c.id]?.points ?? 0)}
+                        </td>
+                      ))}
+                      <td className="num strong" style={{ color: ca40 < 20 ? 'var(--red-ink)' : 'inherit' }}>
+                        {ca40.toFixed(dec)}
+                      </td>
+                      <td className="num mono small muted">
+                        {ex !== null ? ex.toFixed(dec) : '—'}
+                      </td>
+                      <td className="num strong">
+                        {total100 !== null ? total100.toFixed(dec) : '—'}
+                      </td>
+                      <td>
+                        <span className={`badge ${
+                          grade === 'A' ? 'badge-teal' :
+                          grade === 'B+' || grade === 'B' ? 'badge-blue' :
+                          grade === 'C+' || grade === 'C' ? 'badge-amber' :
+                          grade === 'D+' || grade === 'D' ? 'badge' :
+                          grade === 'E' || grade === 'At Risk' ? 'badge-red' : ''
+                        }`}>
+                          {grade}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
             {rows.length > 400 && <p className="small muted" style={{ padding: '12px 18px' }}>Showing 400 of {rows.length}. Export to Excel for everyone.</p>}
@@ -237,11 +461,25 @@ function CAInner({ course, data, reload, onCourseChanged }) {
         const c = comps.find((x) => x.key === picking);
         return <PickItems comp={c} items={itemsFor(c)} onClose={() => setPicking(null)} onSave={(ids) => { change(c.key, { item_ids: ids }); setPicking(null); }} />;
       })()}
+
       {entering && <ManualMarks comp={entering} course={course} onClose={() => setEntering(null)} onSaved={() => { toast('Marks saved.'); reload(); }} />}
+
       {removing && (
         <Confirm title={`Remove “${removing.name}”?`} danger confirmLabel="Remove"
           message={removing.kind === 'manual' ? 'Any marks entered for this part are deleted when you save.' : 'It stops counting towards the CA when you save.'}
           onClose={() => setRemoving(null)} onConfirm={() => { setComps(comps.filter((c) => c.key !== removing.key)); setDirty(true); setRemoving(null); }} />
+      )}
+
+      {examModal && (
+        <ExamSimulatorModal
+          course={course}
+          data={data}
+          dec={dec}
+          examMarks={examMarks}
+          setExamMarks={setExamMarks}
+          onClose={() => setExamModal(false)}
+          onExport={exportOfficialXlsx}
+        />
       )}
     </div>
   );
@@ -353,6 +591,173 @@ function ManualMarks({ comp, course, onClose, onSaved }) {
         ))}
       </div>
       {shown.length > 300 && <span className="tiny muted">Showing 300 — search for others, or paste from Excel.</span>}
+    </Modal>
+  );
+}
+
+function ExamSimulatorModal({ course, data, dec, examMarks, setExamMarks, onClose, onExport }) {
+  const [paste, setPaste] = useState('');
+  const [msg, setMsg] = useState('');
+  const [q, setQ] = useState('');
+
+  const configuredTotal = Number(course.ca_total || 40);
+  const getCa40 = (r) => (configuredTotal === 40 ? Number(r.total || 0) : (Number(r.total || 0) / configuredTotal) * 40);
+
+  function applyPaste() {
+    const lines = parseDelimited(paste);
+    const known = new Set(data.rows.map((r) => r.index_no.toUpperCase()));
+    const next = { ...examMarks };
+    let n = 0; let skipped = 0;
+    for (const l of lines) {
+      const idx = String(l[0] || '').trim().toUpperCase().replace(/\s+/g, '');
+      const sc = String(l[l.length - 1] || '').trim();
+      if (!idx || Number.isNaN(Number(sc)) || sc === '') continue;
+      if (!known.has(idx)) { skipped++; continue; }
+      next[idx] = sc; n++;
+    }
+    setExamMarks(next);
+    setPaste('');
+    setMsg(`${n} exam marks filled in out of 60${skipped ? `, ${skipped} unrecognized index numbers skipped` : ''}.`);
+  }
+
+  // Compute live distribution
+  const calculated = data.rows.map((r) => {
+    const ca = getCa40(r);
+    const ex = examMarks[r.index_no] !== undefined && examMarks[r.index_no] !== '' ? Number(examMarks[r.index_no]) : null;
+    const total = ex !== null ? ca + ex : null;
+    return {
+      index_no: r.index_no,
+      full_name: r.full_name,
+      stream: r.stream,
+      ca,
+      ex,
+      total,
+      grade: total !== null ? getGradeLetter(total) : '—',
+    };
+  });
+
+  const filledCount = calculated.filter((c) => c.ex !== null).length;
+  const avgTotal = filledCount ? calculated.filter((c) => c.total !== null).reduce((s, c) => s + c.total, 0) / filledCount : null;
+  const passCount = calculated.filter((c) => c.total !== null && c.total >= 50).length;
+  const passRate = filledCount ? Math.round((passCount / filledCount) * 100) : null;
+
+  const dist = { 'A': 0, 'B+': 0, 'B': 0, 'C+': 0, 'C': 0, 'D+': 0, 'D': 0, 'E': 0 };
+  calculated.forEach((c) => {
+    if (c.grade && dist[c.grade] !== undefined) dist[c.grade]++;
+  });
+
+  const shown = calculated.filter((c) => !q.trim() || c.full_name.toLowerCase().includes(q.toLowerCase()) || c.index_no.toLowerCase().includes(q.toLowerCase()));
+
+  return (
+    <Modal title={`Final Examination Marks (/60) · ${course.code}`} onClose={onClose} wide
+      footer={
+        <div className="between" style={{ width: '100%', flexWrap: 'wrap', gap: 10 }}>
+          <span className="small muted">
+            {filledCount} of {data.rows.length} exam marks entered
+          </span>
+          <div className="row" style={{ gap: 10 }}>
+            <button type="button" className="btn" onClick={onClose}>Close</button>
+            <button type="button" className="btn btn-primary" onClick={() => { onExport(); onClose(); }}>
+              <Icon name="download" size={15} /> Export Complete Sheet
+            </button>
+          </div>
+        </div>
+      }>
+      <div className="stack">
+        <div className="notice notice-info small">
+          <strong>Weighting:</strong> CA = 40%, Final Exam = 60%. Total = 100%. Marks entered here preview final letter grades and will be included in the exported Departmental Grade Sheet.
+        </div>
+
+        {/* Live KPI bar */}
+        <div className="grid-3">
+          <div className="kpi">
+            <span className="l">Exam Marks Filled</span>
+            <span className="v">{filledCount} / {data.rows.length}</span>
+          </div>
+          <div className="kpi">
+            <span className="l">Average Total (/100)</span>
+            <span className="v">{avgTotal !== null ? avgTotal.toFixed(1) : '—'}</span>
+          </div>
+          <div className="kpi">
+            <span className="l">Passing Rate (&ge;50%)</span>
+            <span className="v" style={{ color: passRate !== null && passRate < 70 ? 'var(--amber-ink)' : 'inherit' }}>
+              {passRate !== null ? `${passRate}%` : '—'}
+            </span>
+          </div>
+        </div>
+
+        {/* Grade Distribution chips */}
+        <div className="card-soft stack-sm" style={{ padding: '12px 16px', background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+          <span className="eyebrow">Grade Distribution Preview (Institutional Scale: 80% A, 75% B+, 70% B, 65% C+, 60% C, 55% D+, 50% D, &lt;50% E)</span>
+          <div className="row-wrap" style={{ gap: 8, marginTop: 4 }}>
+            {Object.entries(dist).map(([g, count]) => (
+              <span key={g} className="badge" style={{ padding: '4px 10px', fontSize: 13 }}>
+                <strong>{g}:</strong> {count}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <Field label="Paste Exam Marks from Excel" hint="Index number in column 1, Exam mark (out of 60) in column 2">
+          <div className="row" style={{ alignItems: 'flex-start' }}>
+            <textarea className="textarea mono" style={{ minHeight: 64 }} value={paste} onChange={(e) => setPaste(e.target.value)} placeholder={'4021180\t48\n4021214\t39.5'} />
+            <button type="button" className="btn btn-sm" disabled={!paste.trim()} onClick={applyPaste}>Fill in</button>
+          </div>
+        </Field>
+        {msg && <div className="notice notice-info">{msg}</div>}
+
+        <label className="search">
+          <span className="sr-only">Search</span>
+          <Icon name="search" size={16} />
+          <input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter student" />
+        </label>
+
+        <div className="card-flush" style={{ maxHeight: 320, overflowY: 'auto' }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Index no.</th>
+                <th>Name</th>
+                <th className="num">CA (/40)</th>
+                <th className="num" style={{ width: 110 }}>Exam (/60)</th>
+                <th className="num">Total (/100)</th>
+                <th>Grade</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.slice(0, 200).map((s) => (
+                <tr key={s.index_no}>
+                  <td className="mono small">{s.index_no}</td>
+                  <td>{s.full_name}</td>
+                  <td className="num">{s.ca.toFixed(dec)}</td>
+                  <td className="num">
+                    <input
+                      className="input mono"
+                      style={{ width: 85, minHeight: 34, padding: '0 8px', textAlign: 'right' }}
+                      inputMode="decimal"
+                      value={examMarks[s.index_no] ?? ''}
+                      onChange={(e) => setExamMarks({ ...examMarks, [s.index_no]: e.target.value })}
+                      placeholder="0–60"
+                    />
+                  </td>
+                  <td className="num strong">{s.total !== null ? s.total.toFixed(dec) : '—'}</td>
+                  <td>
+                    <span className={`badge ${
+                      s.grade === 'A' ? 'badge-teal' :
+                      s.grade === 'B+' || s.grade === 'B' ? 'badge-blue' :
+                      s.grade === 'C+' || s.grade === 'C' ? 'badge-amber' :
+                      s.grade === 'D+' || s.grade === 'D' ? 'badge' :
+                      s.grade === 'E' ? 'badge-red' : ''
+                    }`}>
+                      {s.grade}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </Modal>
   );
 }

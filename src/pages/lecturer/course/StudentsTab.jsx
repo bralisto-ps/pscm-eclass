@@ -24,6 +24,8 @@ export default function StudentsTab({ course, ta }) {
   const [riskErr, setRiskErr] = useState('');
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
+  const [outreach, setOutreach] = useState(false);
+  const [targetStudent, setTargetStudent] = useState(null);
   const [importing, setImporting] = useState(false);
   const [adding, setAdding] = useState(false);
   const [resetting, setResetting] = useState(null);
@@ -110,6 +112,7 @@ export default function StudentsTab({ course, ta }) {
             <GroupFilters rows={data} value={group} onChange={setGroup} />
           </div>
           <div className="row-wrap">
+            <button type="button" className="btn btn-sm" style={{ borderColor: "#fca5a5", color: "#991b1b", background: "#fef2f2" }} onClick={() => setOutreach(true)} title="Send academic advisory to at-risk students"><Icon name="chat" size={16} /> At-Risk Outreach</button>
             {data.length > 0 && <button type="button" className="btn btn-sm" onClick={exportList}><Icon name="download" size={16} /> Export</button>}
             {!ta && <button type="button" className="btn btn-sm" onClick={() => setAdding(true)}><Icon name="plus" size={16} /> Add student</button>}
             {!ta && <button type="button" className="btn btn-sm btn-primary" onClick={() => setImporting(true)}><Icon name="upload" size={16} /> Upload class list</button>}
@@ -154,6 +157,7 @@ export default function StudentsTab({ course, ta }) {
                     <td className="small muted hide-sm">{r.last_sign_in ? relative(r.last_sign_in) : '—'}</td>
                     <td>
                       <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
+                        <button type="button" className="icon-btn plain" title={`Send academic advisory to ${r.full_name}`} onClick={() => setTargetStudent(r)}><Icon name="chat" size={16} /></button>
                         {r.activated && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setResetting(r)}><Icon name="key" size={16} /> Reset password</button>}
                         {!ta && <button type="button" className="icon-btn plain" aria-label={`Edit ${r.full_name}`} onClick={() => setEditing(r)}><Icon name="edit" /></button>}
                         {!ta && <button type="button" className="icon-btn plain" aria-label={`Remove ${r.full_name} from course`} onClick={() => setRemoving(r)}><Icon name="trash" /></button>}
@@ -178,6 +182,15 @@ export default function StudentsTab({ course, ta }) {
       {importing && <ImportModal course={course} onClose={() => setImporting(false)} onDone={reload} />}
       {resetting && <ResetModal student={resetting} onClose={() => setResetting(null)} />}
       {editing && <EditModal student={editing} programmes={programmes} streams={streams} onClose={() => setEditing(null)} onSaved={reload} />}
+      {(outreach || targetStudent) && (
+        <AtRiskOutreachModal
+          course={course}
+          students={data}
+          riskMap={risk}
+          preSelectedStudent={targetStudent}
+          onClose={() => { setOutreach(false); setTargetStudent(null); }}
+        />
+      )}
       {removing && (
         <Confirm title="Remove from course?" danger confirmLabel="Remove" busy={busy}
           message={`${removing.full_name} (${removing.index_no}) will lose access to ${course.code}. Their account and past results stay.`}
@@ -650,6 +663,306 @@ function EditModal({ student, programmes, streams, onClose, onSaved }) {
         <GroupSelect label="Stream" value={f.stream} options={streams} onChange={(v) => setF({ ...f, stream: v ?? '' })} />
       </div>
       <p className="small muted">Updating the index number will automatically update all enrolled courses and grade records for this student.</p>
+    </Modal>
+  );
+}
+
+
+function AtRiskOutreachModal({ course, students, riskMap, preSelectedStudent, onClose }) {
+  const toast = useToast();
+  const [act, busy] = useAction();
+  const [template, setTemplate] = useState('attendance');
+  const [riskData, setRiskData] = useState(() => riskMap || new Map());
+  const [loadingRisk, setLoadingRisk] = useState(!riskMap);
+  const [filterType, setFilterType] = useState(preSelectedStudent ? 'single' : 'all');
+  const [selected, setSelected] = useState(() => {
+    if (preSelectedStudent) return new Set([preSelectedStudent.index_no]);
+    return new Set();
+  });
+
+  const [subject, setSubject] = useState('');
+  const [message, setMessage] = useState('');
+  const [unactivatedList, setUnactivatedList] = useState([]);
+
+  useEffect(() => {
+    if (riskMap) {
+      setRiskData(riskMap);
+      if (!preSelectedStudent) setSelected(new Set(riskMap.keys()));
+      return;
+    }
+    rpcAll('course_at_risk', { p_course: course.id })
+      .then((rows) => {
+        const m = new Map(rows.map((r) => [r.index_no, r]));
+        setRiskData(m);
+        if (!preSelectedStudent) setSelected(new Set(m.keys()));
+      })
+      .catch((err) => console.warn('Could not load at-risk students:', err))
+      .finally(() => setLoadingRisk(false));
+  }, [course.id, riskMap, preSelectedStudent]);
+
+  useEffect(() => {
+    if (template === 'attendance') {
+      setSubject(`Academic Notice: Course Attendance Warning & Examination Eligibility (${course.code})`);
+      setMessage([
+        'Dear Student,',
+        '',
+        `Our attendance records indicate that your current attendance in ${course.code} is below the mandatory 75% institutional threshold required to qualify for the final semester examination.`,
+        '',
+        'Under university academic regulations, regular attendance is a prerequisite for writing the end-of-semester examination. Please treat this notice as an urgent advisory and attend all upcoming lectures. If you have legitimate grounds for past absences or need academic assistance, please reply directly to this message or visit during office hours.',
+        '',
+        'Best regards,',
+        'Course Instructor'
+      ].join('\n'));
+    } else if (template === 'grades') {
+      setSubject(`Academic Advisory: Continuous Assessment Standing (${course.code})`);
+      setMessage([
+        'Dear Student,',
+        '',
+        `This is an academic advisory regarding your Continuous Assessment (CA) performance in ${course.code}. Your current cumulative score is below the 50% pass mark.`,
+        '',
+        'With Continuous Assessment accounting for 40% of your total grade and the Final Examination accounting for 60%, it is critical that you take active measures to improve your performance. I strongly encourage you to review past quizzes, utilize the flashcard revision tool, and visit during office hours for guidance.',
+        '',
+        'Best regards,',
+        'Course Instructor'
+      ].join('\n'));
+    } else if (template === 'office_hours') {
+      setSubject(`Academic Consultation & Office Hours Invitation (${course.code})`);
+      setMessage([
+        'Dear Student,',
+        '',
+        `I am reaching out to check in on your academic progress in ${course.code}. If you are encountering challenges with any lecture topics, assignments, or quizzes, please reply to this message or attend this week\'s scheduled office hours so we can support you.`,
+        '',
+        'Best regards,',
+        'Course Instructor'
+      ].join('\n'));
+    }
+  }, [template, course.code]);
+
+  const flaggedList = useMemo(() => {
+    return students.filter((s) => {
+      if (preSelectedStudent && preSelectedStudent.index_no === s.index_no) return true;
+      const r = riskData.get(s.index_no);
+      if (!r) return false;
+      if (filterType === 'attendance') return (r.attendance_pct !== null && r.attendance_pct < 75) || (r.reasons && r.reasons.some((x) => x.toLowerCase().includes('attend')));
+      if (filterType === 'grades') return (r.avg_pct !== null && r.avg_pct < 50) || (r.reasons && r.reasons.some((x) => x.toLowerCase().includes('quiz') || x.toLowerCase().includes('40%')));
+      if (filterType === 'inactive') return !s.activated || (r.reasons && r.reasons.some((x) => x.toLowerCase().includes('sign in') || x.toLowerCase().includes('activate')));
+      return true;
+    });
+  }, [students, riskData, filterType, preSelectedStudent]);
+
+  const toggle = (idx) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (selected.size === flaggedList.length) setSelected(new Set());
+    else setSelected(new Set(flaggedList.map((s) => s.index_no)));
+  };
+
+  async function dispatchAdvisories() {
+    if (!subject.trim()) throw new Error('Please enter a subject line.');
+    if (!message.trim()) throw new Error('Please enter a message body.');
+    if (selected.size === 0) throw new Error('Please select at least one student.');
+
+    const targetIndexes = [...selected];
+    const profiles = await run(
+      supabase.from('profiles').select('id, index_no, full_name').in('index_no', targetIndexes)
+    );
+
+    const activeMap = new Map((profiles || []).map((p) => [p.index_no, p]));
+    const activeStudents = targetIndexes.map((idx) => activeMap.get(idx)).filter(Boolean);
+    const unactivated = targetIndexes.filter((idx) => !activeMap.has(idx));
+
+    if (unactivated.length > 0) {
+      setUnactivatedList(students.filter((s) => unactivated.includes(s.index_no)));
+    }
+
+    if (activeStudents.length === 0) {
+      throw new Error(`None of the selected ${targetIndexes.length} students have activated their accounts yet. See the unactivated list below to reach them.`);
+    }
+
+    await act(async () => {
+      const inserts = activeStudents.map((p) => ({
+        course_id: course.id,
+        student_id: p.id,
+        subject: subject.trim(),
+        message: message.trim(),
+      }));
+
+      for (let i = 0; i < inserts.length; i += 100) {
+        await run(supabase.from('course_messages').insert(inserts.slice(i, i + 100)));
+      }
+    }, `Dispatched academic advisory to ${activeStudents.length} active student${activeStudents.length === 1 ? '' : 's'}.`);
+
+    if (unactivated.length === 0) {
+      onClose();
+    }
+  }
+
+  function copyUnactivated() {
+    const text = unactivatedList.map((s) => `${s.index_no} - ${s.full_name} (${s.programme || 'No Prog'})`).join('\n');
+    navigator.clipboard.writeText(text);
+    toast('Copied unactivated index numbers to clipboard.');
+  }
+
+  return (
+    <Modal
+      title={
+        <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+          <Icon name="chat" size={18} style={{ color: 'var(--red-ink)' }} />
+          <span>At-Risk Student Outreach · {course.code}</span>
+        </div>
+      }
+      onClose={onClose}
+      wide
+      footer={
+        <div className="between" style={{ width: '100%', flexWrap: 'wrap', gap: 10 }}>
+          <span className="small muted">
+            {selected.size} of {flaggedList.length} student{flaggedList.length === 1 ? '' : 's'} selected
+          </span>
+          <div className="row" style={{ gap: 10 }}>
+            <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+            <button type="button" className="btn btn-primary" onClick={dispatchAdvisories} disabled={busy || selected.size === 0}>
+              {busy ? 'Sending…' : `Send Advisory Notices (${selected.size})`}
+            </button>
+          </div>
+        </div>
+      }
+    >
+      <div className="stack">
+        <div className="notice notice-warn small">
+          <strong>Automated Academic Advisory:</strong> Identifies students with attendance under 75% (the mandatory university exam threshold), CA scores below 50%, or inactive accounts, and delivers private advisory notices directly into their student portal.
+        </div>
+
+        {!preSelectedStudent && (
+          <div className="chips" role="group" aria-label="Filter flagged students">
+            <button type="button" className="chip" aria-pressed={filterType === 'all'} onClick={() => setFilterType('all')}>
+              All Flagged ({riskData.size})
+            </button>
+            <button type="button" className="chip" aria-pressed={filterType === 'attendance'} onClick={() => setFilterType('attendance')}>
+              Attendance &lt; 75%
+            </button>
+            <button type="button" className="chip" aria-pressed={filterType === 'grades'} onClick={() => setFilterType('grades')}>
+              CA Score &lt; 50%
+            </button>
+            <button type="button" className="chip" aria-pressed={filterType === 'inactive'} onClick={() => setFilterType('inactive')}>
+              Inactive / Unactivated
+            </button>
+          </div>
+        )}
+
+        <div className="card-flush" style={{ maxHeight: 220, overflowY: 'auto' }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th style={{ width: 36 }}>
+                  <input
+                    type="checkbox"
+                    checked={flaggedList.length > 0 && selected.size === flaggedList.length}
+                    onChange={toggleAll}
+                    style={{ width: 16, height: 16, accentColor: 'var(--teal)' }}
+                  />
+                </th>
+                <th>Index no.</th>
+                <th>Name</th>
+                <th>Programme/Stream</th>
+                <th>Risk Indicators</th>
+              </tr>
+            </thead>
+            <tbody>
+              {flaggedList.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="muted small" style={{ textAlign: 'center', padding: 18 }}>
+                    {loadingRisk ? 'Loading student records…' : 'No students match this risk filter.'}
+                  </td>
+                </tr>
+              ) : (
+                flaggedList.map((s) => {
+                  const r = riskData.get(s.index_no);
+                  const reasons = r?.reasons || (!s.activated ? ['Not activated'] : ['Academic follow-up']);
+                  return (
+                    <tr key={s.index_no} style={selected.has(s.index_no) ? { background: 'var(--teal-50)' } : undefined}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={selected.has(s.index_no)}
+                          onChange={() => toggle(s.index_no)}
+                          style={{ width: 16, height: 16, accentColor: 'var(--teal)' }}
+                        />
+                      </td>
+                      <td className="mono small">{s.index_no}</td>
+                      <td className="small strong">{s.full_name}</td>
+                      <td className="small muted">{[s.programme, s.stream].filter(Boolean).join(' · ') || '—'}</td>
+                      <td>
+                        <div className="row-wrap" style={{ gap: 4 }}>
+                          {reasons.map((re, k) => (
+                            <span key={k} className="badge badge-amber" style={{ fontSize: 11, padding: '2px 6px' }}>
+                              {re}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="stack-sm">
+          <span className="field-label">Choose Advisory Template:</span>
+          <div className="row-wrap" style={{ gap: 8 }}>
+            <button
+              type="button"
+              className={`btn btn-sm ${template === 'attendance' ? 'btn-primary' : ''}`}
+              onClick={() => setTemplate('attendance')}
+            >
+              1. Attendance &lt; 75% Warning
+            </button>
+            <button
+              type="button"
+              className={`btn btn-sm ${template === 'grades' ? 'btn-primary' : ''}`}
+              onClick={() => setTemplate('grades')}
+            >
+              2. CA &lt; 50% Advisory
+            </button>
+            <button
+              type="button"
+              className={`btn btn-sm ${template === 'office_hours' ? 'btn-primary' : ''}`}
+              onClick={() => setTemplate('office_hours')}
+            >
+              3. Office Hours Consultation
+            </button>
+          </div>
+        </div>
+
+        <Field label="Message Subject *">
+          <input className="input" value={subject} onChange={(e) => setSubject(e.target.value)} required />
+        </Field>
+
+        <Field label="Message Body (Delivered to Student Portal) *">
+          <textarea className="input textarea" rows={6} value={message} onChange={(e) => setMessage(e.target.value)} required />
+        </Field>
+
+        {unactivatedList.length > 0 && (
+          <div className="notice notice-warn small stack-sm">
+            <div className="between">
+              <strong>{unactivatedList.length} student(s) have not activated their accounts yet:</strong>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={copyUnactivated}>
+                Copy List
+              </button>
+            </div>
+            <p className="tiny muted" style={{ margin: 0 }}>
+              These students cannot receive portal messages until they activate. You can copy their index numbers to forward to class representatives or departmental admins.
+            </p>
+          </div>
+        )}
+      </div>
     </Modal>
   );
 }

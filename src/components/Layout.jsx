@@ -46,41 +46,52 @@ export default function Layout() {
       {open && <div className="scrim" onClick={() => setOpen(false)} />}
       <nav className={`sidebar ${open ? 'open' : ''}`} aria-label="Main">
         <Link to="/" className="brand">
-          <span className="brand-mark">PS</span>
+          <span className="brand-mark" style={{
+            background: 'linear-gradient(135deg, #0d9488, #0f766e)',
+            border: '1px solid rgba(255,255,255,0.2)',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+            letterSpacing: '0.05em'
+          }}>
+            PS
+          </span>
           <span>
-            <div className="brand-name">PSCM E-class</div>
-            <div className="brand-sub">{isTA ? 'Teaching assistant' : isLecturer ? 'Lecturer' : 'Student'}</div>
+            <div className="brand-name" style={{ letterSpacing: '-0.01em', fontWeight: 700 }}>PSCM E-class</div>
+            <div className="brand-sub" style={{ fontSize: 11, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+              {isTA ? 'Teaching Assistant' : isLecturer ? 'Executive Faculty' : 'Student Portal'}
+            </div>
           </span>
         </Link>
 
         <NavLink to="/" end className="nav-link">
-          <Icon name="home" /> {isLecturer ? 'Dashboard' : 'Home'}
+          <Icon name="home" /> {isLecturer ? 'Faculty Dashboard' : 'Home'}
         </NavLink>
         {!isLecturer && (
           <NavLink to="/grades" className="nav-link">
-            <Icon name="chart" /> My grades
+            <Icon name="chart" /> My Grades
           </NavLink>
         )}
 
         <div className="nav-section">Courses</div>
         {courses.map((c) => (
           <NavLink key={c.id} to={coursePath(c)} className="nav-link" title={c.title}>
-            <span className="nav-course-dot" style={{ background: c.color }} />
+            <span className="nav-course-dot" style={{ background: c.color, boxShadow: '0 0 6px rgba(0,0,0,0.2)' }} />
             <span className="nav-course-code">{c.code}</span>
           </NavLink>
         ))}
         {!courses.length && <div className="tiny" style={{ color: '#8794a0', padding: '4px 12px' }}>No courses yet</div>}
 
         <NavLink to="/account" className="nav-link" style={{ marginTop: 16 }}>
-          <Icon name="settings" /> Account
+          <Icon name="settings" /> Account Settings
         </NavLink>
 
-        <div className="sidebar-foot">
-          <div className="avatar">{initials(profile?.full_name)}</div>
+        <div className="sidebar-foot" style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '10px 10px 10px 8px' }}>
+          <div className="avatar" style={{ border: '1px solid rgba(255,255,255,0.15)', background: 'var(--ink-2)' }}>
+            {initials(profile?.full_name)}
+          </div>
           <div className="who">
-            <div style={{ fontSize: 14, color: '#fff' }}>{profile?.full_name}</div>
-            <div className="mono tiny" style={{ color: '#9faab4' }}>
-              {profile?.index_no || (isTA ? 'Teaching assistant' : 'Lecturer')}
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{profile?.full_name}</div>
+            <div className="mono tiny" style={{ color: '#94a3b8' }}>
+              {profile?.index_no || (isTA ? 'TA' : 'Faculty')}
             </div>
           </div>
           <button type="button" className="icon-btn-dark" onClick={signOut} aria-label="Sign out" title="Sign out">
@@ -95,7 +106,7 @@ export default function Layout() {
             <Icon name="menu" />
           </button>
           <span className="brand-mark" style={{ width: 30, height: 30, fontSize: 12 }}>PS</span>
-          <strong>PSCM E-class</strong>
+          <strong style={{ letterSpacing: '-0.01em' }}>PSCM E-class</strong>
         </div>
         <Outlet />
       </div>
