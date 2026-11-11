@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { rpc, rpcAll, run, supabase } from '../../../lib/supabase.js';
 import { fmtNumber } from '../../../lib/format.js';
 import { downloadWorkbook, downloadText, parseDelimited } from '../../../lib/sheets.js';
+import { parseCourseMeta, serializeCourseMeta, computeStudentCA } from '../../../lib/courseMeta.js';
 import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../../components/ui.jsx';
 import { ALL_GROUPS, GroupFilters, groupLabel, matchesGroup } from '../../../components/Groups.jsx';
@@ -67,18 +68,25 @@ const blank = (kind, weight) => ({
 
 export default function CATab({ course, onCourseChanged }) {
   const { data, error, loading, reload } = useLoad(async () => {
-    const [components, quizzes, assignments, rows] = await Promise.all([
+    const [components, quizzes, assignments, rows, freshCourse] = await Promise.all([
       run(supabase.from('ca_components').select('*').eq('course_id', course.id).order('position').order('created_at')),
       run(supabase.from('quizzes').select('id, title').eq('course_id', course.id).eq('published', true).eq('is_practice', false).order('created_at')),
       run(supabase.from('assignments').select('id, title').eq('course_id', course.id).eq('published', true).order('created_at')),
       rpcAll('course_ca', { p_course: course.id }),
+      run(supabase.from('courses').select('*').eq('id', course.id).maybeSingle()),
     ]);
-    return { components: components.map((c) => ({ ...c, key: c.id })), quizzes, assignments, rows };
+    return {
+      components: components.map((c) => ({ ...c, key: c.id })),
+      quizzes,
+      assignments,
+      rows,
+      course: freshCourse || course,
+    };
   }, [course.id]);
 
   if (loading) return <Loading label="Working out CA scores…" />;
   if (error) return <ErrorNote error={error} onRetry={reload} />;
-  return <CAInner key={data.components.map((c) => c.id).join()} course={course} data={data} reload={reload} onCourseChanged={onCourseChanged} />;
+  return <CAInner key={data.components.map((c) => c.id).join()} course={data.course} data={data} reload={reload} onCourseChanged={onCourseChanged} />;
 }
 
 function CAInner({ course, data, reload, onCourseChanged }) {
@@ -91,9 +99,13 @@ function CAInner({ course, data, reload, onCourseChanged }) {
   const [entering, setEntering] = useState(null);
   const [removing, setRemoving] = useState(null);
   const [examModal, setExamModal] = useState(false);
-  const [examMarks, setExamMarks] = useState({}); // index_no -> number / string
   const [group, setGroup] = useState(ALL_GROUPS);
   const [q, setQ] = useState('');
+
+  // Course metadata (CA 1 & CA 2 split and final exam marks)
+  const meta = useMemo(() => parseCourseMeta(course), [course]);
+  const [caConfig, setCaConfig] = useState(meta.ca_config);
+  const [examConfig, setExamConfig] = useState(meta.exam_config);
 
   const totalWeight = comps.reduce((s, c) => s + (Number(c.weight) || 0), 0);
   const weightOk = Math.abs(totalWeight - Number(settings.ca_total)) < 0.001;
@@ -115,12 +127,51 @@ function CAInner({ course, data, reload, onCourseChanged }) {
     setDirty(true);
   }
 
+  // Update bucket for a component
+  function setComponentBucket(cid, bucket) {
+    const next1 = new Set(caConfig.ca1_components || []);
+    const next2 = new Set(caConfig.ca2_components || []);
+    if (bucket === 'ca1') {
+      next1.add(cid);
+      next2.delete(cid);
+    } else {
+      next2.add(cid);
+      next1.delete(cid);
+    }
+    const updated = {
+      ...caConfig,
+      ca1_components: [...next1],
+      ca2_components: [...next2],
+    };
+    setCaConfig(updated);
+    setDirty(true);
+  }
+
+  function getComponentBucket(c, index) {
+    if (caConfig.ca1_components?.includes(c.id)) return 'ca1';
+    if (caConfig.ca2_components?.includes(c.id)) return 'ca2';
+    // Fallback default
+    if (c.kind === 'quizzes' || index === 0) return 'ca1';
+    return 'ca2';
+  }
+
   async function save() {
     for (const c of comps) {
       if (!String(c.name).trim()) throw new Error('Give every part a name.');
       if (c.kind === 'manual' && !(Number(c.max_score) > 0)) throw new Error(`Set what "${c.name}" is marked out of.`);
     }
-    await run(supabase.from('courses').update({ ca_total: Number(settings.ca_total) || 40, ca_decimals: Number(settings.ca_decimals) }).eq('id', course.id));
+
+    // Save description with serialized metadata
+    const serialized = serializeCourseMeta(meta.about, caConfig, examConfig);
+
+    await run(
+      supabase.from('courses').update({
+        ca_total: Number(settings.ca_total) || 40,
+        ca_decimals: Number(settings.ca_decimals),
+        description: serialized,
+      }).eq('id', course.id)
+    );
+
     const keep = new Set(comps.filter((c) => c.id).map((c) => c.id));
     const gone = saved.filter((c) => !keep.has(c.id)).map((c) => c.id);
     if (gone.length) await run(supabase.from('ca_components').delete().in('id', gone));
@@ -145,38 +196,37 @@ function CAInner({ course, data, reload, onCourseChanged }) {
     if (ok !== undefined) onCourseChanged?.();
   }
 
-  // Calculate official scaled CA (out of 40 marks)
-  function getCa40(r) {
-    const rawTotal = Number(r.total || 0);
-    const configuredTotal = Number(course.ca_total || 40);
-    if (configuredTotal === 40) return rawTotal;
-    return (rawTotal / configuredTotal) * 40;
-  }
-
-  // 1-Click Official Grade Sheet Export (Excel .xlsx with CA 40% + Final Exam 60%)
+  // 1-Click Official Grade Sheet Export with 2 CA columns (CA 1 + CA 2 = 40) and Final Exam (/60)
   function exportOfficialXlsx() {
+    const w1 = caConfig.ca1_weight || 20;
+    const w2 = caConfig.ca2_weight || 20;
+
     const header = [
       'S/N',
       'Index Number',
       'Student Name',
       'Programme',
       'Stream',
-      ...saved.map((c) => `${c.name} (/${fmtNumber(c.weight)})`),
-      'CA Total (/40)',
+      `CA 1 (/${w1})`,
+      `CA 2 (/${w2})`,
+      'Total CA (/40)',
       'Final Exam (/60)',
       'Total Score (/100)',
       'Grade',
       'Remarks',
     ];
 
-    const widths = [6, 16, 32, 20, 14, ...saved.map(() => 16), 14, 15, 16, 10, 16];
+    const widths = [6, 16, 32, 20, 14, 14, 14, 15, 16, 16, 10, 16];
 
     const buildLine = (r, idx) => {
-      const ca40 = Number(getCa40(r).toFixed(dec || 1));
-      const ex = examMarks[r.index_no] !== undefined && examMarks[r.index_no] !== '' ? Number(examMarks[r.index_no]) : null;
-      const total100 = ex !== null ? Number((ca40 + ex).toFixed(dec || 1)) : null;
-      const grade = total100 !== null ? getGradeLetter(total100) : (ca40 >= 20 ? 'Pending Exam' : 'At Risk (<20)');
-      const remarks = total100 !== null ? getGradeRemarks(total100) : (ca40 < 20 ? 'At Risk (<50% CA)' : 'Good Standing');
+      const { ca1, ca2, totalCa } = computeStudentCA(r, saved, caConfig, course.ca_total);
+      const ex = examConfig.scores?.[r.index_no] !== undefined && examConfig.scores[r.index_no] !== ''
+        ? Number(examConfig.scores[r.index_no])
+        : null;
+
+      const total100 = ex !== null ? Number((totalCa + ex).toFixed(dec || 1)) : null;
+      const grade = total100 !== null ? getGradeLetter(total100) : (totalCa >= 20 ? 'Pending Exam' : 'At Risk (<20)');
+      const remarks = total100 !== null ? getGradeRemarks(total100) : (totalCa < 20 ? 'At Risk (<50% CA)' : 'Good Standing');
 
       return [
         idx + 1,
@@ -184,8 +234,9 @@ function CAInner({ course, data, reload, onCourseChanged }) {
         r.full_name,
         r.programme || '',
         r.stream || '',
-        ...saved.map((c) => Number(r.parts?.[c.id]?.points ?? 0)),
-        ca40,
+        ca1,
+        ca2,
+        totalCa,
         ex !== null ? ex : '',
         total100 !== null ? total100 : '',
         grade,
@@ -195,7 +246,7 @@ function CAInner({ course, data, reload, onCourseChanged }) {
 
     const sheets = [
       {
-        name: 'Master Grade Sheet (40-60)',
+        name: 'Master Grade Sheet (CA1-CA2)',
         rows: [
           header,
           ...data.rows.map((r, i) => buildLine(r, i)),
@@ -203,6 +254,37 @@ function CAInner({ course, data, reload, onCourseChanged }) {
         widths,
       },
     ];
+
+    // Detailed components breakdown sheet
+    const detailHeader = [
+      'Index Number',
+      'Student Name',
+      'Stream',
+      ...saved.map((c) => `${c.name} (/${fmtNumber(c.weight)})`),
+      `CA 1 (/${w1})`,
+      `CA 2 (/${w2})`,
+      'Total CA (/40)',
+    ];
+    const detailWidths = [16, 30, 14, ...saved.map(() => 16), 14, 14, 15];
+    sheets.push({
+      name: 'CA Components Breakdown',
+      rows: [
+        detailHeader,
+        ...data.rows.map((r) => {
+          const { ca1, ca2, totalCa } = computeStudentCA(r, saved, caConfig, course.ca_total);
+          return [
+            r.index_no,
+            r.full_name,
+            r.stream || '',
+            ...saved.map((c) => Number(r.parts?.[c.id]?.points ?? 0)),
+            ca1,
+            ca2,
+            totalCa,
+          ];
+        }),
+      ],
+      widths: detailWidths,
+    });
 
     // Per-stream sheets
     const streams = [...new Set(data.rows.map((r) => r.stream || ''))].filter(Boolean).sort();
@@ -224,10 +306,12 @@ function CAInner({ course, data, reload, onCourseChanged }) {
     sheets.push({
       name: 'Grading Scale & Distribution',
       rows: [
-        ['OFFICIAL DEPARTMENTAL GRADING SCHEME', '', '', ''],
-        ['Continuous Assessment (CA)', '40%', 'Calculated from course quizzes, assignments & attendance', ''],
+        ['OFFICIAL DEPARTMENTAL ASSESSMENT STRUCTURE', '', '', ''],
+        ['Continuous Assessment Column 1 (CA 1)', `${w1}%`, 'Assigned Coursework / Quizzes', ''],
+        ['Continuous Assessment Column 2 (CA 2)', `${w2}%`, 'Assigned Mid-Sem / Assignments / Attendance', ''],
+        ['Total Continuous Assessment', '40%', 'Sum of CA 1 and CA 2', ''],
         ['Final Examination', '60%', 'Semester Examination / Exams Office Entry', ''],
-        ['Total Mark', '100%', 'CA (40%) + Final Exam (60%)', ''],
+        ['Total Score', '100%', 'Total CA (40%) + Final Exam (60%)', ''],
         ['', '', '', ''],
         ['Grade Scale', 'Score Range', 'Remarks', 'Status'],
         ['A', '80.00% – 100.00%', 'Excellent', 'Pass'],
@@ -239,28 +323,35 @@ function CAInner({ course, data, reload, onCourseChanged }) {
         ['D', '50.00% – 54.99%', 'Pass (Lowest Pass)', 'Pass'],
         ['E', '0.00% – 49.99%', 'Fail', 'Fail (<50%)'],
       ],
-      widths: [24, 24, 40, 16],
+      widths: [26, 22, 42, 16],
     });
 
-    downloadWorkbook(`${course.code}_Official_Grade_Sheet_CA40_Exam60.xlsx`, sheets);
+    downloadWorkbook(`${course.code}_Departmental_Grade_Sheet_CA1_CA2_Exam.xlsx`, sheets);
   }
 
-  // 1-Click Departmental CSV Export
+  // 1-Click Departmental CSV Export with CA 1 and CA 2
   function exportOfficialCsv() {
-    const header = ['S/N', 'Index Number', 'Student Name', 'Programme', 'Stream', 'CA_40', 'Exam_60', 'Total_100', 'Grade', 'Remarks'];
+    const w1 = caConfig.ca1_weight || 20;
+    const w2 = caConfig.ca2_weight || 20;
+    const header = ['S/N', 'Index Number', 'Student Name', 'Programme', 'Stream', `CA_1_${w1}`, `CA_2_${w2}`, 'Total_CA_40', 'Exam_60', 'Total_100', 'Grade', 'Remarks'];
+
     const lines = data.rows.map((r, i) => {
-      const ca40 = Number(getCa40(r).toFixed(dec || 1));
-      const ex = examMarks[r.index_no] !== undefined && examMarks[r.index_no] !== '' ? Number(examMarks[r.index_no]) : '';
-      const total100 = ex !== '' ? Number((ca40 + Number(ex)).toFixed(dec || 1)) : '';
+      const { ca1, ca2, totalCa } = computeStudentCA(r, saved, caConfig, course.ca_total);
+      const ex = examConfig.scores?.[r.index_no] !== undefined && examConfig.scores[r.index_no] !== ''
+        ? Number(examConfig.scores[r.index_no])
+        : '';
+      const total100 = ex !== '' ? Number((totalCa + Number(ex)).toFixed(dec || 1)) : '';
       const grade = total100 !== '' ? getGradeLetter(total100) : '';
-      const remarks = total100 !== '' ? getGradeRemarks(total100) : (ca40 < 20 ? 'At Risk (<50% CA)' : 'Good Standing');
+      const remarks = total100 !== '' ? getGradeRemarks(total100) : (totalCa < 20 ? 'At Risk (<50% CA)' : 'Good Standing');
       return [
         i + 1,
         `"${r.index_no}"`,
         `"${r.full_name}"`,
         `"${r.programme || ''}"`,
         `"${r.stream || ''}"`,
-        ca40,
+        ca1,
+        ca2,
+        totalCa,
         ex,
         total100,
         grade,
@@ -268,50 +359,63 @@ function CAInner({ course, data, reload, onCourseChanged }) {
       ].join(',');
     });
 
-    downloadText(`${course.code}_Official_Grade_Sheet_CA40_Exam60.csv`, [header.join(','), ...lines].join('\n'), 'text/csv');
+    downloadText(`${course.code}_Departmental_Grade_Sheet_CA1_CA2_Exam.csv`, [header.join(','), ...lines].join('\n'), 'text/csv');
   }
 
   const itemsFor = (c) => (c.kind === 'quizzes' ? data.quizzes : data.assignments);
 
   return (
     <div className="stack-lg" style={{ maxWidth: 1180 }}>
-      {/* Official 40/60 Weighting Banner */}
+      {/* Official 2-Column CA + Final Exam Banner */}
       <div className="card-soft between" style={{ padding: '16px 20px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 12, flexWrap: 'wrap', gap: 14 }}>
         <div className="stack-sm" style={{ gap: 4 }}>
           <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-            <span className="badge badge-teal" style={{ fontWeight: 700 }}>Official Assessment Formula</span>
-            <span className="small strong">CA: 40% · Final Exam: 60% = 100% Total</span>
+            <span className="badge badge-teal" style={{ fontWeight: 700 }}>Departmental Dual-CA Format</span>
+            <span className="small strong">CA 1 ({caConfig.ca1_weight}) + CA 2 ({caConfig.ca2_weight}) = CA Total (40) · Exam (60) = 100</span>
           </div>
           <p className="small muted">
-            Continuous Assessment is scaled to 40 marks. Letter grades follow institutional scale: A (80+), B+ (75+), B (70+), C+ (65+), C (60+), D+ (55+), D (50+), E (&lt;50).
+            Generates 2 separate CA columns directly compatible with the school's exam platform submission format. The sum of CA 1 and CA 2 is shown to students as their CA score.
           </p>
         </div>
         <div className="row-wrap">
-          <button type="button" className="btn btn-sm" onClick={() => setExamModal(true)} title="Enter or preview final exam scores out of 60">
-            <Icon name="edit" size={15} /> Enter/Preview Exam (/60)
+          <button type="button" className={`btn btn-sm ${examConfig.released ? 'btn-primary' : ''}`} onClick={() => setExamModal(true)} title="Enter marks or release full exam scores to students">
+            <Icon name="edit" size={15} /> {examConfig.released ? 'Exam Scores (Released ✓)' : 'Enter/Release Exam (/60)'}
           </button>
-          <button type="button" className="btn btn-sm" onClick={exportOfficialCsv} title="Download CSV for Registrar / SIS upload">
+          <button type="button" className="btn btn-sm" onClick={exportOfficialCsv} title="Download 2-CA CSV for Registrar / SIS upload">
             <Icon name="download" size={15} /> Export CSV
           </button>
-          <button type="button" className="btn btn-sm btn-primary" onClick={exportOfficialXlsx} title="Download official multi-sheet Excel gradebook">
+          <button type="button" className="btn btn-sm btn-primary" onClick={exportOfficialXlsx} title="Download official multi-sheet Excel gradebook with CA1 and CA2">
             <Icon name="download" size={15} /> Export Grade Sheet (Excel)
           </button>
         </div>
       </div>
 
+      {/* CA Configuration Section */}
       <section className="card stack">
         <div className="between" style={{ flexWrap: 'wrap' }}>
           <div className="stack-sm" style={{ gap: 2 }}>
             <h2>How CA (40%) is worked out</h2>
-            <p className="small muted">Each component's percentage is scaled to its weight. A missed quiz or assignment counts as 0.</p>
+            <p className="small muted">Assign components to <strong>CA 1</strong> and <strong>CA 2</strong> to match the school's submission columns.</p>
           </div>
           <div className="row-wrap">
-            <label className="row small" style={{ gap: 6 }}>CA out of
-              <input className="input" type="number" min="1" style={{ width: 80, minHeight: 40 }} value={settings.ca_total}
-                onChange={(e) => { setSettings({ ...settings, ca_total: e.target.value }); setDirty(true); }} />
+            <label className="row small" style={{ gap: 6 }}>CA 1 Target
+              <input className="input" type="number" min="1" max="39" style={{ width: 70, minHeight: 38 }} value={caConfig.ca1_weight}
+                onChange={(e) => {
+                  const val = Number(e.target.value) || 20;
+                  setCaConfig({ ...caConfig, ca1_weight: val, ca2_weight: 40 - val });
+                  setDirty(true);
+                }} />
+            </label>
+            <label className="row small" style={{ gap: 6 }}>CA 2 Target
+              <input className="input" type="number" min="1" max="39" style={{ width: 70, minHeight: 38 }} value={caConfig.ca2_weight}
+                onChange={(e) => {
+                  const val = Number(e.target.value) || 20;
+                  setCaConfig({ ...caConfig, ca2_weight: val, ca1_weight: 40 - val });
+                  setDirty(true);
+                }} />
             </label>
             <label className="row small" style={{ gap: 6 }}>Round to
-              <select className="select" style={{ width: 'auto', minHeight: 40 }} value={settings.ca_decimals}
+              <select className="select" style={{ width: 'auto', minHeight: 38 }} value={settings.ca_decimals}
                 onChange={(e) => { setSettings({ ...settings, ca_decimals: e.target.value }); setDirty(true); }}>
                 <option value={0}>whole marks</option><option value={1}>1 decimal</option><option value={2}>2 decimals</option>
               </select>
@@ -321,59 +425,77 @@ function CAInner({ course, data, reload, onCourseChanged }) {
 
         {comps.length === 0 && (
           <div className="notice notice-info row-wrap">
-            <span style={{ flex: 1 }}>No parts yet. Start from a typical 40-mark split (quizzes 15, assignments 10, attendance 5, mid-semester 10) and adjust.</span>
-            <button type="button" className="btn btn-sm btn-primary" onClick={useTemplate}>Use this template</button>
+            <span style={{ flex: 1 }}>No components yet. Start from a typical 40-mark split and adjust.</span>
+            <button type="button" className="btn btn-sm btn-primary" onClick={useTemplate}>Use standard template</button>
           </div>
         )}
 
-        {comps.map((c, i) => (
-          <div key={c.key} className="row-wrap" style={{ alignItems: 'flex-end', padding: '12px 14px', border: '1px solid var(--line)', borderRadius: 10, gap: 10 }}>
-            <span className="mono strong" style={{ alignSelf: 'center', width: 18 }}>{i + 1}</span>
-            <div style={{ flex: '2 1 180px' }}><Field label="Name"><input className="input" value={c.name} onChange={(e) => change(c.key, { name: e.target.value })} /></Field></div>
-            <div style={{ flex: '2 1 200px' }}>
-              <Field label="Counts">
-                <select className="select" value={c.kind} onChange={(e) => change(c.key, { kind: e.target.value, item_ids: [] })}>
-                  {KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
-                </select>
-              </Field>
+        {comps.map((c, i) => {
+          const currentBucket = getComponentBucket(c, i);
+          return (
+            <div key={c.key} className="row-wrap" style={{ alignItems: 'flex-end', padding: '12px 14px', border: '1px solid var(--line)', borderRadius: 10, gap: 10 }}>
+              <span className="mono strong" style={{ alignSelf: 'center', width: 18 }}>{i + 1}</span>
+              <div style={{ flex: '2 1 180px' }}><Field label="Name"><input className="input" value={c.name} onChange={(e) => change(c.key, { name: e.target.value })} /></Field></div>
+              <div style={{ flex: '2 1 180px' }}>
+                <Field label="Counts">
+                  <select className="select" value={c.kind} onChange={(e) => change(c.key, { kind: e.target.value, item_ids: [] })}>
+                    {KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
+                  </select>
+                </Field>
+              </div>
+              <div style={{ width: 85 }}><Field label="Weight"><input className="input mono" type="number" min="0" step="0.5" value={c.weight} onChange={(e) => change(c.key, { weight: e.target.value })} /></Field></div>
+              <div style={{ width: 140 }}>
+                <Field label="School Platform Column">
+                  <select
+                    className="select"
+                    value={currentBucket}
+                    onChange={(e) => setComponentBucket(c.id, e.target.value)}
+                    style={{ fontWeight: 600, color: currentBucket === 'ca1' ? 'var(--teal-dark)' : 'var(--blue-ink)' }}
+                  >
+                    <option value="ca1">CA 1 (/{caConfig.ca1_weight})</option>
+                    <option value="ca2">CA 2 (/{caConfig.ca2_weight})</option>
+                  </select>
+                </Field>
+              </div>
+
+              {(c.kind === 'quizzes' || c.kind === 'assignments') && (
+                <>
+                  <button type="button" className="btn btn-sm" style={{ minHeight: 44 }} onClick={() => setPicking(c.key)}>
+                    {c.item_ids.length ? `${c.item_ids.length} chosen` : `All ${c.kind}`} <Icon name="edit" size={14} />
+                  </button>
+                  <div style={{ width: 100 }}><Field label="Drop lowest"><input className="input mono" type="number" min="0" value={c.drop_lowest} onChange={(e) => change(c.key, { drop_lowest: e.target.value })} /></Field></div>
+                </>
+              )}
+              {c.kind === 'manual' && (
+                <>
+                  <div style={{ width: 110 }}><Field label="Marked out of"><input className="input mono" type="number" min="1" value={c.max_score} onChange={(e) => change(c.key, { max_score: e.target.value })} /></Field></div>
+                  <button type="button" className="btn btn-sm" style={{ minHeight: 44 }} disabled={!c.id || dirty}
+                    title={!c.id || dirty ? 'Save the setup first' : ''} onClick={() => setEntering(c)}>Enter marks</button>
+                </>
+              )}
+              <button type="button" className="icon-btn plain" style={{ marginBottom: 2 }} aria-label={`Remove ${c.name}`} onClick={() => setRemoving(c)}><Icon name="trash" /></button>
             </div>
-            <div style={{ width: 96 }}><Field label="Weight"><input className="input mono" type="number" min="0" step="0.5" value={c.weight} onChange={(e) => change(c.key, { weight: e.target.value })} /></Field></div>
-            {(c.kind === 'quizzes' || c.kind === 'assignments') && (
-              <>
-                <button type="button" className="btn btn-sm" style={{ minHeight: 44 }} onClick={() => setPicking(c.key)}>
-                  {c.item_ids.length ? `${c.item_ids.length} chosen` : `All ${c.kind}`} <Icon name="edit" size={14} />
-                </button>
-                <div style={{ width: 110 }}><Field label="Drop lowest"><input className="input mono" type="number" min="0" value={c.drop_lowest} onChange={(e) => change(c.key, { drop_lowest: e.target.value })} /></Field></div>
-              </>
-            )}
-            {c.kind === 'manual' && (
-              <>
-                <div style={{ width: 120 }}><Field label="Marked out of"><input className="input mono" type="number" min="1" value={c.max_score} onChange={(e) => change(c.key, { max_score: e.target.value })} /></Field></div>
-                <button type="button" className="btn btn-sm" style={{ minHeight: 44 }} disabled={!c.id || dirty}
-                  title={!c.id || dirty ? 'Save the setup first' : ''} onClick={() => setEntering(c)}>Enter marks</button>
-              </>
-            )}
-            <button type="button" className="icon-btn plain" style={{ marginBottom: 2 }} aria-label={`Remove ${c.name}`} onClick={() => setRemoving(c)}><Icon name="trash" /></button>
-          </div>
-        ))}
+          );
+        })}
 
         <div className="between" style={{ flexWrap: 'wrap' }}>
           <div className="row-wrap">
-            <span className="small muted">Add a part:</span>
+            <span className="small muted">Add component:</span>
             {KINDS.map((k) => <button key={k.id} type="button" className="btn btn-sm" onClick={() => add(k.id)}><Icon name="plus" size={14} /> {kindLabel(k.id)}</button>)}
           </div>
           <div className="row-wrap">
             <span className={`badge ${weightOk ? 'badge-teal' : 'badge-amber'}`}>Weights add up to {fmtNumber(totalWeight)} of {fmtNumber(settings.ca_total)}</span>
-            {dirty && <span className="badge badge-amber">Unsaved</span>}
-            <button type="button" className="btn btn-primary" disabled={busy || !dirty} onClick={() => act(save, 'CA setup saved.')}>Save setup</button>
+            {dirty && <span className="badge badge-amber">Unsaved changes</span>}
+            <button type="button" className="btn btn-primary" disabled={busy || !dirty} onClick={() => act(save, 'CA and column setup saved.')}>Save setup</button>
           </div>
         </div>
       </section>
 
+      {/* Grade Table Section */}
       <section className="card-flush">
         <div className="card-head" style={{ flexWrap: 'wrap' }}>
           <div className="row-wrap">
-            <h2>CA Scores & Official Projections</h2>
+            <h2>Dual-CA & Final Exam Gradebook</h2>
             <label className="search">
               <span className="sr-only">Search</span>
               <Icon name="search" size={16} />
@@ -382,8 +504,8 @@ function CAInner({ course, data, reload, onCourseChanged }) {
             <GroupFilters rows={data.rows} value={group} onChange={setGroup} />
           </div>
           <div className="row-wrap">
-            {avg !== null && <span className="small muted">Average {fmtNumber(avg, 1)} / {fmtNumber(course.ca_total)}</span>}
-            <button type="button" className="btn btn-sm" onClick={exportOfficialXlsx} disabled={!saved.length}><Icon name="download" size={16} /> Export Excel (40/60)</button>
+            {avg !== null && <span className="small muted">Class CA Avg: {fmtNumber(avg, 1)} / 40</span>}
+            <button type="button" className="btn btn-sm" onClick={exportOfficialXlsx} disabled={!saved.length}><Icon name="download" size={16} /> Export Excel (CA 1 & 2)</button>
             <button type="button" className={`btn btn-sm ${course.ca_released ? '' : 'btn-primary'}`} onClick={toggleRelease} disabled={!saved.length}>
               {course.ca_released ? 'Hide CA from students' : 'Show CA to students'}
             </button>
@@ -398,12 +520,9 @@ function CAInner({ course, data, reload, onCourseChanged }) {
                   <th>Index no.</th>
                   <th>Name</th>
                   <th className="hide-sm">Group</th>
-                  {saved.map((c) => (
-                    <th key={c.id} className="num" title={kindLabel(c.kind)}>
-                      {c.name}<div className="tiny" style={{ textTransform: 'none' }}>/ {fmtNumber(c.weight)}</div>
-                    </th>
-                  ))}
-                  <th className="num">CA Total<div className="tiny" style={{ textTransform: 'none' }}>/ 40</div></th>
+                  <th className="num" style={{ color: 'var(--teal-dark)' }}>CA 1<div className="tiny" style={{ textTransform: 'none' }}>/ {caConfig.ca1_weight || 20}</div></th>
+                  <th className="num" style={{ color: 'var(--blue-ink)' }}>CA 2<div className="tiny" style={{ textTransform: 'none' }}>/ {caConfig.ca2_weight || 20}</div></th>
+                  <th className="num strong">Total CA<div className="tiny" style={{ textTransform: 'none' }}>/ 40</div></th>
                   <th className="num">Exam<div className="tiny" style={{ textTransform: 'none' }}>/ 60</div></th>
                   <th className="num">Total<div className="tiny" style={{ textTransform: 'none' }}>/ 100</div></th>
                   <th>Grade</th>
@@ -411,23 +530,22 @@ function CAInner({ course, data, reload, onCourseChanged }) {
               </thead>
               <tbody>
                 {rows.slice(0, 400).map((r) => {
-                  const ca40 = Number(getCa40(r).toFixed(dec));
-                  const ex = examMarks[r.index_no] !== undefined && examMarks[r.index_no] !== '' ? Number(examMarks[r.index_no]) : null;
-                  const total100 = ex !== null ? Number((ca40 + ex).toFixed(dec)) : null;
-                  const grade = total100 !== null ? getGradeLetter(total100) : (ca40 >= 20 ? 'Pending' : 'At Risk');
+                  const { ca1, ca2, totalCa } = computeStudentCA(r, saved, caConfig, course.ca_total);
+                  const ex = examConfig.scores?.[r.index_no] !== undefined && examConfig.scores[r.index_no] !== ''
+                    ? Number(examConfig.scores[r.index_no])
+                    : null;
+                  const total100 = ex !== null ? Number((totalCa + ex).toFixed(dec)) : null;
+                  const grade = total100 !== null ? getGradeLetter(total100) : (totalCa >= 20 ? 'Pending' : 'At Risk');
 
                   return (
                     <tr key={r.index_no}>
                       <td className="mono small">{r.index_no}</td>
                       <td>{r.full_name}</td>
                       <td className="small muted hide-sm">{[r.programme, r.stream].filter(Boolean).join(' · ') || '—'}</td>
-                      {saved.map((c) => (
-                        <td key={c.id} className="num" title={`${fmtNumber(r.parts?.[c.id]?.pct ?? 0, 1)}%`}>
-                          {fmtNumber(r.parts?.[c.id]?.points ?? 0)}
-                        </td>
-                      ))}
-                      <td className="num strong" style={{ color: ca40 < 20 ? 'var(--red-ink)' : 'inherit' }}>
-                        {ca40.toFixed(dec)}
+                      <td className="num mono" style={{ color: 'var(--teal-dark)' }}>{ca1.toFixed(dec)}</td>
+                      <td className="num mono" style={{ color: 'var(--blue-ink)' }}>{ca2.toFixed(dec)}</td>
+                      <td className="num strong" style={{ color: totalCa < 20 ? 'var(--red-ink)' : 'inherit' }}>
+                        {totalCa.toFixed(dec)}
                       </td>
                       <td className="num mono small muted">
                         {ex !== null ? ex.toFixed(dec) : '—'}
@@ -471,12 +589,20 @@ function CAInner({ course, data, reload, onCourseChanged }) {
       )}
 
       {examModal && (
-        <ExamSimulatorModal
+        <ExamReleaseModal
           course={course}
           data={data}
           dec={dec}
-          examMarks={examMarks}
-          setExamMarks={setExamMarks}
+          savedComponents={saved}
+          caConfig={caConfig}
+          examConfig={examConfig}
+          onSave={async (updatedExamConfig) => {
+            setExamConfig(updatedExamConfig);
+            const serialized = serializeCourseMeta(meta.about, caConfig, updatedExamConfig);
+            await run(supabase.from('courses').update({ description: serialized }).eq('id', course.id));
+            toast(updatedExamConfig.released ? 'Final exam scores released to students!' : 'Exam marks saved.');
+            reload();
+          }}
           onClose={() => setExamModal(false)}
           onExport={exportOfficialXlsx}
         />
@@ -580,8 +706,7 @@ function ManualMarks({ comp, course, onClose, onSaved }) {
         <input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a student" />
       </label>
       <div className="card-flush" style={{ maxHeight: 380, overflowY: 'auto' }}>
-        {shown.slice(0, 300).map((s) => (
-          <div key={s.index_no} className="list-row" style={{ padding: '6px 14px' }}>
+        {shown.slice(0, 300).map((s) => (          <div key={s.index_no} className="list-row" style={{ padding: '6px 14px' }}>
             <span className="mono small" style={{ width: 130 }}>{s.index_no}</span>
             <span className="list-main"><span className="title small">{s.full_name}</span></span>
             <input className="input mono" style={{ width: 100, minHeight: 38, borderColor: s.index_no in edits ? 'var(--teal)' : undefined }}
@@ -595,18 +720,19 @@ function ManualMarks({ comp, course, onClose, onSaved }) {
   );
 }
 
-function ExamSimulatorModal({ course, data, dec, examMarks, setExamMarks, onClose, onExport }) {
+// Modal for Entering Final Exam Marks (/60) and Toggling Student Visibility
+function ExamReleaseModal({ course, data, dec, savedComponents, caConfig, examConfig, onSave, onClose, onExport }) {
+  const [scores, setScores] = useState(() => ({ ...(examConfig.scores || {}) }));
+  const [released, setReleased] = useState(Boolean(examConfig.released));
   const [paste, setPaste] = useState('');
   const [msg, setMsg] = useState('');
   const [q, setQ] = useState('');
-
-  const configuredTotal = Number(course.ca_total || 40);
-  const getCa40 = (r) => (configuredTotal === 40 ? Number(r.total || 0) : (Number(r.total || 0) / configuredTotal) * 40);
+  const [busy, setBusy] = useState(false);
 
   function applyPaste() {
     const lines = parseDelimited(paste);
     const known = new Set(data.rows.map((r) => r.index_no.toUpperCase()));
-    const next = { ...examMarks };
+    const next = { ...scores };
     let n = 0; let skipped = 0;
     for (const l of lines) {
       const idx = String(l[0] || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -615,21 +741,22 @@ function ExamSimulatorModal({ course, data, dec, examMarks, setExamMarks, onClos
       if (!known.has(idx)) { skipped++; continue; }
       next[idx] = sc; n++;
     }
-    setExamMarks(next);
+    setScores(next);
     setPaste('');
     setMsg(`${n} exam marks filled in out of 60${skipped ? `, ${skipped} unrecognized index numbers skipped` : ''}.`);
   }
 
-  // Compute live distribution
   const calculated = data.rows.map((r) => {
-    const ca = getCa40(r);
-    const ex = examMarks[r.index_no] !== undefined && examMarks[r.index_no] !== '' ? Number(examMarks[r.index_no]) : null;
-    const total = ex !== null ? ca + ex : null;
+    const { ca1, ca2, totalCa } = computeStudentCA(r, savedComponents, caConfig, course.ca_total);
+    const ex = scores[r.index_no] !== undefined && scores[r.index_no] !== '' ? Number(scores[r.index_no]) : null;
+    const total = ex !== null ? totalCa + ex : null;
     return {
       index_no: r.index_no,
       full_name: r.full_name,
       stream: r.stream,
-      ca,
+      ca1,
+      ca2,
+      totalCa,
       ex,
       total,
       grade: total !== null ? getGradeLetter(total) : '—',
@@ -648,34 +775,64 @@ function ExamSimulatorModal({ course, data, dec, examMarks, setExamMarks, onClos
 
   const shown = calculated.filter((c) => !q.trim() || c.full_name.toLowerCase().includes(q.toLowerCase()) || c.index_no.toLowerCase().includes(q.toLowerCase()));
 
+  async function handleSave() {
+    setBusy(true);
+    try {
+      await onSave({
+        released,
+        max_score: 60,
+        scores,
+      });
+      onClose();
+    } catch (e) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <Modal title={`Final Examination Marks (/60) · ${course.code}`} onClose={onClose} wide
+    <Modal title={`Final Exam Marks (/60) & Student Portal Release · ${course.code}`} onClose={onClose} wide
       footer={
         <div className="between" style={{ width: '100%', flexWrap: 'wrap', gap: 10 }}>
-          <span className="small muted">
-            {filledCount} of {data.rows.length} exam marks entered
-          </span>
+          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+            <span className="small strong">{filledCount} of {data.rows.length} exam marks</span>
+            {released && <span className="badge badge-teal">Visible to Students ✓</span>}
+          </div>
           <div className="row" style={{ gap: 10 }}>
-            <button type="button" className="btn" onClick={onClose}>Close</button>
-            <button type="button" className="btn btn-primary" onClick={() => { onExport(); onClose(); }}>
-              <Icon name="download" size={15} /> Export Complete Sheet
+            <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+            <button type="button" className="btn btn-primary" onClick={handleSave} disabled={busy}>
+              {busy ? 'Saving…' : 'Save Marks & Status'}
             </button>
           </div>
         </div>
       }>
       <div className="stack">
-        <div className="notice notice-info small">
-          <strong>Weighting:</strong> CA = 40%, Final Exam = 60%. Total = 100%. Marks entered here preview final letter grades and will be included in the exported Departmental Grade Sheet.
+        {/* Release Status Box */}
+        <div className={`notice ${released ? 'notice-info' : 'notice-warn'} between`} style={{ flexWrap: 'wrap', gap: 10 }}>
+          <div>
+            <strong>Student Portal Visibility:</strong>{' '}
+            {released
+              ? 'Final Exam marks and overall letter grades (A, B+, B...) are currently VISIBLE to students on their portal.'
+              : 'Final Exam marks and overall letter grades are currently HIDDEN from students (only CA is visible).'}
+          </div>
+          <button
+            type="button"
+            className={`btn btn-sm ${released ? 'btn-danger' : 'btn-primary'}`}
+            onClick={() => setReleased(!released)}
+          >
+            {released ? 'Hide Exam from Students' : 'Release Exam to Students Now'}
+          </button>
         </div>
 
         {/* Live KPI bar */}
         <div className="grid-3">
           <div className="kpi">
-            <span className="l">Exam Marks Filled</span>
+            <span className="l">Exam Marks Entered</span>
             <span className="v">{filledCount} / {data.rows.length}</span>
           </div>
           <div className="kpi">
-            <span className="l">Average Total (/100)</span>
+            <span className="l">Class Average Total (/100)</span>
             <span className="v">{avgTotal !== null ? avgTotal.toFixed(1) : '—'}</span>
           </div>
           <div className="kpi">
@@ -686,7 +843,7 @@ function ExamSimulatorModal({ course, data, dec, examMarks, setExamMarks, onClos
           </div>
         </div>
 
-        {/* Grade Distribution chips */}
+        {/* Grade Distribution */}
         <div className="card-soft stack-sm" style={{ padding: '12px 16px', background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
           <span className="eyebrow">Grade Distribution Preview (Institutional Scale: 80% A, 75% B+, 70% B, 65% C+, 60% C, 55% D+, 50% D, &lt;50% E)</span>
           <div className="row-wrap" style={{ gap: 8, marginTop: 4 }}>
@@ -718,6 +875,8 @@ function ExamSimulatorModal({ course, data, dec, examMarks, setExamMarks, onClos
               <tr>
                 <th>Index no.</th>
                 <th>Name</th>
+                <th className="num" style={{ color: 'var(--teal-dark)' }}>CA 1 (/{caConfig.ca1_weight || 20})</th>
+                <th className="num" style={{ color: 'var(--blue-ink)' }}>CA 2 (/{caConfig.ca2_weight || 20})</th>
                 <th className="num">CA (/40)</th>
                 <th className="num" style={{ width: 110 }}>Exam (/60)</th>
                 <th className="num">Total (/100)</th>
@@ -725,18 +884,20 @@ function ExamSimulatorModal({ course, data, dec, examMarks, setExamMarks, onClos
               </tr>
             </thead>
             <tbody>
-              {shown.slice(0, 200).map((s) => (
+              {shown.slice(0, 300).map((s) => (
                 <tr key={s.index_no}>
                   <td className="mono small">{s.index_no}</td>
                   <td>{s.full_name}</td>
-                  <td className="num">{s.ca.toFixed(dec)}</td>
+                  <td className="num mono small" style={{ color: 'var(--teal-dark)' }}>{s.ca1.toFixed(dec)}</td>
+                  <td className="num mono small" style={{ color: 'var(--blue-ink)' }}>{s.ca2.toFixed(dec)}</td>
+                  <td className="num strong">{s.totalCa.toFixed(dec)}</td>
                   <td className="num">
                     <input
                       className="input mono"
                       style={{ width: 85, minHeight: 34, padding: '0 8px', textAlign: 'right' }}
                       inputMode="decimal"
-                      value={examMarks[s.index_no] ?? ''}
-                      onChange={(e) => setExamMarks({ ...examMarks, [s.index_no]: e.target.value })}
+                      value={scores[s.index_no] ?? ''}
+                      onChange={(e) => setScores({ ...scores, [s.index_no]: e.target.value })}
                       placeholder="0–60"
                     />
                   </td>

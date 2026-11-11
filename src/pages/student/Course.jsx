@@ -1,5 +1,6 @@
+import { parseCourseMeta } from '../../lib/courseMeta.js';
 import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
-import { getLetter, TargetGradeCalculator } from './Grades.jsx';
+import { getLetter, getRemarks, TargetGradeCalculator } from './Grades.jsx';
 import Messages from '../../components/Messages.jsx';
 import { useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -27,6 +28,7 @@ const TABS = [
 
 export default function StudentCourse() {
   const { courseId } = useParams();
+  const { profile } = useAuth();
   const [params, setParams] = useSearchParams();
   const tab = params.get('tab') || 'materials';
   const setTab = (t) => setParams({ tab: t }, { replace: true });
@@ -89,7 +91,7 @@ export default function StudentCourse() {
           )}
           {tab === 'grades' && (
             <div className="stack-lg" style={{ maxWidth: 900 }}>
-              {data.ca && <CACard ca={data.ca} />}
+              {data.ca && <CACard ca={data.ca} course={course} profile={profile} />}
               <GradesTable quizzes={graded} assignments={data.assignments} />
               <TargetGradeCalculator course={course} quizzes={graded} assignments={data.assignments} />
               <AttendanceCard attendance={data.attendance} />
@@ -546,26 +548,116 @@ function Announcements({ news }) {
   );
 }
 
-function CACard({ ca }) {
+function CACard({ ca, course, profile }) {
+  const meta = parseCourseMeta(course);
+  const caCfg = meta.ca_config || { ca1_weight: 20, ca2_weight: 20 };
+  const w1 = Number(caCfg.ca1_weight || 20);
+  const w2 = Number(caCfg.ca2_weight || 20);
+  const totalOutOf = Number(ca.out_of || 40);
+
+  const rawTotal = Number(ca.total || 0);
+  const total40 = totalOutOf === 40 ? rawTotal : (rawTotal / (totalOutOf || 40)) * 40;
+
+  // Split into CA 1 and CA 2 columns
+  const ca1 = Number(((total40 / 40) * w1).toFixed(1));
+  const ca2 = Number(((total40 / 40) * w2).toFixed(1));
+
+  // Check if instructor has released final exam scores
+  const isExamReleased = Boolean(meta.exam_config?.released);
+  const studentIndex = profile?.index_no;
+  const examScore = (isExamReleased && studentIndex && meta.exam_config?.scores?.[studentIndex] !== undefined && meta.exam_config.scores[studentIndex] !== '')
+    ? Number(meta.exam_config.scores[studentIndex])
+    : null;
+
+  const finalTotal = examScore !== null ? Number((total40 + examScore).toFixed(1)) : null;
+  const letterGrade = finalTotal !== null ? getLetter(finalTotal) : null;
+  const remarks = finalTotal !== null ? getRemarks(finalTotal) : null;
+
   return (
-    <section className="card stack">
-      <div className="between" style={{ flexWrap: 'wrap' }}>
-        <div className="stack-sm" style={{ gap: 0 }}>
-          <span className="eyebrow">Continuous assessment</span>
-          <span className="mono" style={{ fontSize: 30 }}>{fmtNumber(ca.total)} <span className="muted" style={{ fontSize: 18 }}>/ {fmtNumber(ca.out_of)}</span></span>
-        </div>
-        <span className="small muted">Your exam makes up the rest of the course mark.</span>
-      </div>
-      <div className="stack-sm">
-        {ca.components.map((c) => (
-          <div key={c.name} className="row small" style={{ gap: 12 }}>
-            <span style={{ width: 170 }}>{c.name}</span>
-            <div className="bar-track" style={{ flex: 1 }}><div className="bar-fill" style={{ width: `${Math.min(100, Number(c.pct) || 0)}%`, background: 'var(--teal)' }} /></div>
-            <span className="mono" style={{ width: 90, textAlign: 'right' }}>{fmtNumber(c.points)} / {fmtNumber(c.weight)}</span>
+    <div className="stack">
+      {/* Official Released Final Results Banner */}
+      {isExamReleased && (
+        <section className="card stack" style={{ background: 'linear-gradient(135deg, #f0fdfa, #f8fafc)', border: '1px solid #99f6e4' }}>
+          <div className="between" style={{ flexWrap: 'wrap', gap: 12 }}>
+            <div className="stack-sm" style={{ gap: 2 }}>
+              <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                <span className="badge badge-teal" style={{ fontWeight: 700 }}>Official Semester Examination Results</span>
+                <span className="tiny muted">Released by Department</span>
+              </div>
+              <h2 style={{ fontSize: 24, margin: '4px 0 0', color: 'var(--text)' }}>
+                Final Grade: <strong style={{ color: 'var(--teal-dark)' }}>{letterGrade}</strong> {remarks && <span className="small muted">· {remarks}</span>}
+              </h2>
+            </div>
+            <div className="right">
+              <span className="eyebrow">Overall Course Score</span>
+              <div className="mono strong" style={{ fontSize: 28, color: 'var(--teal-dark)' }}>
+                {finalTotal !== null ? finalTotal.toFixed(1) : '—'} <span className="muted" style={{ fontSize: 16 }}>/ 100</span>
+              </div>
+            </div>
           </div>
-        ))}
-      </div>
-    </section>
+
+          <div className="grid-4" style={{ gap: 10, marginTop: 10 }}>
+            <div className="kpi" style={{ padding: '10px 14px' }}>
+              <span className="l">CA 1 (/{w1})</span>
+              <span className="v mono" style={{ fontSize: 20, color: 'var(--teal-dark)' }}>{ca1.toFixed(1)}</span>
+            </div>
+            <div className="kpi" style={{ padding: '10px 14px' }}>
+              <span className="l">CA 2 (/{w2})</span>
+              <span className="v mono" style={{ fontSize: 20, color: 'var(--blue-ink)' }}>{ca2.toFixed(1)}</span>
+            </div>
+            <div className="kpi" style={{ padding: '10px 14px' }}>
+              <span className="l">Total CA (/40)</span>
+              <span className="v mono strong" style={{ fontSize: 20, color: 'var(--teal)' }}>{total40.toFixed(1)}</span>
+            </div>
+            <div className="kpi" style={{ padding: '10px 14px' }}>
+              <span className="l">Final Exam (/60)</span>
+              <span className="v mono strong" style={{ fontSize: 20, color: examScore !== null ? 'var(--blue-ink)' : 'inherit' }}>
+                {examScore !== null ? examScore.toFixed(1) : '—'}
+              </span>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Continuous Assessment Component Card */}
+      <section className="card stack">
+        <div className="between" style={{ flexWrap: 'wrap' }}>
+          <div className="stack-sm" style={{ gap: 2 }}>
+            <span className="eyebrow">Continuous Assessment (CA)</span>
+            <div className="mono" style={{ fontSize: 30, fontWeight: 700 }}>
+              {fmtNumber(total40, 1)} <span className="muted" style={{ fontSize: 18, fontWeight: 400 }}>/ 40</span>
+            </div>
+            <div className="small muted" style={{ marginTop: 2 }}>
+              Sum of <strong>CA 1 ({ca1.toFixed(1)} / {w1})</strong> + <strong>CA 2 ({ca2.toFixed(1)} / {w2})</strong>
+            </div>
+          </div>
+          <div className="stack-sm" style={{ alignItems: 'flex-end' }}>
+            <span className="small muted">
+              {isExamReleased
+                ? `Final Exam (60%): ${examScore !== null ? `${examScore.toFixed(1)} / 60` : 'Not recorded'}`
+                : 'Final Exam (60%): Pending examination release'}
+            </span>
+            <span className="badge badge-teal">
+              {Math.round((total40 / 40) * 100)}% CA Standing
+            </span>
+          </div>
+        </div>
+
+        <div className="stack-sm">
+          {ca.components.map((c) => (
+            <div key={c.name} className="row small" style={{ gap: 12 }}>
+              <span style={{ width: 170 }}>{c.name}</span>
+              <div className="bar-track" style={{ flex: 1 }}>
+                <div className="bar-fill" style={{ width: `${Math.min(100, Number(c.pct) || 0)}%`, background: 'var(--teal)' }} />
+              </div>
+              <span className="mono" style={{ width: 90, textAlign: 'right' }}>
+                {fmtNumber(c.points)} / {fmtNumber(c.weight)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }
 
