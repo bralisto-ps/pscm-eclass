@@ -3,7 +3,7 @@ import { rpc } from '../../lib/supabase.js';
 import { fmtNumber } from '../../lib/format.js';
 import { downloadWorkbook } from '../../lib/sheets.js';
 import Icon from '../../components/Icon.jsx';
-import { Empty, ErrorNote, Loading, useLoad } from '../../components/ui.jsx';
+import { Empty, ErrorNote, Loading, Modal, useLoad } from '../../components/ui.jsx';
 
 const KIND = { mcq: 'Multiple choice', truefalse: 'True / false', numeric: 'Calculation', short: 'Short answer', essay: 'Written' };
 
@@ -91,8 +91,9 @@ export function ItemAnalysis({ quiz }) {
   );
 }
 
-export function Integrity({ quiz, rows }) {
+export function Integrity({ quiz, rows, photos = new Map() }) {
   const [threshold, setThreshold] = useState(0.6);
+  const [viewingPhoto, setViewingPhoto] = useState(null);
   const sim = useLoad(() => rpc('quiz_similar_answers', { p_quiz: quiz.id, p_threshold: threshold }), [quiz.id, threshold]);
   const figs = useLoad(() => rpc('quiz_figure_matches', { p_quiz: quiz.id }), [quiz.id]);
   const flagged = rows.filter((r) => r.exits > 0 || r.devices > 1);
@@ -160,21 +161,62 @@ export function Integrity({ quiz, rows }) {
         {flagged.length === 0 ? <Empty icon="check">Nobody flagged.</Empty> : (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>Student</th><th className="num">Times left</th><th className="num">Devices</th><th className="num">Score</th></tr></thead>
+              <thead><tr><th>Student</th><th>Photo</th><th className="num">Times left</th><th className="num">Devices</th><th className="num">Score</th></tr></thead>
               <tbody>
-                {flagged.map((r) => (
-                  <tr key={r.index_no}>
-                    <td>{r.full_name} <span className="mono tiny muted">{r.index_no}</span></td>
-                    <td className="num">{r.exits}</td>
-                    <td className="num">{r.devices}</td>
-                    <td className="num">{r.score !== null ? `${fmtNumber(r.score)} / ${fmtNumber(r.max_score)}` : '—'}</td>
-                  </tr>
-                ))}
+                {flagged.map((r) => {
+                  const p = photos?.get(r.attempt_id) || photos?.get(r.student_id);
+                  return (
+                    <tr key={r.index_no}>
+                      <td>{r.full_name} <span className="mono tiny muted">{r.index_no}</span></td>
+                      <td>
+                        {p ? (
+                          <button
+                            type="button"
+                            className="badge badge-teal"
+                            style={{ border: 0, cursor: 'pointer', padding: '2px 7px', fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                            onClick={() => setViewingPhoto({ student: r, photo: p })}
+                            title="Inspect mid-quiz verification photo"
+                          >
+                            <Icon name="camera" size={12} /> View
+                          </button>
+                        ) : (
+                          <span className="small muted">—</span>
+                        )}
+                      </td>
+                      <td className="num">{r.exits}</td>
+                      <td className="num">{r.devices}</td>
+                      <td className="num">{r.score !== null ? `${fmtNumber(r.score)} / ${fmtNumber(r.max_score)}` : '—'}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </section>
+      {viewingPhoto && (
+        <Modal title={`Verification Photo · ${viewingPhoto.student.full_name}`} onClose={() => setViewingPhoto(null)}>
+          <div className="stack" style={{ textAlign: 'center', alignItems: 'center', gap: 14 }}>
+            <div style={{ maxWidth: 320, width: '100%', borderRadius: 10, overflow: 'hidden', border: '2px solid var(--teal)', boxShadow: '0 4px 14px rgba(0,0,0,0.1)' }}>
+              <img
+                src={viewingPhoto.photo}
+                alt={`Identity snapshot of ${viewingPhoto.student.full_name}`}
+                style={{ width: '100%', height: 'auto', display: 'block', background: '#000' }}
+              />
+            </div>
+            <div className="stack-sm" style={{ gap: 4 }}>
+              <strong style={{ fontSize: 16 }}>{viewingPhoto.student.full_name}</strong>
+              <span className="mono muted">{viewingPhoto.student.index_no} {viewingPhoto.student.programme ? `· ${viewPhoto.student.programme}` : ''}</span>
+              <span className="small muted">
+                Captured mid-exam from the candidate webcam during the test session.
+              </span>
+            </div>
+            <button type="button" className="btn btn-primary" onClick={() => setViewingPhoto(null)}>
+              Close
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

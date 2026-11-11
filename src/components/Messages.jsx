@@ -12,6 +12,7 @@ export default function Messages({ course, isLecturer, studentIndex, studentName
           .from('course_messages')
           .select('*')
           .eq('course_id', course.id)
+          .not('subject', 'ilike', '__PROCTOR_%')
           .order('created_at', { ascending: false })
       );
       if (!msgs || !msgs.length) return [];

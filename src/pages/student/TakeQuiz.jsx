@@ -85,7 +85,7 @@ function AntiCameraShield({ text, blurred, onResume }) {
   );
 }
 
-function SelfieModal({ attemptId, onDone }) {
+function SelfieModal({ attemptId, onPhotoCaptured, onDone }) {
   const [videoStream, setVideoStream] = useState(null);
   const [photo, setPhoto] = useState(null);
   const [err, setErr] = useState('');
@@ -93,14 +93,13 @@ function SelfieModal({ attemptId, onDone }) {
 
   useEffect(() => {
     let s = null;
-    navigator.mediaDevices?.getUserMedia?.({ video: { facingMode: 'user', width: 320, height: 240 } })
+    navigator.mediaDevices?.getUserMedia?.({ video: { facingMode: 'user', width: 240, height: 180 } })
       .then((stream) => {
         s = stream;
         setVideoStream(stream);
         if (videoRef.current) videoRef.current.srcObject = stream;
       })
       .catch((e) => setErr('Camera access not available or blocked: ' + e.message));
-
     return () => {
       s?.getTracks?.().forEach((t) => t.stop());
     };
@@ -110,16 +109,19 @@ function SelfieModal({ attemptId, onDone }) {
     if (!videoRef.current) return;
     const video = videoRef.current;
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 320;
-    canvas.height = video.videoHeight || 240;
+    // Ultralight 240x180 thumbnail (~5KB)
+    canvas.width = 240;
+    canvas.height = 180;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.45);
     setPhoto(dataUrl);
     try {
       localStorage.setItem(`selfie_img:${attemptId}`, dataUrl);
       localStorage.setItem(`selfie:${attemptId}`, 'done');
     } catch {}
+    // Non-blocking background upload
+    onPhotoCaptured?.(dataUrl);
   }
 
   function finish() {
@@ -149,7 +151,7 @@ function SelfieModal({ attemptId, onDone }) {
             <img src={photo} alt="Verification selfie" style={{ width: '100%', display: 'block' }} />
           </div>
         ) : (
-          <div style={{ width: 280, height: 210, background: '#111', borderRadius: 8, overflow: 'hidden', position: 'relative' }}>
+          <div style={{ width: 240, height: 180, background: '#111', borderRadius: 8, overflow: 'hidden', position: 'relative' }}>
             <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             {err && <div style={{ position: 'absolute', inset: 0, padding: 12, color: '#fff', fontSize: 13, display: 'flex', alignItems: 'center' }}>{err}</div>}
           </div>
@@ -282,13 +284,58 @@ function Runner({ initial }) {
   }, [current, perQSeconds]);
   const antiCaptureMode = true; // Permanently enforced for all exams
   const [blurred, setBlurred] = useState(false);
+  const cameraActiveRef = useRef(false);
   const [selfiePrompt, setSelfiePrompt] = useState(false);
   const [selfieDone, setSelfieDone] = useState(() => {
     try { return localStorage.getItem(`selfie:${attempt.id}`) === 'done'; } catch { return false; }
   });
 
+  // Safe non-blocking background upload (lightweight, zero lag, no timer interruption)
+  const uploadSelfieBackground = useCallback((dataUrl) => {
+    if (!dataUrl || !attempt?.id) return;
+    (async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        await supabase.from('course_messages').insert({
+          course_id: quiz.course_id,
+          student_id: user.id,
+          subject: `__PROCTOR_PHOTO__:${attempt.id}`,
+          message: dataUrl,
+        });
+        try { localStorage.removeItem(`pending_photo:${attempt.id}`); } catch {}
+      } catch (e) {
+        console.warn('Background proctor snapshot upload deferred to submit:', e);
+        try { localStorage.setItem(`pending_photo:${attempt.id}`, dataUrl); } catch {}
+      }
+    })();
+  }, [quiz?.course_id, attempt?.id]);
+
+  const midpoint = Math.floor(questions.length / 2);
+  useEffect(() => {
+    if (strict && !selfieDone && current >= midpoint && questions.length >= 2) {
+      cameraActiveRef.current = true;
+      setSelfiePrompt(true);
+    }
+  }, [current, strict, selfieDone, midpoint, questions.length]);
+
+  const handleSelfieDone = useCallback(() => {
+    setSelfiePrompt(false);
+    setSelfieDone(true);
+    // Smoothly restore full screen if mobile browser dropped it during camera init
+    if (fsSupported && !document.fullscreenElement && strict) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    }
+    // Safety buffer: keep exit immunity active for 4 seconds while window/fullscreen re-settles
+    setTimeout(() => {
+      cameraActiveRef.current = false;
+    }, 4000);
+  }, [fsSupported, strict]);
+
   useEffect(() => {
     const onBlur = () => {
+      // Never count camera modal or permission prompt as leaving the quiz
+      if (cameraActiveRef.current || selfiePrompt) return;
       setBlurred(true);
       if (strict) recordExit('blur');
     };
@@ -297,6 +344,7 @@ function Runner({ initial }) {
     };
     const onVis = () => {
       if (document.hidden) {
+        if (cameraActiveRef.current || selfiePrompt) return;
         setBlurred(true);
         if (strict) recordExit('tab');
       } else {
@@ -311,14 +359,7 @@ function Runner({ initial }) {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVis);
     };
-  }, [strict, recordExit]);
-
-  const midpoint = Math.floor(questions.length / 2);
-  useEffect(() => {
-    if (strict && !selfieDone && current >= midpoint && questions.length >= 2) {
-      setSelfiePrompt(true);
-    }
-  }, [current, strict, selfieDone, midpoint, questions.length]);
+  }, [strict, recordExit, selfiePrompt]);
 
   const latest = useRef({});     // question id → latest value not yet confirmed saved
   const inflight = useRef({});   // question id → true while saving
@@ -379,6 +420,24 @@ function Runner({ initial }) {
     setSubmitting(true);
     doneRef.current = true;
     await flushAll();
+    // Flush any pending photo in background upon submission
+    try {
+      const pending = localStorage.getItem(`pending_photo:${attempt.id}`);
+      if (pending) {
+        supabase.auth.getUser().then(({ data: { user } }) => {
+          if (user) {
+            supabase.from('course_messages').insert({
+              course_id: quiz.course_id,
+              student_id: user.id,
+              subject: `__PROCTOR_PHOTO__:${attempt.id}`,
+              message: pending,
+            }).then(() => {
+              localStorage.removeItem(`pending_photo:${attempt.id}`);
+            }).catch(() => {});
+          }
+        });
+      }
+    } catch {}
     try {
       const status = await rpc('submit_attempt', { p_attempt: attempt.id });
       setFinished({ status, auto });
@@ -388,7 +447,7 @@ function Runner({ initial }) {
       setFatal(e.message);
       setSubmitting(false);
     }
-  }, [attempt.id, flushAll, submitting]);
+  }, [attempt.id, flushAll, submitting, quiz?.course_id]);
 
   // overall countdown
   useEffect(() => {
@@ -437,7 +496,7 @@ function Runner({ initial }) {
 
   // strict mode: record leaving the quiz, block copying
   const recordExit = useCallback(async (kind) => {
-    if (!strict || doneRef.current) return;
+    if (!strict || doneRef.current || cameraActiveRef.current || selfiePrompt) return;
     const now = Date.now();
     if (now - lastExit.current < 2000) return;
     lastExit.current = now;
@@ -455,13 +514,20 @@ function Runner({ initial }) {
     } catch {
       /* offline: nothing to record against */
     }
-  }, [strict, attempt.id]);
+  }, [strict, attempt.id, selfiePrompt]);
 
   useEffect(() => {
     if (!strict) return undefined;
-    const onVis = () => { if (document.hidden) recordExit('tab'); };
-    const onBlur = () => recordExit('blur');
+    const onVis = () => {
+      if (cameraActiveRef.current || selfiePrompt) return;
+      if (document.hidden) recordExit('tab');
+    };
+    const onBlur = () => {
+      if (cameraActiveRef.current || selfiePrompt) return;
+      recordExit('blur');
+    };
     const onFs = () => {
+      if (cameraActiveRef.current || selfiePrompt) return;
       if (fsSupported && !document.fullscreenElement && !doneRef.current) {
         recordExit('fullscreen');
         setNeedFs(true);
@@ -491,7 +557,7 @@ function Runner({ initial }) {
       document.removeEventListener('selectstart', onSelect);
       document.removeEventListener('keydown', onKey);
     };
-  }, [strict, recordExit, fsSupported]);
+  }, [strict, recordExit, fsSupported, selfiePrompt]);
 
   async function enterFullscreen() {
     try {
@@ -553,8 +619,8 @@ function Runner({ initial }) {
 
   return (
     <div className={`quiz-shell ${strict ? 'strict' : ''}`}>
-      <AntiCameraShield text={student?.name ? `${student.name} · ${student.index_no || ''}` : 'CONFIDENTIAL EXAM · E-CLASS PSCM'} blurred={blurred} onResume={() => setBlurred(false)} />
-      {selfiePrompt && <SelfieModal attemptId={attempt.id} onDone={() => { setSelfiePrompt(false); setSelfieDone(true); }} />}
+      <AntiCameraShield text={student?.name ? `${student.name} · ${student.index_no || ''}` : 'CONFIDENTIAL EXAM · E-CLASS PSCM'} blurred={blurred && !selfiePrompt} onResume={() => setBlurred(false)} />
+      {selfiePrompt && <SelfieModal attemptId={attempt.id} onPhotoCaptured={uploadSelfieBackground} onDone={handleSelfieDone} />}
       {needFs && (
         <div className="fs-gate" role="dialog" aria-modal="true" aria-label="Full screen required">
           <div className="card stack" style={{ maxWidth: 460, textAlign: 'center', alignItems: 'center' }}>

@@ -33,9 +33,29 @@ export default function QuizResults() {
   const [tab, setTab] = useState('gradebook');
   const { data, error, loading, reload, setData } = useLoad(async () => {
     const quiz = await run(supabase.from('quizzes').select('*, courses(id, code, title)').eq('id', quizId).single());
-    const [rows, queue] = await Promise.all([rpcAll('quiz_gradebook', { p_quiz: quizId }), rpcAll('marking_queue', { p_quiz: quizId })]);
-    return { quiz, rows, queue };
+    const [rows, queue, photos] = await Promise.all([
+      rpcAll('quiz_gradebook', { p_quiz: quizId }),
+      rpcAll('marking_queue', { p_quiz: quizId }),
+      supabase
+        .from('course_messages')
+        .select('student_id, subject, message, created_at')
+        .eq('course_id', quiz.course_id)
+        .ilike('subject', '__PROCTOR_PHOTO__:%')
+        .then((res) => res.data || [])
+        .catch(() => []),
+    ]);
+    return { quiz, rows, queue, photos };
   }, [quizId]);
+
+  const photoMap = useMemo(() => {
+    const map = new Map();
+    (data?.photos || []).forEach((p) => {
+      const attemptId = p.subject?.replace('__PROCTOR_PHOTO__:', '')?.trim();
+      if (attemptId) map.set(attemptId, p.message);
+      if (p.student_id) map.set(p.student_id, p.message);
+    });
+    return map;
+  }, [data?.photos]);
   const [act, busy] = useAction();
 
   if (loading) return <Loading label="Collecting results…" />;
@@ -74,10 +94,10 @@ export default function QuizResults() {
         <Tabs tabs={[{ id: 'gradebook', label: 'Gradebook' }, { id: 'marking', label: 'Written answers', count: pending },
           ...(isTA ? [] : [{ id: 'analysis', label: 'Question analysis' }, { id: 'integrity', label: 'Integrity checks' }])]} value={tab}
           onChange={(t) => { setTab(t); if (t === 'gradebook') reload(); }} />
-        {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} ta={isTA} />}
+        {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} ta={isTA} photos={photoMap} />}
         {tab === 'marking' && <Marking queue={queue} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
         {tab === 'analysis' && !isTA && <ItemAnalysis quiz={quiz} />}
-        {tab === 'integrity' && !isTA && <Integrity quiz={quiz} rows={rows} />}
+        {tab === 'integrity' && !isTA && <Integrity quiz={quiz} rows={rows} photos={photoMap} />}
       </div>
     </>
   );
@@ -89,12 +109,13 @@ function exitText(r) {
   return (r.exit_log || []).map((e) => `${new Date(e.at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} — ${kinds[e.kind] || e.kind}`).join('\n');
 }
 
-function Gradebook({ quiz, rows: allRows, reload, ta }) {
+function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
   const [filter, setFilter] = useState('all');
   const [group, setGroup] = useState(ALL_GROUPS);
   const [q, setQ] = useState('');
   const [retake, setRetake] = useState(null);
   const [showLog, setShowLog] = useState(null);
+  const [viewPhoto, setViewPhoto] = useState(null);
   const [act, busy] = useAction();
 
   const rows = useMemo(() => allRows.filter((r) => matchesGroup(r, group)), [allRows, group]);
@@ -121,17 +142,18 @@ function Gradebook({ quiz, rows: allRows, reload, ta }) {
   }, [rows, filter, q, fastLimit]);
 
   function exportXlsx() {
-    const header = ['Index number', 'Name', 'Programme', 'Stream', 'Status', 'Auto-marked', 'Written', 'Total', 'Out of', 'Percent',
+    const header = ['Index number', 'Name', 'Programme', 'Stream', 'Status', 'Verification Photo', 'Auto-marked', 'Written', 'Total', 'Out of', 'Percent',
       'Minutes used', 'Times left quiz', 'Devices used', 'Submitted', 'Attempts', 'Special sitting'];
     const line = (r) => [
       r.index_no, r.full_name, r.programme, r.stream, (STATUS[r.status] || [r.status])[0],
+      (photos?.get(r.attempt_id) || photos?.get(r.student_id)) ? 'Verified (Photo On File)' : 'None',
       r.auto_score !== null && r.attempt_id ? Number(r.auto_score) : '', r.manual_score !== null ? Number(r.manual_score) : '',
       r.score !== null ? Number(r.score) : '', r.max_score !== null ? Number(r.max_score) : '',
       pct(r.score, r.max_score) ?? '', r.minutes_used !== null ? Number(r.minutes_used) : '',
       r.attempt_id ? r.exits : '', r.attempt_id ? r.devices : '',
       r.submitted_at ? fmtFull(r.submitted_at) : '', r.attempts_used, r.special ? 'Yes' : '',
     ];
-    const widths = [16, 30, 18, 12, 16, 12, 10, 10, 10, 10, 12, 14, 12, 22, 10, 14];
+    const widths = [16, 30, 18, 12, 16, 20, 12, 10, 10, 10, 10, 12, 14, 12, 22, 10, 14];
     const sheets = [
       { name: 'All students', rows: [header, ...allRows.map(line)], widths },
       { name: 'Summary', rows: [['Programme', 'Stream', 'Students', 'Submitted', 'Average %'],
@@ -206,8 +228,24 @@ function Gradebook({ quiz, rows: allRows, reload, ta }) {
                   return (
                     <tr key={r.index_no}>
                       <td className="mono small">{r.index_no}</td>
-                      <td>{r.full_name}{r.attempts_used > 1 ? <span className="tiny muted"> · {r.attempts_used} attempts</span> : null}
-                        {r.special && <span className="badge badge-plum" style={{ marginLeft: 6 }} title="Has special access to this quiz">Special sitting</span>}</td>
+                      <td>
+                        <div className="row" style={{ alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <span>{r.full_name}</span>
+                          {r.attempts_used > 1 ? <span className="tiny muted">· {r.attempts_used} att.</span> : null}
+                          {r.special && <span className="badge badge-plum" title="Has special access to this quiz">Special</span>}
+                          {(photos?.get(r.attempt_id) || photos?.get(r.student_id)) && (
+                            <button
+                              type="button"
+                              className="badge badge-teal"
+                              style={{ border: 0, cursor: 'pointer', padding: '2px 7px', fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                              onClick={() => setViewPhoto({ student: r, photo: photos.get(r.attempt_id) || photos.get(r.student_id) })}
+                              title="View mid-quiz verification photo"
+                            >
+                              <Icon name="camera" size={12} /> Photo
+                            </button>
+                          )}
+                        </div>
+                      </td>
                       <td className="small muted hide-sm">{[r.programme, r.stream].filter(Boolean).join(' · ') || '—'}</td>
                       <td className="num strong">{r.score !== null && r.status !== 'in_progress' ? `${fmtNumber(r.score)} / ${fmtNumber(r.max_score)}` : '—'}</td>
                       <td className="num">{p !== null && r.status !== 'in_progress' ? `${p}%` : '—'}</td>
@@ -243,8 +281,44 @@ function Gradebook({ quiz, rows: allRows, reload, ta }) {
       )}
       {showLog && (
         <Modal title={`${showLog.full_name} — left the quiz ${showLog.exits} time${showLog.exits === 1 ? '' : 's'}`} onClose={() => setShowLog(null)}>
+          {(photos?.get(showLog.attempt_id) || photos?.get(showLog.student_id)) && (
+            <div className="row" style={{ gap: 12, alignItems: 'center', marginBottom: 14, padding: 10, background: 'var(--teal-50)', borderRadius: 8 }}>
+              <img
+                src={photos.get(showLog.attempt_id) || photos.get(showLog.student_id)}
+                alt="Verification snapshot"
+                style={{ width: 80, height: 60, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--teal)' }}
+              />
+              <div className="stack-sm" style={{ gap: 2 }}>
+                <strong className="small">Mid-Quiz Verification Photo On File</strong>
+                <span className="tiny muted">Captured candidate webcam presence during exam</span>
+              </div>
+            </div>
+          )}
           <p className="small muted">Times are when the quiz screen was left. {showLog.devices > 1 ? `The attempt was also opened on ${showLog.devices} different devices or browsers.` : ''}</p>
           <pre className="mono small" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{exitText(showLog)}</pre>
+        </Modal>
+      )}
+      {viewPhoto && (
+        <Modal title={`Verification Photo · ${viewPhoto.student.full_name}`} onClose={() => setViewPhoto(null)}>
+          <div className="stack" style={{ textAlign: 'center', alignItems: 'center', gap: 14 }}>
+            <div style={{ maxWidth: 320, width: '100%', borderRadius: 10, overflow: 'hidden', border: '2px solid var(--teal)', boxShadow: '0 4px 14px rgba(0,0,0,0.1)' }}>
+              <img
+                src={viewPhoto.photo}
+                alt={`Identity snapshot of ${viewPhoto.student.full_name}`}
+                style={{ width: '100%', height: 'auto', display: 'block', background: '#000' }}
+              />
+            </div>
+            <div className="stack-sm" style={{ gap: 4 }}>
+              <strong style={{ fontSize: 16 }}>{viewPhoto.student.full_name}</strong>
+              <span className="mono muted">{viewPhoto.student.index_no} {viewPhoto.student.programme ? `· ${viewPhoto.student.programme}` : ''}</span>
+              <span className="small muted">
+                Captured mid-exam from the student camera during the live test session.
+              </span>
+            </div>
+            <button type="button" className="btn btn-primary" onClick={() => setViewPhoto(null)}>
+              Close
+            </button>
+          </div>
         </Modal>
       )}
     </div>
