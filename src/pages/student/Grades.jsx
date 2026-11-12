@@ -4,7 +4,7 @@ import { rpc, run, supabase } from '../../lib/supabase.js';
 import { Topbar } from '../../components/Layout.jsx';
 import Icon from '../../components/Icon.jsx';
 import { Empty, ErrorNote, Loading, useLoad } from '../../components/ui.jsx';
-import { GradesTable } from './Course.jsx';
+import { fmtNumber, pct } from '../../lib/format.js';
 import { useAuth } from '../../lib/auth.jsx';
 import { parseCourseMeta } from '../../lib/courseMeta.js';
 
@@ -151,6 +151,63 @@ export function TargetGradeCalculator({ course, quizzes = [], assignments = [] }
       <p className="tiny muted" style={{ margin: 0 }}>
         Aiming for Grade {targetLetter} requires a cumulative minimum of {targetPct}% across your 40% Continuous Assessment and 60% Final Examination.
       </p>
+    </div>
+  );
+}
+
+export function GradesTable({ quizzes = [], assignments = [] }) {
+  const rows = [
+    ...quizzes.map((q) => ({
+      id: q.id,
+      title: q.title,
+      type: 'Quiz',
+      status: q.best ? (q.released && q.best.score !== null ? 'Released' : 'Submitted') : 'Not attempted',
+      score: q.released && q.best ? q.best.score : null,
+      max: q.best?.max_score ?? q.total_marks,
+    })),
+    ...assignments.map((a) => ({
+      id: a.id,
+      title: a.title,
+      type: 'Assignment',
+      status: a.submission ? (a.submission.marked && a.released ? 'Released' : 'Submitted') : 'Not submitted',
+      score: a.released && a.submission ? a.submission.marks : null,
+      max: a.max_marks,
+    })),
+  ];
+  if (!rows.length) return <div className="card"><Empty icon="chart" title="No graded work yet" /></div>;
+  return (
+    <div className="card-flush table-wrap" style={{ maxWidth: 900 }}>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Item</th><th>Type</th><th>Status</th><th className="num">Score</th><th className="num">%</th><th className="num">Grade</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const p = r.score !== null && r.score !== undefined && r.max > 0 ? Math.round((Number(r.score) / Number(r.max)) * 100) : null;
+            const letter = p !== null ? getLetter(p) : '—';
+            return (
+              <tr key={r.type + r.id}>
+                <td>{r.title}</td>
+                <td className="muted">{r.type}</td>
+                <td>
+                  <span className={`badge ${r.status === 'Released' ? 'badge-teal' : r.status.startsWith('Not') ? '' : 'badge-amber'}`}>{r.status}</span>
+                </td>
+                <td className="num">{r.score !== null && r.score !== undefined ? `${fmtNumber(r.score)} / ${fmtNumber(r.max)}` : '—'}</td>
+                <td className="num">{p !== null ? `${p}%` : '—'}</td>
+                <td className="num">
+                  {p !== null ? (
+                    <strong style={{ color: p >= 80 ? 'var(--teal-dark)' : p >= 70 ? '#2563eb' : p >= 60 ? '#d97706' : p >= 50 ? '#ca8a04' : 'var(--red-ink)' }}>
+                      {letter}
+                    </strong>
+                  ) : '—'}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
