@@ -5,6 +5,7 @@ import { fillVars, fmtNumber, initials } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import { ErrorNote, Loading, Modal, Swatch, useLoad } from '../../components/ui.jsx';
 import { deviceLabel } from '../../lib/device.js';
+import { cleanText, FORMAT_LABELS, getQuestionTimeLimit, parseQuizMeta } from '../../lib/quizMeta.js';
 
 const LETTERS = 'ABCDEFGHIJ';
 
@@ -182,12 +183,13 @@ export default function TakeQuiz() {
       if (res.quiz?.id) {
         const { data: qRow } = await supabase
           .from('quizzes')
-          .select('question_time_limit, lockdown, max_exits, no_backtrack, title')
+          .select('question_time_limit, lockdown, max_exits, no_backtrack, title, instructions')
           .eq('id', res.quiz.id)
           .maybeSingle();
         if (qRow) {
           res.quiz = {
             ...res.quiz,
+            instructions: qRow.instructions ?? res.quiz.instructions,
             question_time_limit: qRow.question_time_limit ?? res.quiz.question_time_limit,
             lockdown: qRow.lockdown ?? res.quiz.lockdown,
             max_exits: qRow.max_exits ?? res.quiz.max_exits,
@@ -195,6 +197,12 @@ export default function TakeQuiz() {
           };
         }
       }
+      const parsedMeta = parseQuizMeta(res.quiz);
+      res.quiz = {
+        ...res.quiz,
+        quizMeta: parsedMeta,
+        instructions: parsedMeta.cleanInstructions,
+      };
       if (!res.student || !res.student.name) {
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
@@ -276,7 +284,11 @@ function Runner({ initial }) {
   const [submitting, setSubmitting] = useState(false);
   const [finished, setFinished] = useState(null);
   const [fatal, setFatal] = useState('');
-  const perQSeconds = quiz.question_time_limit ? Number(quiz.question_time_limit) : (quiz.is_practice ? null : 60);
+  const quizMeta = useMemo(() => quiz.quizMeta || parseQuizMeta(quiz), [quiz]);
+  const currentQ = questions[current];
+  const perQSeconds = useMemo(() => {
+    return getQuestionTimeLimit(currentQ, quizMeta, quiz.question_time_limit, quiz.is_practice);
+  }, [currentQ, quizMeta, quiz.question_time_limit, quiz.is_practice]);
   const [qRemaining, setQRemaining] = useState(perQSeconds);
 
   useEffect(() => {
@@ -720,11 +732,13 @@ function Runner({ initial }) {
                       color: qRemaining <= 5 ? '#b91c1c' : qRemaining <= 15 ? '#b45309' : '#166534',
                     }}
                   >
-                    {qRemaining <= 5 ? '⚠️ Time expiring for this question: ' : 'Question Timer: '}
+                    {qRemaining <= 5
+                      ? '⚠️ Time expiring for this question: '
+                      : `${FORMAT_LABELS[q?.kind] || 'Question'} Timer: `}
                     {qRemaining}s remaining
                   </strong>
                   <span className="tiny muted" style={{ display: 'block' }}>
-                    Auto-advances when timer reaches 0
+                    {perQSeconds}s allocated · Auto-advances when timer reaches 0
                   </span>
                 </div>
               </div>

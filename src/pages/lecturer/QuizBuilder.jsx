@@ -8,6 +8,7 @@ import { Topbar } from '../../components/Layout.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { quizStatus } from './course/QuizzesTab.jsx';
 import SpecialAccess from './SpecialAccess.jsx';
+import { FORMAT_LABELS, parseQuizMeta, serializeQuizMeta, STRATIFIED_SQL_SNIPPET } from '../../lib/quizMeta.js';
 
 const KINDS = [
   { id: 'mcq', label: 'Multiple choice' },
@@ -166,7 +167,7 @@ export default function QuizBuilder() {
           </main>
 
           <div className="stack" style={{ alignSelf: 'start' }}>
-            <Settings quiz={quiz} count={questions.length} windows={data.windows} streams={data.groups.streams} classes={data.groups.classes} onSaved={(q) => setData((d) => ({ ...d, quiz: { ...d.quiz, ...q } }))} />
+            <Settings quiz={quiz} count={questions.length} questions={questions} windows={data.windows} streams={data.groups.streams} classes={data.groups.classes} onSaved={(q) => setData((d) => ({ ...d, quiz: { ...d.quiz, ...q } }))} />
             <SpecialAccess quiz={quiz} restricted={quiz.restricted} />
           </div>
         </div>
@@ -463,22 +464,59 @@ function QuestionEditor({ number, initial, quizId, isNew, onCancel, onSaved }) {
 const classKey = (programme, stream) => `${(programme || '').toLowerCase()}|${(stream || '').toLowerCase()}`;
 const classLabel = (c) => `${c.programme || 'No programme'} · ${c.stream || 'No stream'}`;
 
-function Settings({ quiz, count, windows, streams, classes, onSaved }) {
+function Settings({ quiz, count, questions = [], windows, streams, classes, onSaved }) {
   const [act, busy] = useAction();
+  const initialMeta = useMemo(() => parseQuizMeta(quiz), [quiz?.id, quiz?.instructions]);
   const [f, setF] = useState(() => ({
-    title: quiz.title, instructions: quiz.instructions, reference: quiz.reference,
-    opens_at: toLocalInput(quiz.opens_at), closes_at: toLocalInput(quiz.closes_at),
-    duration_minutes: quiz.duration_minutes, max_attempts: quiz.max_attempts, is_practice: quiz.is_practice,
-    shuffle_questions: quiz.shuffle_questions, shuffle_options: quiz.shuffle_options,
-    published: quiz.published, results_released: quiz.results_released, show_answers: quiz.show_answers,
-    restricted: quiz.restricted, lockdown: quiz.lockdown, max_exits: quiz.max_exits ?? 0, no_backtrack: quiz.no_backtrack, pool_size: quiz.pool_size ?? '', question_time_limit: quiz.question_time_limit ?? '',
+    title: quiz.title,
+    instructions: initialMeta.cleanInstructions,
+    reference: quiz.reference,
+    opens_at: toLocalInput(quiz.opens_at),
+    closes_at: toLocalInput(quiz.closes_at),
+    duration_minutes: quiz.duration_minutes,
+    max_attempts: quiz.max_attempts,
+    is_practice: quiz.is_practice,
+    shuffle_questions: quiz.shuffle_questions,
+    shuffle_options: quiz.shuffle_options,
+    published: quiz.published,
+    results_released: quiz.results_released,
+    show_answers: quiz.show_answers,
+    restricted: quiz.restricted,
+    lockdown: quiz.lockdown,
+    max_exits: quiz.max_exits ?? 0,
+    no_backtrack: quiz.no_backtrack,
+    pool_size: quiz.pool_size ?? '',
+    question_time_limit: quiz.question_time_limit ?? '',
   }));
+
+  const [customTimesOn, setCustomTimesOn] = useState(initialMeta.custom_times_enabled);
+  const [formatTimes, setFormatTimes] = useState(initialMeta.format_times);
+  const [quotasOn, setQuotasOn] = useState(initialMeta.format_quotas_enabled);
+  const [quotas, setQuotas] = useState(initialMeta.format_quotas);
+  const [showSqlModal, setShowSqlModal] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
+
+  // Live count of questions available in this quiz by format
+  const formatCounts = useMemo(() => {
+    const counts = { mcq: 0, truefalse: 0, short: 0, numeric: 0, essay: 0 };
+    (questions || []).forEach((q) => {
+      if (counts[q.kind] !== undefined) counts[q.kind]++;
+    });
+    return counts;
+  }, [questions]);
+
+  // Sum of quotas
+  const totalQuota = useMemo(() => {
+    if (!quotasOn) return 0;
+    return Object.values(quotas).reduce((sum, v) => sum + (Number(v) > 0 ? Number(v) : 0), 0);
+  }, [quotasOn, quotas]);
+
   const streamWins = windows.filter((w) => (w.programme ?? '*') === '*');
   const classWins = windows.filter((w) => (w.programme ?? '*') !== '*');
-  // 'all' = same times for everyone, 'stream' = per stream, 'class' = per programme + stream
   const [mode, setMode] = useState(classWins.length ? 'class' : streamWins.length ? 'stream' : 'all');
   const perStream = mode === 'stream';
   const setPerStream = (on) => setMode(on ? 'stream' : 'all');
+
   const [win, setWin] = useState(() => {
     const names = [...new Set([...streams, ...streamWins.map((w) => w.stream)])];
     return names.map((st) => {
@@ -486,37 +524,75 @@ function Settings({ quiz, count, windows, streams, classes, onSaved }) {
       return { stream: st, on: streamWins.length ? !!w : true, opens_at: toLocalInput(w?.opens_at), closes_at: toLocalInput(w?.closes_at) };
     });
   });
+
   const [cwin, setCwin] = useState(() => {
     const list = [...classes];
-    classWins.forEach((w) => { if (!list.some((c) => classKey(c.programme, c.stream) === classKey(w.programme, w.stream))) list.push({ programme: w.programme, stream: w.stream, students: 0 }); });
+    classWins.forEach((w) => {
+      if (!list.some((c) => classKey(c.programme, c.stream) === classKey(w.programme, w.stream))) {
+        list.push({ programme: w.programme, stream: w.stream, students: 0 });
+      }
+    });
     return list.map((c) => {
       const w = classWins.find((x) => classKey(x.programme, x.stream) === classKey(c.programme, c.stream));
       return { ...c, on: classWins.length ? !!w : true, opens_at: toLocalInput(w?.opens_at), closes_at: toLocalInput(w?.closes_at) };
     });
   });
-  const setC = (i, k, v) => { setCwin(cwin.map((w, j) => (j === i ? { ...w, [k]: v } : w))); setDirty(true); };
+
+  const setC = (i, k, v) => {
+    setCwin(cwin.map((w, j) => (j === i ? { ...w, [k]: v } : w)));
+    setDirty(true);
+  };
   const [dirty, setDirty] = useState(false);
   const set = (k) => (e) => {
     setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
     setDirty(true);
   };
-  const setW = (i, k, v) => { setWin(win.map((w, j) => (j === i ? { ...w, [k]: v } : w))); setDirty(true); };
+  const setW = (i, k, v) => {
+    setWin(win.map((w, j) => (j === i ? { ...w, [k]: v } : w)));
+    setDirty(true);
+  };
 
   async function save() {
+    let poolSizeVal = f.pool_size === '' || Number(f.pool_size) <= 0 ? null : Math.floor(Number(f.pool_size));
+    if (quotasOn) {
+      if (totalQuota <= 0) throw new Error('Format quotas are enabled. Please enter at least one quota, or toggle off format quotas.');
+      // Validate that requested quotas do not exceed question bank counts
+      Object.entries(quotas).forEach(([k, v]) => {
+        const req = Number(v) || 0;
+        const avail = formatCounts[k] || 0;
+        if (req > avail) {
+          throw new Error(`You specified a quota of ${req} for ${FORMAT_LABELS[k]}, but there are only ${avail} in this quiz bank.`);
+        }
+      });
+      poolSizeVal = totalQuota;
+    }
+
     const row = {
       ...f,
       title: f.title.trim() || 'Untitled quiz',
-      opens_at: fromLocalInput(f.opens_at), closes_at: fromLocalInput(f.closes_at),
-      duration_minutes: Math.max(1, Number(f.duration_minutes) || 30), max_attempts: Math.max(1, Number(f.max_attempts) || 1),
+      instructions: serializeQuizMeta(f.instructions, {
+        custom_times_enabled: customTimesOn,
+        format_times: formatTimes,
+        format_quotas_enabled: quotasOn,
+        format_quotas: quotas,
+      }),
+      opens_at: fromLocalInput(f.opens_at),
+      closes_at: fromLocalInput(f.closes_at),
+      duration_minutes: Math.max(1, Number(f.duration_minutes) || 30),
+      max_attempts: Math.max(1, Number(f.max_attempts) || 1),
       max_exits: Math.max(0, Number(f.max_exits) || 0),
-      pool_size: f.pool_size === '' || Number(f.pool_size) <= 0 ? null : Math.floor(Number(f.pool_size)),
+      pool_size: poolSizeVal,
       question_time_limit: f.question_time_limit === '' || Number(f.question_time_limit) <= 0 ? null : Math.floor(Number(f.question_time_limit)),
     };
+
     if (row.opens_at && row.closes_at && new Date(row.closes_at) <= new Date(row.opens_at)) {
       throw new Error('The closing time must be after the opening time.');
     }
     if (row.published && count === 0) throw new Error('Add at least one question before publishing.');
-    if (row.pool_size && row.pool_size > count) throw new Error(`The question bank has only ${count} questions — the number per student cannot be more than that.`);
+    if (row.pool_size && row.pool_size > count) {
+      throw new Error(`The question bank has only ${count} questions — the number per student cannot be more than that.`);
+    }
+
     const chosen = mode === 'stream' ? win.filter((w) => w.on).map((w) => ({ ...w, programme: '*' }))
       : mode === 'class' ? cwin.filter((w) => w.on) : [];
     if (mode === 'stream' && !chosen.length) throw new Error('Tick at least one stream, or choose "Same times for everyone".');
@@ -526,16 +602,26 @@ function Settings({ quiz, count, windows, streams, classes, onSaved }) {
         throw new Error(`For ${mode === 'class' ? classLabel(w) : w.stream}, the closing time must be after the opening time.`);
       }
     }
+
     const saved = await run(supabase.from('quizzes').update(row).eq('id', quiz.id).select().single());
     await run(supabase.from('quiz_windows').delete().eq('quiz_id', quiz.id));
     if (chosen.length) {
       await run(supabase.from('quiz_windows').insert(chosen.map((w) => ({
-        quiz_id: quiz.id, programme: w.programme, stream: w.stream, opens_at: fromLocalInput(w.opens_at), closes_at: fromLocalInput(w.closes_at),
+        quiz_id: quiz.id,
+        programme: w.programme,
+        stream: w.stream,
+        opens_at: fromLocalInput(w.opens_at),
+        closes_at: fromLocalInput(w.closes_at),
       }))));
     }
     onSaved(saved);
     setDirty(false);
-    return saved;
+  }
+
+  function copySql() {
+    navigator.clipboard?.writeText?.(STRATIFIED_SQL_SNIPPET);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 3000);
   }
 
   return (
@@ -548,45 +634,25 @@ function Settings({ quiz, count, windows, streams, classes, onSaved }) {
       <div className="stack-sm" style={{ borderTop: '1px solid var(--line-2)', paddingTop: 14 }}>
         <span className="eyebrow">Who and when</span>
         <label className="check"><input type="checkbox" checked={f.restricted} onChange={set('restricted')} />
-          <span><strong>Only students given special access</strong> — for a resit or a make-up quiz. Add them under Special access below.</span></label>
-        {streams.length === 0 && classes.length <= 1 && (
-          <span className="tiny muted">To set different times for Regular, Weekend or Evening students, first create streams on the course's Students tab.</span>
-        )}
-        {(streams.length > 0 || classes.length > 1) && (
-          <div className="chips" role="group" aria-label="Timing">
-            <button type="button" className="chip" aria-pressed={mode === 'all'} onClick={() => { setMode('all'); setDirty(true); }}>Same times for everyone</button>
-            {streams.length > 0 && <button type="button" className="chip" aria-pressed={mode === 'stream'} onClick={() => { setPerStream(true); setDirty(true); }}>Different times per stream</button>}
-            {classes.length > 1 && <button type="button" className="chip" aria-pressed={mode === 'class'} onClick={() => { setMode('class'); setDirty(true); }}>Different times per class</button>}
-          </div>
-        )}
-        {mode === 'class' ? (
-          <div className="stack-sm">
-            {cwin.map((w, i) => (
-              <div key={classKey(w.programme, w.stream)} className="stack-sm" style={{ background: 'var(--surface-2)', padding: 10, borderRadius: 8 }}>
-                <label className="check"><input type="checkbox" checked={w.on} onChange={(e) => setC(i, 'on', e.target.checked)} />
-                  <span><strong>{classLabel(w)}</strong> <span className="tiny muted">{w.students ? `${w.students} student${w.students === 1 ? '' : 's'}` : ''}</span></span></label>
-                {w.on && (
-                  <div className="grid-2" style={{ gap: 8 }}>
-                    <Field label="Opens"><input className="input" type="datetime-local" value={w.opens_at} onChange={(e) => setC(i, 'opens_at', e.target.value)} aria-label={`Opens for ${classLabel(w)}`} /></Field>
-                    <Field label="Closes"><input className="input" type="datetime-local" value={w.closes_at} onChange={(e) => setC(i, 'closes_at', e.target.value)} aria-label={`Closes for ${classLabel(w)}`} /></Field>
-                  </div>
-                )}
-              </div>
-            ))}
-            <span className="tiny muted">Each class is a programme and stream together. Unticked classes cannot see or take this quiz.</span>
-          </div>
-        ) : !perStream ? (
-          <div className="grid-2" style={{ gap: 10 }}>
+          <span><strong>Special access only</strong> — only students you list in Special Access below can take this quiz</span></label>
+        <div className="row small" style={{ gap: 14, flexWrap: 'wrap' }}>
+          <label className="row" style={{ gap: 4 }}><input type="radio" name="timing-mode" checked={mode === 'all'} onChange={() => { setMode('all'); setDirty(true); }} /> Same times for everyone</label>
+          {streams.length > 0 && <label className="row" style={{ gap: 4 }}><input type="radio" name="timing-mode" checked={mode === 'stream'} onChange={() => { setMode('stream'); setDirty(true); }} /> Different times per stream</label>}
+          {classes.length > 0 && <label className="row" style={{ gap: 4 }}><input type="radio" name="timing-mode" checked={mode === 'class'} onChange={() => { setMode('class'); setDirty(true); }} /> Different times per class</label>}
+        </div>
+        {mode === 'all' && (
+          <div className="grid-2">
             <Field label="Opens"><input className="input" type="datetime-local" value={f.opens_at} onChange={set('opens_at')} /></Field>
             <Field label="Closes"><input className="input" type="datetime-local" value={f.closes_at} onChange={set('closes_at')} /></Field>
           </div>
-        ) : (
+        )}
+        {mode === 'stream' && (
           <div className="stack-sm">
             {win.map((w, i) => (
-              <div key={w.stream} className="stack-sm" style={{ background: 'var(--surface-2)', padding: 10, borderRadius: 8 }}>
-                <label className="check"><input type="checkbox" checked={w.on} onChange={(e) => setW(i, 'on', e.target.checked)} /> <strong>{w.stream}</strong></label>
+              <div key={w.stream} className="card-soft stack-sm" style={{ padding: 10 }}>
+                <label className="check"><input type="checkbox" checked={w.on} onChange={(e) => setW(i, 'on', e.target.checked)} /><strong>{w.stream}</strong></label>
                 {w.on && (
-                  <div className="grid-2" style={{ gap: 8 }}>
+                  <div className="grid-2">
                     <Field label="Opens"><input className="input" type="datetime-local" value={w.opens_at} onChange={(e) => setW(i, 'opens_at', e.target.value)} /></Field>
                     <Field label="Closes"><input className="input" type="datetime-local" value={w.closes_at} onChange={(e) => setW(i, 'closes_at', e.target.value)} /></Field>
                   </div>
@@ -596,34 +662,112 @@ function Settings({ quiz, count, windows, streams, classes, onSaved }) {
             <span className="tiny muted">Unticked streams cannot see or take this quiz.</span>
           </div>
         )}
+        {mode === 'class' && (
+          <div className="stack-sm">
+            {cwin.map((w, i) => (
+              <div key={classKey(w.programme, w.stream)} className="card-soft stack-sm" style={{ padding: 10 }}>
+                <label className="check"><input type="checkbox" checked={w.on} onChange={(e) => setC(i, 'on', e.target.checked)} />
+                  <span><strong>{w.programme || 'No programme'}</strong> · {w.stream || 'No stream'} <span className="tiny muted">({w.students} students)</span></span></label>
+                {w.on && (
+                  <div className="grid-2">
+                    <Field label="Opens"><input className="input" type="datetime-local" value={w.opens_at} onChange={(e) => setC(i, 'opens_at', e.target.value)} /></Field>
+                    <Field label="Closes"><input className="input" type="datetime-local" value={w.closes_at} onChange={(e) => setC(i, 'closes_at', e.target.value)} /></Field>
+                  </div>
+                )}
+              </div>
+            ))}
+            <span className="tiny muted">Unticked streams cannot see or take this quiz.</span>
+          </div>
+        )}
+
         <div className="grid-2" style={{ gap: 10 }}>
           <Field label="Total time (min)"><input className="input" type="number" min="1" value={f.duration_minutes} onChange={set('duration_minutes')} /></Field>
-          <div className="stack-sm">
-            <Field label="Time per question (sec)">
-              <input className="input" type="number" min="0" placeholder="Optional (e.g. 60)" value={f.question_time_limit} onChange={set('question_time_limit')} />
-            </Field>
-            <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
-              {[
-                { label: 'Off', val: '' },
-                { label: '30s', val: '30' },
-                { label: '45s', val: '45' },
-                { label: '60s', val: '60' },
-                { label: '90s', val: '90' },
-              ].map((opt) => (
-                <button
-                  key={opt.label}
-                  type="button"
-                  className="chip"
-                  style={{ fontSize: 11, padding: '2px 8px', minHeight: 24 }}
-                  aria-pressed={String(f.question_time_limit || '') === opt.val}
-                  onClick={() => { setF({ ...f, question_time_limit: opt.val }); setDirty(true); }}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
           <Field label="Attempts"><input className="input" type="number" min="1" value={f.max_attempts} onChange={set('max_attempts')} disabled={f.is_practice} /></Field>
+        </div>
+
+        {/* ---------------- Per-Question Countdown Timer Section ---------------- */}
+        <div className="card-soft stack-sm" style={{ padding: 12, border: '1px solid var(--line-2)' }}>
+          <div className="between" style={{ alignItems: 'center' }}>
+            <span className="small"><strong>⏱️ Question Countdown Timer</strong></span>
+            <button
+              type="button"
+              className="chip"
+              style={{ fontSize: 11, cursor: 'pointer', background: customTimesOn ? 'var(--teal-50)' : undefined, borderColor: customTimesOn ? 'var(--teal)' : undefined }}
+              onClick={() => { setCustomTimesOn(!customTimesOn); setDirty(true); }}
+            >
+              {customTimesOn ? '✓ Custom by Format Active' : '+ Set Times by Format'}
+            </button>
+          </div>
+
+          {!customTimesOn ? (
+            <div className="stack-sm">
+              <Field label="Uniform seconds per question" hint="applies to every question">
+                <input className="input" type="number" min="0" placeholder="Optional (e.g. 60)" value={f.question_time_limit} onChange={set('question_time_limit')} />
+              </Field>
+              <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
+                {[
+                  { label: 'Off', val: '' },
+                  { label: '30s', val: '30' },
+                  { label: '45s', val: '45' },
+                  { label: '60s', val: '60' },
+                  { label: '90s', val: '90' },
+                  { label: '120s', val: '120' },
+                ].map((opt) => (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    className="chip"
+                    style={{ fontSize: 11, padding: '2px 8px', minHeight: 24 }}
+                    aria-pressed={String(f.question_time_limit || '') === opt.val}
+                    onClick={() => { setF({ ...f, question_time_limit: opt.val }); setDirty(true); }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="stack-sm" style={{ paddingTop: 4 }}>
+              <p className="tiny muted" style={{ margin: 0 }}>
+                Different time limits are allocated based on question complexity. The screen timer automatically adapts as each student advances.
+              </p>
+              <div className="stack-sm" style={{ gap: 6 }}>
+                {Object.entries(FORMAT_LABELS).map(([k, label]) => {
+                  const qCount = formatCounts[k] || 0;
+                  const defaultSecs = k === 'mcq' ? 30 : k === 'truefalse' ? 20 : k === 'short' ? 45 : k === 'numeric' ? 90 : 180;
+                  return (
+                    <div key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '5px 8px', background: '#fff', borderRadius: 6, border: '1px solid var(--line-2)' }}>
+                      <div>
+                        <span className="small"><strong>{label}</strong></span>
+                        <span className="tiny muted" style={{ marginLeft: 6 }}>({qCount} in quiz)</span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <input
+                          className="input mono"
+                          type="number"
+                          min="5"
+                          style={{ width: 65, minHeight: 28, padding: '2px 6px', textAlign: 'center', fontSize: 13 }}
+                          placeholder={String(defaultSecs)}
+                          value={formatTimes[k] ?? ''}
+                          onChange={(e) => {
+                            setFormatTimes({ ...formatTimes, [k]: e.target.value });
+                            setDirty(true);
+                          }}
+                        />
+                        <span className="tiny muted">sec</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="between" style={{ alignItems: 'center', paddingTop: 4 }}>
+                <span className="tiny muted">Fallback default: {f.question_time_limit || 60}s</span>
+                <button type="button" className="btn btn-sm btn-ghost" style={{ fontSize: 11, padding: '2px 6px' }} onClick={() => { setCustomTimesOn(false); setDirty(true); }}>
+                  Switch back to uniform time
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -645,11 +789,86 @@ function Settings({ quiz, count, windows, streams, classes, onSaved }) {
           </label>
         )}
         <label className="check"><input type="checkbox" checked={f.no_backtrack} onChange={set('no_backtrack')} /> No going back — each question locks once the student moves on</label>
-        <label className="row-wrap small" style={{ gap: 8 }}>
-          <span className="nowrap">Give each student</span>
-          <input className="input" type="number" min="1" style={{ width: 70, minHeight: 36 }} value={f.pool_size} onChange={set('pool_size')} placeholder="all" />
-          random questions from the {count} in the bank
-        </label>
+
+        {/* ---------------- Stratified Format Quotas / Question Pool Section ---------------- */}
+        <div className="card-soft stack-sm" style={{ padding: 12, border: '1px solid var(--line-2)' }}>
+          <div className="between" style={{ alignItems: 'center' }}>
+            <span className="small"><strong>🎯 Question Bank & Format Quotas</strong></span>
+            <button
+              type="button"
+              className="chip"
+              style={{ fontSize: 11, cursor: 'pointer', background: quotasOn ? 'var(--blue-50)' : undefined, borderColor: quotasOn ? 'var(--blue-ink)' : undefined }}
+              onClick={() => { setQuotasOn(!quotasOn); setDirty(true); }}
+            >
+              {quotasOn ? '✓ Format Quotas Active' : '+ Set Quotas by Format'}
+            </button>
+          </div>
+
+          {!quotasOn ? (
+            <label className="row-wrap small" style={{ gap: 8 }}>
+              <span className="nowrap">Give each student</span>
+              <input className="input" type="number" min="1" style={{ width: 70, minHeight: 36 }} value={f.pool_size} onChange={set('pool_size')} placeholder="all" />
+              random questions from the {count} in the bank
+            </label>
+          ) : (
+            <div className="stack-sm" style={{ paddingTop: 4 }}>
+              <p className="tiny muted" style={{ margin: 0 }}>
+                Specify how many questions of each format each student gets from your bank.
+              </p>
+              <div className="stack-sm" style={{ gap: 6 }}>
+                {Object.entries(FORMAT_LABELS).map(([k, label]) => {
+                  const avail = formatCounts[k] || 0;
+                  const qVal = quotas[k] ?? '';
+                  const over = Number(qVal) > avail;
+                  return (
+                    <div key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '5px 8px', background: '#fff', borderRadius: 6, border: `1px solid ${over ? '#fca5a5' : 'var(--line-2)'}` }}>
+                      <div>
+                        <span className="small"><strong>{label}</strong></span>
+                        <span className="tiny muted" style={{ marginLeft: 6 }}>({avail} in bank)</span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span className="tiny muted">Draw:</span>
+                        <input
+                          className="input mono"
+                          type="number"
+                          min="0"
+                          max={avail}
+                          style={{ width: 55, minHeight: 28, padding: '2px 4px', textAlign: 'center', fontSize: 13, borderColor: over ? '#ef4444' : undefined }}
+                          placeholder="0"
+                          value={qVal}
+                          onChange={(e) => {
+                            setQuotas({ ...quotas, [k]: e.target.value });
+                            setDirty(true);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          style={{ padding: '2px 6px', fontSize: 10, minHeight: 26 }}
+                          onClick={() => {
+                            setQuotas({ ...quotas, [k]: String(avail) });
+                            setDirty(true);
+                          }}
+                          title={`Draw all ${avail}`}
+                        >
+                          All
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="between" style={{ alignItems: 'center', paddingTop: 6, borderTop: '1px solid var(--line-2)' }}>
+                <span className="small">Total drawn per student: <strong style={{ color: 'var(--teal-dark)' }}>{totalQuota}</strong> of {count}</span>
+                <button type="button" className="btn btn-sm btn-ghost" style={{ fontSize: 11, padding: '2px 6px' }} onClick={() => setShowSqlModal(true)}>
+                  <Icon name="code" size={13} /> View SQL Function
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
         <label className="check"><input type="checkbox" checked={f.shuffle_questions} onChange={set('shuffle_questions')} /> Shuffle question order for each student</label>
         <label className="check"><input type="checkbox" checked={f.shuffle_options} onChange={set('shuffle_options')} /> Shuffle multiple-choice options</label>
         <label className="check"><input type="checkbox" checked={f.is_practice} onChange={set('is_practice')} /> Practice quiz — unlimited attempts, score shown straight away, not in grades</label>
@@ -660,10 +879,29 @@ function Settings({ quiz, count, windows, streams, classes, onSaved }) {
         <label className="check"><input type="checkbox" checked={f.results_released} onChange={set('results_released')} /> <span><strong>Results released</strong> — students see their score</span></label>
         <label className="check"><input type="checkbox" checked={f.show_answers} onChange={set('show_answers')} disabled={!f.results_released} /> Also show correct answers and explanations</label>
       </div>
+
       <button type="button" className="btn btn-primary" disabled={busy || !dirty} onClick={() => act(save, 'Settings saved.')}>Save settings</button>
+
+      {showSqlModal && (
+        <Modal title="Supabase Database Function for Stratified Quotas" onClose={() => setShowSqlModal(false)} wide>
+          <p className="small muted">
+            To enforce exact per-format stratified draws on your database, copy this SQL snippet and run it once in your <strong>Supabase Dashboard → SQL Editor</strong>:
+          </p>
+          <pre className="mono small" style={{ maxHeight: 240, overflowY: 'auto', padding: 12, background: 'var(--surface-2)', borderRadius: 8, fontSize: 11 }}>
+            {STRATIFIED_SQL_SNIPPET}
+          </pre>
+          <div className="between" style={{ alignItems: 'center', marginTop: 12 }}>
+            <span className="tiny muted">Updated function is backward-compatible with all standard quizzes.</span>
+            <button type="button" className="btn btn-primary" onClick={copySql}>
+              {copiedSql ? '✓ Copied to Clipboard!' : 'Copy SQL to Clipboard'}
+            </button>
+          </div>
+        </Modal>
+      )}
     </aside>
   );
 }
+
 
 // ---------------- paste multiple choice ----------------
 export function parseMcq(text) {

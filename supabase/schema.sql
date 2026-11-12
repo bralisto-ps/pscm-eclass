@@ -735,13 +735,49 @@ begin
     raise exception 'You have used all your attempts for this quiz.';
   end if;
 
-  -- pick the questions (a random subset when a pool size is set), then order them
-  select array_agg(x.id order by case when qz.shuffle_questions then random() else 0 end, x.position, x.created_at)
-    into v_order
-    from (select id, position, created_at from public.questions
-           where quiz_id = p_quiz
-           order by random()
-           limit coalesce(nullif(qz.pool_size, 0), 100000)) x;
+  -- Stratified format quotas if defined in quiz instructions metadata (e.g. <!-- QUIZ_META:{"format_quotas_enabled":true,...} -->)
+  if qz.instructions ~ '<!-- QUIZ_META:(.*?)-->' then
+    declare
+      v_meta jsonb;
+      q_mcq int; q_tf int; q_num int; q_short int; q_essay int;
+    begin
+      v_meta := (regexp_match(qz.instructions, '<!-- QUIZ_META:(.*?)-->'))[1]::jsonb;
+      if (v_meta->>'format_quotas_enabled')::boolean = true and v_meta ? 'format_quotas' then
+        q_mcq   := coalesce(nullif(v_meta->'format_quotas'->>'mcq', '')::int, 0);
+        q_tf    := coalesce(nullif(v_meta->'format_quotas'->>'truefalse', '')::int, 0);
+        q_num   := coalesce(nullif(v_meta->'format_quotas'->>'numeric', '')::int, 0);
+        q_short := coalesce(nullif(v_meta->'format_quotas'->>'short', '')::int, 0);
+        q_essay := coalesce(nullif(v_meta->'format_quotas'->>'essay', '')::int, 0);
+        if (q_mcq + q_tf + q_num + q_short + q_essay) > 0 then
+          select array_agg(x.id order by case when qz.shuffle_questions then random() else 0 end, x.position, x.created_at)
+            into v_order
+            from (
+              (select id, position, created_at from public.questions where quiz_id = p_quiz and kind = 'mcq' order by random() limit nullif(q_mcq, 0))
+              union all
+              (select id, position, created_at from public.questions where quiz_id = p_quiz and kind = 'truefalse' order by random() limit nullif(q_tf, 0))
+              union all
+              (select id, position, created_at from public.questions where quiz_id = p_quiz and kind = 'numeric' order by random() limit nullif(q_num, 0))
+              union all
+              (select id, position, created_at from public.questions where quiz_id = p_quiz and kind = 'short' order by random() limit nullif(q_short, 0))
+              union all
+              (select id, position, created_at from public.questions where quiz_id = p_quiz and kind = 'essay' order by random() limit nullif(q_essay, 0))
+            ) x;
+        end if;
+      end if;
+    exception when others then
+      v_order := null;
+    end;
+  end if;
+
+  if v_order is null then
+    -- pick the questions (a random subset when a pool size is set), then order them
+    select array_agg(x.id order by case when qz.shuffle_questions then random() else 0 end, x.position, x.created_at)
+      into v_order
+      from (select id, position, created_at from public.questions
+             where quiz_id = p_quiz
+             order by random()
+             limit coalesce(nullif(qz.pool_size, 0), 100000)) x;
+  end if;
   if v_order is null then raise exception 'This quiz has no questions yet.'; end if;
 
   v_dead := now() + make_interval(mins => qz.duration_minutes);

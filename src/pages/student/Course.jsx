@@ -1,4 +1,5 @@
 import { parseCourseMeta } from '../../lib/courseMeta.js';
+import { cleanText } from '../../lib/quizMeta.js';
 import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
 import { getLetter, getRemarks, TargetGradeCalculator } from './Grades.jsx';
 import Messages from '../../components/Messages.jsx';
@@ -323,7 +324,7 @@ function Quizzes({ quizzes }) {
                 )}
               </div>
             </div>
-            {q.instructions && <p className="small pre" style={{ marginTop: 12, color: 'var(--text-2)' }}>{q.instructions}</p>}
+            {cleanText(q.instructions) && <p className="small pre" style={{ marginTop: 12, color: 'var(--text-2)' }}>{cleanText(q.instructions)}</p>}
           </div>
         );
       })}
@@ -361,7 +362,7 @@ function Quizzes({ quizzes }) {
               Close other apps and turn off notifications before you start.
             </div>
           )}
-          {starting.instructions && <p className="small pre">{starting.instructions}</p>}
+          {cleanText(starting.instructions) && <p className="small pre">{cleanText(starting.instructions)}</p>}
         </Modal>
       )}
     </div>
