@@ -31,9 +31,15 @@ function writeFlags(id, set) {
 
 function AntiCameraShield({ text, blurred, onResume }) {
   const safe = String(text || 'CONFIDENTIAL EXAM · E-CLASS PSCM').replace(/[<>&'"]/g, '');
-  // Elegant, subtle 5% opacity watermark: protects against photography without distracting students
+  // Subtle 6% opacity watermark: visible on phone camera sensors while transparent to reading text
   const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='440' height='260'>
-    <text x='30' y='130' transform='rotate(-20 220 130)' fill='rgba(15,23,42,0.05)' font-family='Arial, sans-serif' font-size='18' font-weight='600' letter-spacing='0.5px'>${safe}</text>
+    <text x='30' y='130' transform='rotate(-20 220 130)' fill='rgba(15,23,42,0.06)' font-family='Arial, sans-serif' font-size='18' font-weight='600' letter-spacing='0.5px'>${safe}</text>
+  </svg>`;
+  // Fine grid mesh pattern disrupts digital camera sensor focusing and AI OCR text extraction
+  const meshSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'>
+    <circle cx='2' cy='2' r='1.1' fill='rgba(0,0,0,0.06)'/>
+    <circle cx='6' cy='6' r='1.1' fill='rgba(0,0,0,0.035)'/>
+    <line x1='0' y1='4' x2='8' y2='4' stroke='rgba(0,0,0,0.02)' stroke-width='0.5'/>
   </svg>`;
   return (
     <>
@@ -41,6 +47,21 @@ function AntiCameraShield({ text, blurred, onResume }) {
         position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 30,
         backgroundImage: `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}")`,
       }} />
+      <div aria-hidden="true" style={{
+        position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 29,
+        backgroundImage: `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(meshSvg)}")`,
+      }} />
+      <div className="anti-camera-scanline" aria-hidden="true" />
+      <div aria-hidden="true" style={{
+        position: 'fixed', bottom: 12, right: 16, zIndex: 31, pointerEvents: 'none',
+        background: 'rgba(15, 23, 42, 0.82)', color: '#fff', padding: '5px 10px',
+        borderRadius: 8, fontSize: 10, fontWeight: 600, letterSpacing: '0.5px',
+        display: 'flex', alignItems: 'center', gap: 6, boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+      }}>
+        <span>🔒 ANTI-CHEAT ACTIVE</span>
+        <span style={{ opacity: 0.6 }}>·</span>
+        <span style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>${safe}</span>
+      </div>
       {blurred && (
         <div onClick={onResume} style={{
           position: 'fixed', inset: 0, zIndex: 9999,
@@ -600,9 +621,20 @@ function Runner({ initial }) {
       if (e.key === 'PrintScreen') recordExit('screenshot key');
     };
     const blocked = ['copy', 'cut', 'paste', 'contextmenu', 'dragstart', 'drop'];
+    const onResize = () => {
+      if (cameraActiveRef.current || selfiePrompt || doneRef.current) return;
+      // Detect split-screen tiling: if screen width is large but browser window is constrained
+      if (typeof window.screen !== 'undefined' && window.screen.availWidth > 1024) {
+        if (window.innerWidth < Math.min(840, window.screen.availWidth * 0.65)) {
+          setBlurred(true);
+          recordExit('split-screen / resized window');
+        }
+      }
+    };
     document.addEventListener('visibilitychange', onVis);
     window.addEventListener('blur', onBlur);
     document.addEventListener('fullscreenchange', onFs);
+    window.addEventListener('resize', onResize);
     blocked.forEach((t) => document.addEventListener(t, block));
     document.addEventListener('selectstart', onSelect);
     document.addEventListener('keydown', onKey);
@@ -610,6 +642,7 @@ function Runner({ initial }) {
       document.removeEventListener('visibilitychange', onVis);
       window.removeEventListener('blur', onBlur);
       document.removeEventListener('fullscreenchange', onFs);
+      window.removeEventListener('resize', onResize);
       blocked.forEach((t) => document.removeEventListener(t, block));
       document.removeEventListener('selectstart', onSelect);
       document.removeEventListener('keydown', onKey);

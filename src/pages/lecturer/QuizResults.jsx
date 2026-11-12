@@ -105,7 +105,7 @@ export default function QuizResults() {
 
 function exitText(r) {
   if (!r.exits) return '';
-  const kinds = { tab: 'switched tab or app', blur: 'left the window', fullscreen: 'left full screen' };
+  const kinds = { tab: 'switched tab or app', blur: 'left the window', fullscreen: 'left full screen', 'split-screen / resized window': 'split-screen / window resized' };
   return (r.exit_log || []).map((e) => `${new Date(e.at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} — ${kinds[e.kind] || e.kind}`).join('\n');
 }
 
