@@ -283,7 +283,7 @@ function QuestionEditor({ number, initial, quizId, isNew, onCancel, onSaved }) {
         row.formula = q.formula.trim();
       }
     } else if (q.kind === 'short') {
-      const accepted = acceptedText.split('\n').map((s) => s.trim()).filter(Boolean);
+      const accepted = acceptedText.split(/[\n|]+/).map((s) => s.trim()).filter(Boolean);
       if (!accepted.length) throw new Error('List at least one accepted answer.');
       row.answer = { accepted };
     }
@@ -448,8 +448,8 @@ function QuestionEditor({ number, initial, quizId, isNew, onCancel, onSaved }) {
         )}
 
         {q.kind === 'short' && (
-          <Field label="Accepted answers" hint="one per line · capital letters and extra spaces are ignored">
-            <textarea className="textarea" value={acceptedText} onChange={(e) => setAcceptedText(e.target.value)} placeholder={'safety stock\nbuffer stock'} />
+          <Field label="Accepted answers" hint="one per line (or separated by | ) · capital letters and extra spaces are ignored">
+            <textarea className="textarea" value={acceptedText} onChange={(e) => setAcceptedText(e.target.value)} placeholder={'stock accuracy\ninventory accuracy'} />
           </Field>
         )}
 
