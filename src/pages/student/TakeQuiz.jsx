@@ -296,15 +296,15 @@ function Runner({ initial }) {
       </div>
     );
   }
+
   const strict = !!quiz.lockdown;
   const allowBack = !quiz.no_backtrack;
   const fsSupported = canFullscreen();
-  const offset = useMemo(() => new Date(attempt.server_now).getTime() - Date.now(), [attempt.server_now]);
-  const deadline = new Date(attempt.deadline_at).getTime();
-
+  const offset = useMemo(() => new Date(attempt.server_now || Date.now()).getTime() - Date.now(), [attempt.server_now]);
+  const deadline = new Date(attempt.deadline_at || Date.now() + 3600000).getTime();
   const [answers, setAnswers] = useState(() => Object.fromEntries(questions.map((q) => [q.id, q.value ?? ''])));
   const [saveState, setSaveState] = useState({});
-  const [current, setCurrent] = useState(() => (allowBack ? 0 : Math.min(attempt.current_index || 0, questions.length - 1)));
+  const [current, setCurrent] = useState(() => (allowBack ? 0 : Math.min(attempt.current_index || 0, Math.max(0, questions.length - 1))));
   const [needFs, setNeedFs] = useState(() => strict && fsSupported && !document.fullscreenElement);
   const [exitWarn, setExitWarn] = useState(null);
   const [exits, setExits] = useState(attempt.exits || 0);
@@ -317,17 +317,15 @@ function Runner({ initial }) {
   const [submitting, setSubmitting] = useState(false);
   const [finished, setFinished] = useState(null);
   const [fatal, setFatal] = useState('');
+
   const quizMeta = useMemo(() => quiz.quizMeta || parseQuizMeta(quiz), [quiz]);
-  const currentQ = questions[current];
+  const currentQ = questions[current] || questions[0];
   const perQSeconds = useMemo(() => {
     return getQuestionTimeLimit(currentQ, quizMeta, quiz.question_time_limit, quiz.is_practice);
   }, [currentQ, quizMeta, quiz.question_time_limit, quiz.is_practice]);
   const [qRemaining, setQRemaining] = useState(perQSeconds);
 
-  useEffect(() => {
-    setQRemaining(perQSeconds);
-  }, [current, perQSeconds]);
-  const antiCaptureMode = true; // Permanently enforced for all exams
+  const antiCaptureMode = true;
   const [blurred, setBlurred] = useState(false);
   const cameraActiveRef = useRef(false);
   const [selfiePrompt, setSelfiePrompt] = useState(false);
@@ -335,7 +333,32 @@ function Runner({ initial }) {
     try { return localStorage.getItem(`selfie:${attempt.id}`) === 'done'; } catch { return false; }
   });
 
-  // Safe non-blocking background upload (lightweight, zero lag, no timer interruption)
+  const latest = useRef({});     // question id -> latest value not yet confirmed saved
+  const inflight = useRef({});   // question id -> true while saving
+  const timers = useRef({});     // debounce timers
+
+  // ---------------- Callbacks & functions declared before any effects ----------------
+  const recordExit = useCallback(async (kind) => {
+    if (!strict || doneRef.current || cameraActiveRef.current || selfiePrompt) return;
+    const now = Date.now();
+    if (now - lastExit.current < 2000) return;
+    lastExit.current = now;
+    try {
+      const r = await rpc('log_exit', { p_attempt: attempt.id, p_kind: kind });
+      setExits(r.exits);
+      if (r.submitted) {
+        doneRef.current = true;
+        latest.current = {};
+        if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+        setFinished({ status: 'marked', auto: 'exits' });
+      } else {
+        setExitWarn(r);
+      }
+    } catch {
+      /* offline: nothing to record against */
+    }
+  }, [strict, attempt.id, selfiePrompt]);
+
   const uploadSelfieBackground = useCallback((dataUrl) => {
     if (!dataUrl || !attempt?.id) return;
     (async () => {
@@ -356,59 +379,16 @@ function Runner({ initial }) {
     })();
   }, [quiz?.course_id, attempt?.id]);
 
-  const midpoint = Math.floor(questions.length / 2);
-  useEffect(() => {
-    if (strict && !selfieDone && current >= midpoint && questions.length >= 2) {
-      cameraActiveRef.current = true;
-      setSelfiePrompt(true);
-    }
-  }, [current, strict, selfieDone, midpoint, questions.length]);
-
   const handleSelfieDone = useCallback(() => {
     setSelfiePrompt(false);
     setSelfieDone(true);
-    // Smoothly restore full screen if mobile browser dropped it during camera init
     if (fsSupported && !document.fullscreenElement && strict) {
       document.documentElement.requestFullscreen?.().catch(() => {});
     }
-    // Safety buffer: keep exit immunity active for 4 seconds while window/fullscreen re-settles
     setTimeout(() => {
       cameraActiveRef.current = false;
     }, 4000);
   }, [fsSupported, strict]);
-
-  useEffect(() => {
-    const onBlur = () => {
-      // Never count camera modal or permission prompt as leaving the quiz
-      if (cameraActiveRef.current || selfiePrompt) return;
-      setBlurred(true);
-      if (strict) recordExit('blur');
-    };
-    const onFocus = () => {
-      setBlurred(false);
-    };
-    const onVis = () => {
-      if (document.hidden) {
-        if (cameraActiveRef.current || selfiePrompt) return;
-        setBlurred(true);
-        if (strict) recordExit('tab');
-      } else {
-        setBlurred(false);
-      }
-    };
-    window.addEventListener('blur', onBlur);
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVis);
-    return () => {
-      window.removeEventListener('blur', onBlur);
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVis);
-    };
-  }, [strict, recordExit, selfiePrompt]);
-
-  const latest = useRef({});     // question id → latest value not yet confirmed saved
-  const inflight = useRef({});   // question id → true while saving
-  const timers = useRef({});     // debounce timers
 
   const saveNow = useCallback(async (qid) => {
     clearTimeout(timers.current[qid]);
@@ -435,7 +415,6 @@ function Runner({ initial }) {
   const flushAll = useCallback(async () => {
     const ids = Object.keys(latest.current);
     await Promise.all(ids.map((id) => saveNow(id)));
-    // wait for any saves already running
     for (let i = 0; i < 40 && Object.values(inflight.current).some(Boolean); i++) {
       await new Promise((r) => setTimeout(r, 150));
     }
@@ -450,22 +429,11 @@ function Runner({ initial }) {
     else timers.current[qid] = setTimeout(() => saveNow(qid), 800);
   }
 
-  // retry failed saves every 5 seconds (for patchy connections)
-  useEffect(() => {
-    const t = setInterval(() => {
-      Object.keys(latest.current).forEach((id) => {
-        if (!inflight.current[id]) saveNow(id);
-      });
-    }, 5000);
-    return () => clearInterval(t);
-  }, [saveNow]);
-
   const submit = useCallback(async (auto) => {
     if (submitting) return;
     setSubmitting(true);
     doneRef.current = true;
     await flushAll();
-    // Flush any pending photo in background upon submission
     try {
       const pending = localStorage.getItem(`pending_photo:${attempt.id}`);
       if (pending) {
@@ -494,7 +462,95 @@ function Runner({ initial }) {
     }
   }, [attempt.id, flushAll, submitting, quiz?.course_id]);
 
-  // overall countdown
+  async function enterFullscreen() {
+    try {
+      await document.documentElement.requestFullscreen();
+      setNeedFs(false);
+    } catch {
+      setNeedFs(false);
+    }
+  }
+
+  function toggleFlag() {
+    const qid = questions[current]?.id;
+    if (!qid) return;
+    const next = new Set(flags);
+    if (next.has(qid)) next.delete(qid);
+    else next.add(qid);
+    setFlags(next);
+    writeFlags(attempt.id, next);
+  }
+
+  async function go(i) {
+    const target = Math.max(0, Math.min(questions.length - 1, i));
+    if (!allowBack && target < current) return;
+    const id = questions[current]?.id;
+    if (!allowBack && target > current) {
+      setMoving(true);
+      if (id && id in latest.current) await saveNow(id);
+      try {
+        await rpc('advance_attempt', { p_attempt: attempt.id, p_index: target });
+      } catch {
+        /* offline: the lock still applies on next save */
+      }
+      setMoving(false);
+    } else if (id && id in latest.current) {
+      saveNow(id);
+    }
+    setCurrent(target);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // ---------------- All useEffect hooks (all dependencies declared) ----------------
+  useEffect(() => {
+    setQRemaining(perQSeconds);
+  }, [current, perQSeconds]);
+
+  const midpoint = Math.floor(questions.length / 2);
+  useEffect(() => {
+    if (strict && !selfieDone && current >= midpoint && questions.length >= 2) {
+      cameraActiveRef.current = true;
+      setSelfiePrompt(true);
+    }
+  }, [current, strict, selfieDone, midpoint, questions.length]);
+
+  useEffect(() => {
+    const onBlur = () => {
+      if (cameraActiveRef.current || selfiePrompt) return;
+      setBlurred(true);
+      if (strict) recordExit('blur');
+    };
+    const onFocus = () => {
+      setBlurred(false);
+    };
+    const onVis = () => {
+      if (document.hidden) {
+        if (cameraActiveRef.current || selfiePrompt) return;
+        setBlurred(true);
+        if (strict) recordExit('tab');
+      } else {
+        setBlurred(false);
+      }
+    };
+    window.addEventListener('blur', onBlur);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [strict, recordExit, selfiePrompt]);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      Object.keys(latest.current).forEach((id) => {
+        if (!inflight.current[id]) saveNow(id);
+      });
+    }, 5000);
+    return () => clearInterval(t);
+  }, [saveNow]);
+
   useEffect(() => {
     const t = setInterval(() => {
       const left = deadline - (Date.now() + offset);
@@ -507,7 +563,6 @@ function Runner({ initial }) {
     return () => clearInterval(t);
   }, [deadline, offset, submit]);
 
-  // per-question countdown
   useEffect(() => {
     if (!perQSeconds || doneRef.current) return undefined;
     setQRemaining(perQSeconds);
@@ -524,7 +579,6 @@ function Runner({ initial }) {
     return () => clearInterval(t);
   }, [perQSeconds, current]);
 
-  // Handle per-question timer expiry: auto-save and advance
   useEffect(() => {
     if (perQSeconds && qRemaining === 0 && !doneRef.current) {
       const qid = questions[current]?.id;
@@ -537,29 +591,7 @@ function Runner({ initial }) {
         submit(true);
       }
     }
-  }, [qRemaining, perQSeconds, current, questions.length, submit]);
-
-  // strict mode: record leaving the quiz, block copying
-  const recordExit = useCallback(async (kind) => {
-    if (!strict || doneRef.current || cameraActiveRef.current || selfiePrompt) return;
-    const now = Date.now();
-    if (now - lastExit.current < 2000) return;
-    lastExit.current = now;
-    try {
-      const r = await rpc('log_exit', { p_attempt: attempt.id, p_kind: kind });
-      setExits(r.exits);
-      if (r.submitted) {
-        doneRef.current = true;
-        latest.current = {};
-        if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
-        setFinished({ status: 'marked', auto: 'exits' });
-      } else {
-        setExitWarn(r);
-      }
-    } catch {
-      /* offline: nothing to record against */
-    }
-  }, [strict, attempt.id, selfiePrompt]);
+  }, [qRemaining, perQSeconds, current, questions.length, submit, saveNow]);
 
   useEffect(() => {
     if (!strict) return undefined;
@@ -604,16 +636,6 @@ function Runner({ initial }) {
     };
   }, [strict, recordExit, fsSupported, selfiePrompt]);
 
-  async function enterFullscreen() {
-    try {
-      await document.documentElement.requestFullscreen();
-      setNeedFs(false);
-    } catch {
-      setNeedFs(false);
-    }
-  }
-
-  // warn before leaving with unsaved answers
   useEffect(() => {
     const onLeave = (e) => {
       if (Object.keys(latest.current).length) {
@@ -626,41 +648,11 @@ function Runner({ initial }) {
   }, []);
 
   if (finished) return <Done quiz={quiz} status={finished.status} autoSubmitted={finished.auto} />;
-
-  const q = questions[current];
+  const q = questions[current] || questions[0] || {};
   const answeredCount = questions.filter((x) => isAnswered(answers[x.id])).length;
   const unsaved = Object.values(saveState).some((s) => s === 'error');
   const low = remaining < 5 * 60 * 1000;
-
-  function toggleFlag() {
-    const next = new Set(flags);
-    if (next.has(q.id)) next.delete(q.id);
-    else next.add(q.id);
-    setFlags(next);
-    writeFlags(attempt.id, next);
-  }
-
-  async function go(i) {
-    const target = Math.max(0, Math.min(questions.length - 1, i));
-    if (!allowBack && target < current) return;
-    const id = questions[current]?.id;
-    if (!allowBack && target > current) {
-      setMoving(true);
-      if (id && id in latest.current) await saveNow(id);
-      try {
-        await rpc('advance_attempt', { p_attempt: attempt.id, p_index: target });
-      } catch {
-        /* if offline, the lock still applies on the next save */
-      }
-      setMoving(false);
-    } else if (id && id in latest.current) {
-      saveNow(id);
-    }
-    setCurrent(target);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-
-  const st = saveState[q.id];
+  const st = q?.id ? saveState[q.id] : undefined;
 
   return (
     <div className={`quiz-shell ${strict ? 'strict' : ''}`}>
