@@ -225,9 +225,22 @@ export default function TakeQuiz() {
   if (loading) return <Loading label="Opening your quiz…" />;
   if (error) {
     return (
-      <div className="page page-narrow">
+      <div className="page page-narrow" style={{ marginTop: 40 }}>
         <ErrorNote error={error} onRetry={reload} />
-        <p style={{ marginTop: 16 }}><Link to="/">Back to home</Link></p>
+        <p style={{ marginTop: 16 }}><Link to="/" className="btn btn-sm">Back to home</Link></p>
+      </div>
+    );
+  }
+  if (!data || !data.attempt) {
+    return (
+      <div className="page page-narrow" style={{ marginTop: 40 }}>
+        <div className="card stack" style={{ textAlign: 'center', padding: 36 }}>
+          <h2>Quiz Attempt Not Available</h2>
+          <p className="muted" style={{ maxWidth: 440, margin: '0 auto 16px' }}>
+            This attempt could not be loaded. Please ensure your student account is enrolled in this course and the quiz has been published.
+          </p>
+          <Link to="/" className="btn btn-primary" style={{ alignSelf: 'center' }}>Back to home</Link>
+        </div>
       </div>
     );
   }
@@ -262,7 +275,27 @@ function Done({ quiz, status, autoSubmitted }) {
 }
 
 function Runner({ initial }) {
-  const { attempt, quiz, questions, student } = initial;
+  const attempt = initial?.attempt || {};
+  const quiz = initial?.quiz || {};
+  const questions = Array.isArray(initial?.questions) ? initial.questions : [];
+  const student = initial?.student || {};
+
+  if (!questions.length) {
+    return (
+      <div className="page page-narrow" style={{ marginTop: 40 }}>
+        <div className="card stack" style={{ textAlign: 'center', padding: 36 }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
+          <h2>No Questions in this Quiz Yet</h2>
+          <p className="muted" style={{ maxWidth: 440, margin: '0 auto 16px' }}>
+            No questions are currently available for this quiz attempt. If format quotas were configured, ensure the question bank contains questions for those formats.
+          </p>
+          <Link to="/" className="btn btn-primary" style={{ alignSelf: 'center' }}>
+            Back to courses
+          </Link>
+        </div>
+      </div>
+    );
+  }
   const strict = !!quiz.lockdown;
   const allowBack = !quiz.no_backtrack;
   const fsSupported = canFullscreen();

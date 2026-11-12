@@ -1,7 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { isConfigured } from './lib/supabase.js';
 import { AuthProvider, useAuth } from './lib/auth.jsx';
-import { ToastProvider, Loading } from './components/ui.jsx';
+import { ToastProvider, Loading, ErrorBoundary } from './components/ui.jsx';
 import Layout from './components/Layout.jsx';
 import Login from './pages/Login.jsx';
 import Account from './pages/Account.jsx';
@@ -61,9 +61,10 @@ function Gate() {
   }
 
   return (
-    <Routes>
-      {!isStaff && <Route path="/quiz/:attemptId" element={<TakeQuiz />} />}
-      <Route element={<Layout />}>
+    <ErrorBoundary>
+      <Routes>
+        {!isStaff && <Route path="/quiz/:attemptId" element={<ErrorBoundary><TakeQuiz /></ErrorBoundary>} />}
+        <Route element={<Layout />}>
         {isStaff ? (
           <>
             <Route index element={<Dashboard />} />
@@ -84,6 +85,7 @@ function Gate() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
+  </ErrorBoundary>
   );
 }
 
