@@ -1,5 +1,5 @@
 import AIGeneratorModal from "../../components/AIGeneratorModal.jsx";
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
 import { fillVars, fmtNumber, fromLocalInput, toLocalInput } from '../../lib/format.js';
@@ -9,6 +9,15 @@ import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, u
 import { quizStatus } from './course/QuizzesTab.jsx';
 import SpecialAccess from './SpecialAccess.jsx';
 import { FORMAT_LABELS, parseQuizMeta, serializeQuizMeta, STRATIFIED_SQL_SNIPPET } from '../../lib/quizMeta.js';
+import {
+  parseQuestionsFromText,
+  parseQuestionsFromRows,
+  parseQuestionsFromFile,
+  downloadSampleExcel,
+  downloadSampleWord,
+  SAMPLE_PASTE_TEXT,
+  KIND_LABELS,
+} from '../../lib/questionParser.js';
 
 const KINDS = [
   { id: 'mcq', label: 'Multiple choice' },
@@ -159,7 +168,7 @@ export default function QuizBuilder() {
                   ))}
                   <button type="button" className="btn btn-sm btn-secondary" onClick={() => setAiGenerating(true)}><Icon name="sparkles" size={16} /> Generate with AI…</button>
                   <button type="button" className="btn btn-sm btn-ghost" onClick={() => setPasting(true)}>
-                    <Icon name="clipboard" size={16} /> Paste multiple choice…
+                    <Icon name="upload" size={16} /> Import / Paste from Word or Excel…
                   </button>
                 </div>
               </div>
@@ -178,7 +187,7 @@ export default function QuizBuilder() {
           message="Any answers students already gave to this question are deleted too."
           onClose={() => setRemoving(null)} onConfirm={remove} />
       )}
-      {pasting && <PasteModal quizId={quiz.id} start={(questions.at(-1)?.position ?? 0) + 1} onClose={() => setPasting(false)} onDone={reload} />}
+      {pasting && <UniversalImportModal quizId={quiz.id} start={(questions.at(-1)?.position ?? 0) + 1} onClose={() => setPasting(false)} onDone={reload} />}
       {aiGenerating && <AIGeneratorModal quizId={quiz.id} start={(questions.at(-1)?.position ?? 0) + 1} onClose={() => setAiGenerating(false)} onDone={reload} />}
     </>
   );
@@ -903,72 +912,370 @@ function Settings({ quiz, count, questions = [], windows, streams, classes, onSa
 }
 
 
-// ---------------- paste multiple choice ----------------
-export function parseMcq(text) {
-  const blocks = String(text).replace(/\r/g, '').split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
-  const out = [];
-  for (const block of blocks) {
-    const lines = block.split('\n').map((l) => l.trim()).filter(Boolean);
-    const qLines = [];
-    const options = [];
-    let answer = null;
-    for (const line of lines) {
-      const opt = line.match(/^\(?([A-Ha-h])[).:\]]\s+(.*)$/);
-      const ans = line.match(/^(answer|ans|correct)\s*[:=-]\s*\(?([A-Ha-h])\)?/i);
-      if (ans) answer = ans[2].toLowerCase();
-      else if (opt) {
-        let t = opt[2];
-        const starred = /\s*\*$/.test(t) || /^\*\s*/.test(t);
-        t = t.replace(/\s*\*$/, '').replace(/^\*\s*/, '');
-        options.push({ letter: opt[1].toLowerCase(), text: t, starred });
-      } else if (!options.length) qLines.push(line);
-    }
-    if (!qLines.length || options.length < 2) continue;
-    const prompt = qLines.join('\n').replace(/^(q(uestion)?\s*)?\d+\s*[.):-]\s*/i, '');
-    const correctIdx = answer ? options.findIndex((o) => o.letter === answer) : options.findIndex((o) => o.starred);
-    out.push({ prompt, options: options.map((o) => o.text), correct: correctIdx });
-  }
-  return out;
-}
-
-function PasteModal({ quizId, start, onClose, onDone }) {
+// ---------------- Universal Question Importer (Word, Excel, Text) ----------------
+export function UniversalImportModal({ quizId, start, onClose, onDone }) {
+  const [tab, setTab] = useState('upload'); // 'upload' | 'paste'
   const [text, setText] = useState('');
+  const [file, setFile] = useState(null);
+  const [fileLoading, setFileLoading] = useState(false);
+  const [fileError, setFileError] = useState('');
   const [marks, setMarks] = useState(1);
   const [topic, setTopic] = useState('');
+  const [parsed, setParsed] = useState([]);
   const [act, busy] = useAction();
-  const parsed = useMemo(() => parseMcq(text), [text]);
-  const missing = parsed.filter((p) => p.correct < 0).length;
+  const fileInputRef = useRef(null);
+
+  // Parse text whenever text, marks, or topic changes in paste tab
+  useEffect(() => {
+    if (tab === 'paste') {
+      const res = parseQuestionsFromText(text, marks, topic);
+      setParsed(res);
+    }
+  }, [tab, text, marks, topic]);
+
+  async function handleFileSelect(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFile(f);
+    setFileLoading(true);
+    setFileError('');
+    try {
+      const res = await parseQuestionsFromFile(f, marks, topic);
+      setParsed(res);
+      if (res.length === 0) {
+        setFileError('No recognizable questions found in this file. Please check format indicators or try our template.');
+      }
+    } catch (err) {
+      setFileError(err.message || 'Could not parse questions from file.');
+      setParsed([]);
+    } finally {
+      setFileLoading(false);
+    }
+  }
+
+  const validQuestions = useMemo(() => parsed.filter((q) => q.valid), [parsed]);
+  const invalidQuestions = useMemo(() => parsed.filter((q) => !q.valid), [parsed]);
+
+  const counts = useMemo(() => {
+    const c = { mcq: 0, truefalse: 0, numeric: 0, short: 0, essay: 0 };
+    for (const q of validQuestions) {
+      if (c[q.kind] !== undefined) c[q.kind]++;
+    }
+    return c;
+  }, [validQuestions]);
+
+  const totalMarks = useMemo(() => {
+    return validQuestions.reduce((sum, q) => sum + (Number(q.marks) || 1), 0);
+  }, [validQuestions]);
 
   async function save() {
-    const rows = parsed.filter((p) => p.correct >= 0).map((p, i) => ({
-      quiz_id: quizId, kind: 'mcq', position: start + i, prompt: p.prompt, marks: Number(marks) || 1, topic: topic.trim(),
-      options: p.options.map((t, k) => ({ id: LETTERS[k], text: t })), answer: { correct: LETTERS[p.correct] },
+    if (!validQuestions.length) return;
+    const rows = validQuestions.map((q, i) => ({
+      quiz_id: quizId,
+      kind: q.kind,
+      position: start + i,
+      prompt: q.prompt,
+      marks: Number(q.marks) || 1,
+      topic: (q.topic || topic || '').trim(),
+      explanation: q.explanation || '',
+      options: q.options || [],
+      answer: q.answer || {},
+      params: {},
+      formula: null,
+      unit: q.unit || '',
+      decimals: q.decimals || 2,
+      tolerance: q.tolerance || 0,
+      tolerance_type: 'abs',
     }));
-    const ok = await act(() => run(supabase.from('questions').insert(rows)), `${rows.length} questions added.`);
+
+    const ok = await act(
+      () => run(supabase.from('questions').insert(rows)),
+      `${rows.length} questions imported successfully.`
+    );
     if (ok !== undefined) {
       onDone();
       onClose();
     }
   }
 
+  const kindBadgeClass = (k) => {
+    switch (k) {
+      case 'mcq': return 'badge badge-teal';
+      case 'truefalse': return 'badge badge-purple';
+      case 'numeric': return 'badge badge-amber';
+      case 'short': return 'badge badge-green';
+      case 'essay': return 'badge badge-indigo';
+      default: return 'badge';
+    }
+  };
+
   return (
-    <Modal title="Paste multiple-choice questions" onClose={onClose} wide
-      footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button>
-        <button type="button" className="btn btn-primary" onClick={save} disabled={busy || !parsed.length || missing === parsed.length}>
-          Add {parsed.length - missing} question{parsed.length - missing === 1 ? '' : 's'}
-        </button></>}>
-      <p className="small muted">
-        Leave a blank line between questions. Put options on lines starting with A), B), C)… and mark the correct one with
-        a <strong>*</strong> at the end, or add a line <span className="mono">Answer: B</span>.
-      </p>
-      <textarea className="textarea mono" style={{ minHeight: 240, fontSize: 13 }} value={text} onChange={(e) => setText(e.target.value)}
-        placeholder={'1. Which inventory cost rises when order size increases?\nA) Ordering cost\nB) Holding cost *\nC) Stock-out cost\nD) Purchase price\n\n2. The bullwhip effect describes…\nA) Falling prices\nB) Growing order variability upstream\nC) Supplier consolidation\nAnswer: B'} />
-      <div className="row-wrap">
-        <label className="row small" style={{ gap: 6 }}>Topic <input className="input" style={{ width: 160, minHeight: 36 }} value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="optional" /></label>
-        <label className="row small" style={{ gap: 6 }}>Marks each <input className="input" type="number" min="0" step="0.5" style={{ width: 80, minHeight: 36 }} value={marks} onChange={(e) => setMarks(e.target.value)} /></label>
-        <span className="small">{parsed.length} found{missing ? <span style={{ color: 'var(--red-ink)' }}> · {missing} without a marked answer (skipped)</span> : ''}</span>
+    <Modal
+      title="Import / Paste Questions (Word, Excel, or Text)"
+      onClose={onClose}
+      wide
+      footer={
+        <>
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={save}
+            disabled={busy || fileLoading || !validQuestions.length}
+          >
+            {busy ? 'Importing…' : `Import ${validQuestions.length} question${validQuestions.length === 1 ? '' : 's'}`}
+          </button>
+        </>
+      }
+    >
+      {/* Tab Switcher */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, borderBottom: '1px solid var(--line-2)', paddingBottom: 12 }}>
+        <button
+          type="button"
+          className={`btn btn-sm ${tab === 'upload' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setTab('upload')}
+        >
+          <Icon name="upload" size={16} /> 📁 Upload File (.docx, .xlsx, .csv)
+        </button>
+        <button
+          type="button"
+          className={`btn btn-sm ${tab === 'paste' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setTab('paste')}
+        >
+          <Icon name="clipboard" size={16} /> 📋 Paste from Document or Excel
+        </button>
       </div>
+
+      {/* Template Download Helpers */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 8,
+          padding: '8px 12px',
+          background: 'rgba(13, 148, 136, 0.05)',
+          borderRadius: 8,
+          marginBottom: 16,
+          border: '1px dashed var(--teal-ink, #0f766e)',
+        }}
+      >
+        <div style={{ fontSize: 12, color: 'var(--teal-900, #134e4a)' }}>
+          <strong>💡 Need a ready-to-use template?</strong> Download our sample files to see format indicators & column layouts:
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            style={{ fontSize: 11, padding: '3px 8px' }}
+            onClick={downloadSampleExcel}
+          >
+            📥 Excel Template (.xlsx)
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            style={{ fontSize: 11, padding: '3px 8px' }}
+            onClick={downloadSampleWord}
+          >
+            📥 Word / Text Guide (.txt)
+          </button>
+        </div>
+      </div>
+
+      {/* Tab 1: Upload File */}
+      {tab === 'upload' && (
+        <div className="stack" style={{ gap: 12, marginBottom: 16 }}>
+          <div
+            style={{
+              border: '2px dashed var(--line-2, #cbd5e1)',
+              borderRadius: 10,
+              padding: '24px 16px',
+              textAlign: 'center',
+              background: '#f8fafc',
+              cursor: 'pointer',
+              transition: 'border 0.2s',
+            }}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".docx,.xlsx,.xls,.csv,.txt"
+              style={{ display: 'none' }}
+              onChange={handleFileSelect}
+            />
+            <Icon name="upload" size={32} style={{ color: 'var(--teal-ink, #0f766e)', marginBottom: 8 }} />
+            <div style={{ fontWeight: 600, fontSize: 14 }}>
+              {file ? file.name : 'Click to select Word (.docx), Excel (.xlsx), CSV, or Text file'}
+            </div>
+            <p className="tiny muted" style={{ marginTop: 4 }}>
+              Supports Microsoft Word (.docx), Excel spreadsheets (.xlsx, .csv), and text. Question formats are sorted automatically.
+            </p>
+            {file && (
+              <span className="badge badge-teal" style={{ marginTop: 6 }}>
+                Selected: {file.name} ({(file.size / 1024).toFixed(1)} KB)
+              </span>
+            )}
+          </div>
+
+          {fileLoading && (
+            <div className="notice notice-info small">
+              Analyzing file & detecting question formats…
+            </div>
+          )}
+
+          {fileError && (
+            <div className="notice notice-error small">
+              {fileError}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tab 2: Paste */}
+      {tab === 'paste' && (
+        <div className="stack" style={{ gap: 10, marginBottom: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span className="small muted">
+              Paste questions below. Use indicators like <span className="mono">[MCQ]</span>, <span className="mono">[True/False]</span>, <span className="mono">[Short Answer]</span>, <span className="mono">[Calculation]</span>, or <span className="mono">[Essay]</span>.
+            </span>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              style={{ fontSize: 11 }}
+              onClick={() => setText(SAMPLE_PASTE_TEXT)}
+            >
+              ✨ Insert Sample Questions
+            </button>
+          </div>
+
+          <textarea
+            className="textarea mono"
+            style={{ minHeight: 200, fontSize: 12, lineHeight: 1.5 }}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={`[MCQ]\n1. Which inventory cost rises when order quantity increases?\nA) Ordering cost\nB) Holding cost *\nC) Stockout cost\nD) Purchase price\n[Marks: 1]\n\n[True/False]\n2. Cross-docking eliminates inventory storage.\nAnswer: True\n[Marks: 1]\n\n[Short Answer]\n3. What does the acronym EOQ stand for?\nAnswer: Economic Order Quantity\n[Marks: 2]\n\n[Calculation]\n4. Calculate EOQ: Demand = 10000, Order Cost = 50, Holding Cost = 2.\nAnswer: 707.1\n[Marks: 3]\n\n[Essay]\n5. Critically analyze supply chain visibility and the bullwhip effect.\n[Marks: 5]`}
+          />
+        </div>
+      )}
+
+      {/* Global Fallback Settings */}
+      <div className="row-wrap" style={{ gap: 12, padding: '10px 12px', background: 'var(--panel)', borderRadius: 8, marginBottom: 16 }}>
+        <label className="row small" style={{ gap: 6 }}>
+          <span>Fallback Marks each:</span>
+          <input
+            className="input"
+            type="number"
+            min="0"
+            step="0.5"
+            style={{ width: 70, minHeight: 32 }}
+            value={marks}
+            onChange={(e) => setMarks(e.target.value)}
+          />
+        </label>
+        <label className="row small" style={{ gap: 6 }}>
+          <span>Fallback Topic:</span>
+          <input
+            className="input"
+            style={{ width: 140, minHeight: 32 }}
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            placeholder="optional"
+          />
+        </label>
+      </div>
+
+      {/* Live Breakdown and Preview */}
+      {parsed.length > 0 && (
+        <div className="stack" style={{ gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <span className="small">
+              <strong>{validQuestions.length} question{validQuestions.length === 1 ? '' : 's'} detected</strong> ({totalMarks} total marks):
+            </span>
+            <div className="row-wrap" style={{ gap: 4 }}>
+              {counts.mcq > 0 && <span className="badge badge-teal">{counts.mcq} MCQ</span>}
+              {counts.truefalse > 0 && <span className="badge badge-purple">{counts.truefalse} True/False</span>}
+              {counts.short > 0 && <span className="badge badge-green">{counts.short} Short Answer</span>}
+              {counts.numeric > 0 && <span className="badge badge-amber">{counts.numeric} Calculation</span>}
+              {counts.essay > 0 && <span className="badge badge-indigo">{counts.essay} Written Essay</span>}
+              {invalidQuestions.length > 0 && (
+                <span className="badge badge-red">{invalidQuestions.length} skipped (errors)</span>
+              )}
+            </div>
+          </div>
+
+          {/* Scrollable Preview List */}
+          <div
+            style={{
+              maxHeight: 220,
+              overflowY: 'auto',
+              border: '1px solid var(--line-2)',
+              borderRadius: 8,
+              padding: '6px 8px',
+              background: '#fff',
+            }}
+          >
+            {parsed.map((q, idx) => (
+              <div
+                key={idx}
+                style={{
+                  padding: '6px 8px',
+                  borderBottom: idx < parsed.length - 1 ? '1px solid #f1f5f9' : 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  fontSize: 12,
+                  opacity: q.valid ? 1 : 0.6,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
+                  <span className={kindBadgeClass(q.kind)} style={{ fontSize: 10, padding: '2px 6px' }}>
+                    {KIND_LABELS[q.kind] || q.kind}
+                  </span>
+                  <span style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', flex: 1 }}>
+                    {q.prompt}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {q.kind === 'mcq' && (
+                    <span className="tiny muted">
+                      {q.options?.length} opts · Key: {q.answer?.correct?.toUpperCase() || '-'}
+                    </span>
+                  )}
+                  {q.kind === 'truefalse' && (
+                    <span className="tiny muted">
+                      Key: {q.answer?.correct === 'true' ? 'True' : 'False'}
+                    </span>
+                  )}
+                  {q.kind === 'numeric' && (
+                    <span className="tiny muted">
+                      Val: {q.answer?.value} {q.unit || ''}
+                    </span>
+                  )}
+                  {q.kind === 'short' && (
+                    <span className="tiny muted">
+                      Ans: {q.answer?.accepted?.[0]}
+                    </span>
+                  )}
+                  <span className="badge" style={{ fontSize: 10 }}>
+                    {q.marks} mk{Number(q.marks) === 1 ? '' : 's'}
+                  </span>
+                  {!q.valid && (
+                    <span className="badge badge-red" title={q.errors.join(', ')} style={{ fontSize: 10 }}>
+                      ⚠️ Error
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }
-
