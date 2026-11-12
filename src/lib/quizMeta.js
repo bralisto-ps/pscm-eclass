@@ -36,6 +36,7 @@ export function parseQuizMeta(quiz) {
       numeric: '',
       essay: '',
     },
+    two_phase_screens: false,
   };
 
   if (match) {
@@ -59,6 +60,7 @@ export function parseQuizMeta(quiz) {
           numeric: parsed.format_quotas?.numeric ?? '',
           essay: parsed.format_quotas?.essay ?? '',
         },
+        two_phase_screens: Boolean(parsed.two_phase_screens),
       };
     } catch {
       // ignore
@@ -78,6 +80,7 @@ export function serializeQuizMeta(cleanInstructions, meta) {
     format_times: meta.format_times || {},
     format_quotas_enabled: Boolean(meta.format_quotas_enabled),
     format_quotas: meta.format_quotas || {},
+    two_phase_screens: Boolean(meta.two_phase_screens),
   };
   return `${base}\n\n<!-- QUIZ_META:${JSON.stringify(payload)} -->`.trim();
 }

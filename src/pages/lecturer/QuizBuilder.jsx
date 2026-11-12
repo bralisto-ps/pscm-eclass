@@ -502,6 +502,7 @@ function Settings({ quiz, count, questions = [], windows, streams, classes, onSa
   const [formatTimes, setFormatTimes] = useState(initialMeta.format_times);
   const [quotasOn, setQuotasOn] = useState(initialMeta.format_quotas_enabled);
   const [quotas, setQuotas] = useState(initialMeta.format_quotas);
+  const [twoPhaseScreens, setTwoPhaseScreens] = useState(Boolean(initialMeta.two_phase_screens));
   const [showSqlModal, setShowSqlModal] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
 
@@ -584,6 +585,7 @@ function Settings({ quiz, count, questions = [], windows, streams, classes, onSa
         format_times: formatTimes,
         format_quotas_enabled: quotasOn,
         format_quotas: quotas,
+        two_phase_screens: twoPhaseScreens,
       }),
       opens_at: fromLocalInput(f.opens_at),
       closes_at: fromLocalInput(f.closes_at),
@@ -798,6 +800,22 @@ function Settings({ quiz, count, questions = [], windows, streams, classes, onSa
           </label>
         )}
         <label className="check"><input type="checkbox" checked={f.no_backtrack} onChange={set('no_backtrack')} /> No going back — each question locks once the student moves on</label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={twoPhaseScreens}
+            onChange={(e) => {
+              setTwoPhaseScreens(e.target.checked);
+              setDirty(true);
+            }}
+          />
+          <span>
+            <strong>Two-Phase Screen Mode (Separate Question & Response Screens)</strong>
+            <span className="tiny muted" style={{ display: 'block', marginTop: 2 }}>
+              Displays the question prompt alone on Screen 1, then switches to the response choices on Screen 2. Makes it physically impossible to photograph questions and answers in one frame. Recommended for conceptual quizzes.
+            </span>
+          </span>
+        </label>
 
         {/* ---------------- Stratified Format Quotas / Question Pool Section ---------------- */}
         <div className="card-soft stack-sm" style={{ padding: 12, border: '1px solid var(--line-2)' }}>

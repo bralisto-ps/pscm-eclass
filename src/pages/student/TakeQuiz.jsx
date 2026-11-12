@@ -326,6 +326,13 @@ function Runner({ initial }) {
   }, [currentQ, quizMeta, quiz.question_time_limit, quiz.is_practice]);
   const [qRemaining, setQRemaining] = useState(perQSeconds);
 
+  const isTwoPhase = Boolean(quizMeta?.two_phase_screens);
+  const [phase, setPhase] = useState('question'); // 'question' | 'response'
+
+  useEffect(() => {
+    setPhase('question');
+  }, [current]);
+
   const antiCaptureMode = true;
   const [blurred, setBlurred] = useState(false);
   const cameraActiveRef = useRef(false);
@@ -796,78 +803,205 @@ function Runner({ initial }) {
           <div className="between" style={{ flexWrap: 'wrap' }}>
             <span className="eyebrow">Question {current + 1} of {questions.length}</span>
             <div className="row-wrap">
+              {isTwoPhase && (
+                <span className={`badge ${phase === 'question' ? 'badge-blue' : 'badge-plum'}`} style={{ fontWeight: 700 }}>
+                  {phase === 'question' ? 'Screen 1/2: Question' : 'Screen 2/2: Response'}
+                </span>
+              )}
               <span className="badge badge-teal">{fmtNumber(q.marks)} mark{Number(q.marks) === 1 ? '' : 's'}</span>
               {Object.keys(q.vars || {}).length > 0 && <span className="badge">Figures unique to you</span>}
             </div>
           </div>
-          <div
-            className="question-text"
-            style={{
-              fontSize: antiCaptureMode ? '1.75rem' : '1.125rem',
-              lineHeight: 1.75,
-              letterSpacing: '-0.015em',
-              fontWeight: antiCaptureMode ? 500 : 400,
-              color: '#0f172a',
-              padding: antiCaptureMode ? '36px 30px' : '20px',
-              background: 'var(--surface)',
-              borderRadius: '12px',
-              border: '1px solid var(--line-2)',
-              minHeight: antiCaptureMode ? '52vh' : 'auto',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between',
-              boxShadow: antiCaptureMode ? '0 2px 10px rgba(0,0,0,0.04)' : 'none',
-              transition: 'all 0.2s ease',
-            }}
-          >
-            <div style={{ wordBreak: 'break-word' }}>{fillVars(q.prompt, q.vars)}</div>
-            {antiCaptureMode && (
+          {/* When Two-Phase Screen Mode is active, separate Question and Response screens */}
+          {isTwoPhase ? (
+            phase === 'question' ? (
+              <>
+                <div
+                  className="question-text"
+                  style={{
+                    fontSize: '1.75rem',
+                    lineHeight: 1.75,
+                    letterSpacing: '-0.015em',
+                    fontWeight: 500,
+                    color: '#0f172a',
+                    padding: '36px 30px',
+                    background: 'var(--surface)',
+                    borderRadius: '12px',
+                    border: '1px solid var(--line-2)',
+                    minHeight: '44vh',
+                    boxShadow: '0 2px 10px rgba(0,0,0,0.04)',
+                  }}
+                >
+                  <div style={{ wordBreak: 'break-word' }}>{fillVars(q.prompt, q.vars)}</div>
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 24,
+                    padding: '24px 20px',
+                    borderRadius: 12,
+                    background: 'var(--teal-50, #f0fdfa)',
+                    border: '1.5px solid var(--teal, #0d9488)',
+                    textAlign: 'center',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 12,
+                  }}
+                >
+                  <div style={{ fontSize: 13, color: 'var(--teal-900, #134e4a)', fontWeight: 600 }}>
+                    🔒 Anti-Camera Security Mode: Answer options are on Screen 2
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    style={{ minHeight: 46, padding: '0 28px', fontSize: 15, fontWeight: 700 }}
+                    onClick={() => {
+                      setPhase('response');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                  >
+                    Proceed to Answer Options →
+                  </button>
+                  <span className="tiny muted">
+                    Proceeding will display your response choices and hide the question prompt to prevent single-frame capture.
+                  </span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div
+                  style={{
+                    padding: '16px 20px',
+                    borderRadius: 10,
+                    background: '#f8fafc',
+                    border: '1px solid var(--line-2)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: 8,
+                    marginBottom: 16,
+                  }}
+                >
+                  <div>
+                    <span className="eyebrow" style={{ color: 'var(--teal-dark)' }}>
+                      Response Screen · Question {current + 1}
+                    </span>
+                    <div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 2 }}>
+                      Select or enter your response below.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost"
+                    style={{ fontSize: 12 }}
+                    onClick={() => {
+                      setPhase('question');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    title="View the question prompt again"
+                  >
+                    ← View Question Prompt
+                  </button>
+                </div>
+
+                <div
+                  className="answer-box"
+                  style={{
+                    padding: '24px 22px',
+                    borderRadius: '12px',
+                    border: '1.5px solid var(--line-2)',
+                    background: '#fff',
+                  }}
+                >
+                  <div style={{ marginBottom: 14 }}>
+                    <span className="eyebrow" style={{ color: 'var(--teal-dark, #0d9488)', fontWeight: 700, fontSize: 13 }}>
+                      {q.kind === 'mcq' ? 'Select One Option:' : 'Your Answer:'}
+                    </span>
+                  </div>
+                  <AnswerInput q={q} value={answers[q.id]} onChange={setAnswer} onBlur={() => saveNow(q.id)} />
+                  <span className="save-state" aria-live="polite" style={{ color: st === 'error' ? 'var(--red-ink)' : 'var(--muted)' }}>
+                    {st === 'saving' && 'Saving…'}
+                    {st === 'pending' && 'Editing…'}
+                    {st === 'saved' && <span style={{ color: 'var(--teal-dark)' }}>✓ Saved</span>}
+                    {st === 'error' && 'Not saved yet — retrying'}
+                  </span>
+                </div>
+              </>
+            )
+          ) : (
+            <>
               <div
+                className="question-text"
                 style={{
-                  marginTop: 40,
-                  paddingTop: 16,
-                  borderTop: '1px dashed var(--line-2)',
+                  fontSize: antiCaptureMode ? '1.75rem' : '1.125rem',
+                  lineHeight: 1.75,
+                  letterSpacing: '-0.015em',
+                  fontWeight: antiCaptureMode ? 500 : 400,
+                  color: '#0f172a',
+                  padding: antiCaptureMode ? '36px 30px' : '20px',
+                  background: 'var(--surface)',
+                  borderRadius: '12px',
+                  border: '1px solid var(--line-2)',
+                  minHeight: antiCaptureMode ? '52vh' : 'auto',
                   display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 8,
-                  fontSize: '0.92rem',
-                  color: 'var(--teal-dark, #0d9488)',
-                  fontWeight: 600,
+                  flexDirection: 'column',
+                  justifyContent: 'space-between',
+                  boxShadow: antiCaptureMode ? '0 2px 10px rgba(0,0,0,0.04)' : 'none',
+                  transition: 'all 0.2s ease',
                 }}
               >
-                <Icon name="chevronDown" size={18} />
-                <span>Scroll down to view answer options ↓</span>
+                <div style={{ wordBreak: 'break-word' }}>{fillVars(q.prompt, q.vars)}</div>
+                {antiCaptureMode && (
+                  <div
+                    style={{
+                      marginTop: 40,
+                      paddingTop: 16,
+                      borderTop: '1px dashed var(--line-2)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                      fontSize: '0.92rem',
+                      color: 'var(--teal-dark, #0d9488)',
+                      fontWeight: 600,
+                    }}
+                  >
+                    <Icon name="chevronDown" size={18} />
+                    <span>Scroll down to view answer options ↓</span>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-          <div
-            className="answer-box"
-            style={{
-              marginTop: antiCaptureMode ? '56px' : '18px',
-              padding: '24px 22px',
-              scrollMarginTop: '80px',
-              border: '1.5px solid var(--line-2)',
-            }}
-          >
-            <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span className="eyebrow" style={{ color: 'var(--teal-dark, #0d9488)', fontWeight: 700, fontSize: 13 }}>
-                {q.kind === 'mcq' ? 'Select One Option:' : 'Your Answer:'}
-              </span>
-              {antiCaptureMode && (
-                <span className="tiny muted">
-                  Answer choices isolated below fold
+              <div
+                className="answer-box"
+                style={{
+                  marginTop: antiCaptureMode ? '56px' : '18px',
+                  padding: '24px 22px',
+                  scrollMarginTop: '80px',
+                  border: '1.5px solid var(--line-2)',
+                }}
+              >
+                <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span className="eyebrow" style={{ color: 'var(--teal-dark, #0d9488)', fontWeight: 700, fontSize: 13 }}>
+                    {q.kind === 'mcq' ? 'Select One Option:' : 'Your Answer:'}
+                  </span>
+                  {antiCaptureMode && (
+                    <span className="tiny muted">
+                      Answer choices isolated below fold
+                    </span>
+                  )}
+                </div>
+                <AnswerInput q={q} value={answers[q.id]} onChange={setAnswer} onBlur={() => saveNow(q.id)} />
+                <span className="save-state" aria-live="polite" style={{ color: st === 'error' ? 'var(--red-ink)' : 'var(--muted)' }}>
+                  {st === 'saving' && 'Saving…'}
+                  {st === 'pending' && 'Editing…'}
+                  {st === 'saved' && <span style={{ color: 'var(--teal-dark)' }}>✓ Saved</span>}
+                  {st === 'error' && 'Not saved yet — retrying'}
                 </span>
-              )}
-            </div>
-            <AnswerInput q={q} value={answers[q.id]} onChange={setAnswer} onBlur={() => saveNow(q.id)} />
-            <span className="save-state" aria-live="polite" style={{ color: st === 'error' ? 'var(--red-ink)' : 'var(--muted)' }}>
-              {st === 'saving' && 'Saving…'}
-              {st === 'pending' && 'Editing…'}
-              {st === 'saved' && <span style={{ color: 'var(--teal-dark)' }}>✓ Saved</span>}
-              {st === 'error' && 'Not saved yet — retrying'}
-            </span>
-          </div>
+              </div>
+            </>
+          )}
 
           <div className="spacer" />
           <div className="between" style={{ borderTop: '1px solid var(--line-2)', paddingTop: 18, flexWrap: 'wrap' }}>
