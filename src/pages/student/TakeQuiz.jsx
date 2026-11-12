@@ -31,14 +31,9 @@ function writeFlags(id, set) {
 
 function AntiCameraShield({ text, blurred, onResume }) {
   const safe = String(text || 'CONFIDENTIAL EXAM · E-CLASS PSCM').replace(/[<>&'"]/g, '');
+  // Elegant, subtle 5% opacity watermark: protects against photography without distracting students
   const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='440' height='260'>
-    <text x='30' y='120' transform='rotate(-20 220 130)' fill='rgba(15,23,42,0.36)' font-family='Arial, sans-serif' font-size='22' font-weight='800' letter-spacing='0.5px'>${safe}</text>
-    <text x='50' y='210' transform='rotate(-20 220 130)' fill='rgba(180,83,9,0.32)' font-family='Arial, sans-serif' font-size='14' font-weight='700'>PSCM SECURE EXAM · DO NOT PHOTOGRAPH</text>
-  </svg>`;
-  const meshSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'>
-    <circle cx='2' cy='2' r='1.2' fill='rgba(0,0,0,0.11)'/>
-    <circle cx='6' cy='6' r='1.2' fill='rgba(0,0,0,0.065)'/>
-    <line x1='0' y1='4' x2='8' y2='4' stroke='rgba(0,0,0,0.035)' stroke-width='0.5'/>
+    <text x='30' y='130' transform='rotate(-20 220 130)' fill='rgba(15,23,42,0.05)' font-family='Arial, sans-serif' font-size='18' font-weight='600' letter-spacing='0.5px'>${safe}</text>
   </svg>`;
   return (
     <>
@@ -46,21 +41,6 @@ function AntiCameraShield({ text, blurred, onResume }) {
         position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 30,
         backgroundImage: `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}")`,
       }} />
-      <div aria-hidden="true" style={{
-        position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 29,
-        backgroundImage: `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(meshSvg)}")`,
-      }} />
-      <div className="anti-camera-scanline" aria-hidden="true" />
-      <div aria-hidden="true" style={{
-        position: 'fixed', bottom: 12, right: 16, zIndex: 31, pointerEvents: 'none',
-        background: 'rgba(15, 23, 42, 0.85)', color: '#fff', padding: '6px 12px',
-        borderRadius: 8, fontSize: 11, fontWeight: 600, letterSpacing: '0.5px',
-        display: 'flex', alignItems: 'center', gap: 6, boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-      }}>
-        <span>🔒 ANTI-CHEAT ACTIVE</span>
-        <span style={{ opacity: 0.7 }}>·</span>
-        <span style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{safe}</span>
-      </div>
       {blurred && (
         <div onClick={onResume} style={{
           position: 'fixed', inset: 0, zIndex: 9999,
@@ -698,15 +678,7 @@ function Runner({ initial }) {
             >
               <Icon name="shield" size={13} /> Anti-Capture (Enforced)
             </span>
-            <button
-              type="button"
-              className="chip"
-              onClick={() => setBlurred(true)}
-              title="Click to test the screen blur shield that activates when leaving this window"
-              style={{ fontSize: 11, padding: "3px 8px" }}
-            >
-              👁️ Test Blur
-            </button>
+
             <span className="small muted hide-sm">{answeredCount} of {questions.length} answered</span>
             <span className={`timer ${low ? 'low' : ''}`} role="timer" aria-label="Time left">
               <Icon name="clock" size={16} /> {clock(remaining)}
@@ -758,8 +730,8 @@ function Runner({ initial }) {
                     }}
                   >
                     {qRemaining <= 5
-                      ? '⚠️ Time expiring for this question: '
-                      : `${FORMAT_LABELS[q?.kind] || 'Question'} Timer: `}
+                      ? '⚠️ Time expiring: '
+                      : 'Question Timer: '}
                     {qRemaining}s remaining
                   </strong>
                   <span className="tiny muted" style={{ display: 'block' }}>
@@ -791,7 +763,7 @@ function Runner({ initial }) {
           <div className="between" style={{ flexWrap: 'wrap' }}>
             <span className="eyebrow">Question {current + 1} of {questions.length}</span>
             <div className="row-wrap">
-              <span className="badge badge-teal">{kindLabel(q.kind)} · {fmtNumber(q.marks)} mark{Number(q.marks) === 1 ? '' : 's'}</span>
+              <span className="badge badge-teal">{fmtNumber(q.marks)} mark{Number(q.marks) === 1 ? '' : 's'}</span>
               {Object.keys(q.vars || {}).length > 0 && <span className="badge">Figures unique to you</span>}
             </div>
           </div>

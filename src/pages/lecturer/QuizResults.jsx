@@ -116,7 +116,43 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
   const [retake, setRetake] = useState(null);
   const [showLog, setShowLog] = useState(null);
   const [viewPhoto, setViewPhoto] = useState(null);
+  const [purgingPhotos, setPurgingPhotos] = useState(false);
   const [act, busy] = useAction();
+
+  async function deleteSinglePhoto(item) {
+    if (!item?.student) return;
+    const attemptId = item.student.attempt_id;
+    const studentId = item.student.student_id;
+    const ok = await act(async () => {
+      let query = supabase.from('course_messages').delete().eq('course_id', quiz.course_id);
+      if (attemptId) {
+        query = query.eq('subject', `__PROCTOR_PHOTO__:${attemptId}`);
+      } else if (studentId) {
+        query = query.eq('student_id', studentId).ilike('subject', '__PROCTOR_PHOTO__:%');
+      }
+      await run(query);
+    }, 'Verification photo deleted.');
+    if (ok !== undefined) {
+      setViewPhoto(null);
+      reload();
+    }
+  }
+
+  async function purgeAllPhotos() {
+    const ok = await act(async () => {
+      await run(
+        supabase
+          .from('course_messages')
+          .delete()
+          .eq('course_id', quiz.course_id)
+          .ilike('subject', '__PROCTOR_PHOTO__:%')
+      );
+    }, 'All verification photos purged permanently.');
+    if (ok !== undefined) {
+      setPurgingPhotos(false);
+      reload();
+    }
+  }
 
   const rows = useMemo(() => allRows.filter((r) => matchesGroup(r, group)), [allRows, group]);
   const isDone = (r) => r.status === 'marked' || r.status === 'needs_marking';
@@ -213,7 +249,20 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
               ))}
             </div>
           </div>
-          <button type="button" className="btn btn-sm" onClick={exportXlsx}><Icon name="download" size={16} /> Export to Excel</button>
+          <div className="row-wrap" style={{ gap: 8 }}>
+            {photos?.size > 0 && !ta && (
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                style={{ color: 'var(--red-ink)' }}
+                onClick={() => setPurgingPhotos(true)}
+                title="Permanently remove candidate snapshot photos to save storage"
+              >
+                <Icon name="trash" size={14} /> Clear Photos ({photos.size})
+              </button>
+            )}
+            <button type="button" className="btn btn-sm" onClick={exportXlsx}><Icon name="download" size={16} /> Export to Excel</button>
+          </div>
         </div>
         {rows.length === 0 ? <Empty icon="users" title="No students in this group" /> : (
           <div className="table-wrap">
@@ -298,6 +347,17 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
           <pre className="mono small" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{exitText(showLog)}</pre>
         </Modal>
       )}
+      {purgingPhotos && (
+        <Confirm
+          title="Delete all verification photos for this quiz?"
+          danger
+          confirmLabel="Permanently delete all photos"
+          busy={busy}
+          message={`This will permanently delete all ${photos.size} student webcam verification snapshots stored for this quiz to free up storage and protect student privacy.`}
+          onClose={() => setPurgingPhotos(false)}
+          onConfirm={purgeAllPhotos}
+        />
+      )}
       {viewPhoto && (
         <Modal title={`Verification Photo · ${viewPhoto.student.full_name}`} onClose={() => setViewPhoto(null)}>
           <div className="stack" style={{ textAlign: 'center', alignItems: 'center', gap: 14 }}>
@@ -315,9 +375,20 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
                 Captured mid-exam from the student camera during the live test session.
               </span>
             </div>
-            <button type="button" className="btn btn-primary" onClick={() => setViewPhoto(null)}>
-              Close
-            </button>
+            <div className="row-wrap" style={{ gap: 10, justifyContent: 'center', marginTop: 6 }}>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                style={{ color: 'var(--red-ink)', borderColor: 'var(--red-ink)' }}
+                onClick={() => deleteSinglePhoto(viewPhoto)}
+                disabled={busy}
+              >
+                <Icon name="trash" size={14} /> Delete this photo
+              </button>
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => setViewPhoto(null)}>
+                Close
+              </button>
+            </div>
           </div>
         </Modal>
       )}
