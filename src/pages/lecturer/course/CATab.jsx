@@ -6,6 +6,8 @@ import { parseCourseMeta, serializeCourseMeta, computeStudentCA } from '../../..
 import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../../components/ui.jsx';
 import { ALL_GROUPS, GroupFilters, groupLabel, matchesGroup } from '../../../components/Groups.jsx';
+import { SortSelect, SortTh } from '../../../components/SortBar.jsx';
+import { byNameIndex, compareNumber, compareText } from '../../../lib/sort.js';
 
 const KINDS = [
   { id: 'quizzes', label: 'Quizzes' },
@@ -101,6 +103,8 @@ function CAInner({ course, data, reload, onCourseChanged }) {
   const [examModal, setExamModal] = useState(false);
   const [group, setGroup] = useState(ALL_GROUPS);
   const [q, setQ] = useState('');
+  const [gradeFilter, setGradeFilter] = useState('all');
+  const [sort, setSort] = useState('name_asc');
 
   // Course metadata (CA 1 & CA 2 split and final exam marks)
   const meta = useMemo(() => parseCourseMeta(course), [course]);
@@ -114,8 +118,63 @@ function CAInner({ course, data, reload, onCourseChanged }) {
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
-    return data.rows.filter((r) => matchesGroup(r, group) && (!term || r.full_name.toLowerCase().includes(term) || r.index_no.toLowerCase().includes(term)));
-  }, [data.rows, group, q]);
+    const enriched = data.rows.map((r) => {
+      const { ca1, ca2, totalCa } = computeStudentCA(r, saved, caConfig, course.ca_total);
+      const ex = examConfig.scores?.[r.index_no] !== undefined && examConfig.scores[r.index_no] !== ''
+        ? Number(examConfig.scores[r.index_no])
+        : null;
+      const total100 = ex !== null ? Number((totalCa + ex).toFixed(dec)) : null;
+      const grade = total100 !== null ? getGradeLetter(total100) : (totalCa >= 20 ? 'Pending' : 'At Risk');
+      return { ...r, _ca1: ca1, _ca2: ca2, _totalCa: totalCa, _exam: ex, _total100: total100, _grade: grade };
+    });
+
+    const filtered = enriched.filter((r) => {
+      if (!matchesGroup(r, group)) return false;
+      if (gradeFilter === 'A' && r._grade !== 'A') return false;
+      if (gradeFilter === 'B' && r._grade !== 'B+' && r._grade !== 'B') return false;
+      if (gradeFilter === 'C' && r._grade !== 'C+' && r._grade !== 'C') return false;
+      if (gradeFilter === 'D' && r._grade !== 'D+' && r._grade !== 'D') return false;
+      if (gradeFilter === 'E' && r._grade !== 'E' && r._grade !== 'At Risk') return false;
+      if (gradeFilter === 'ca_pass' && r._totalCa < 20) return false;
+      if (gradeFilter === 'ca_risk' && r._totalCa >= 20) return false;
+      if (term) {
+        const hay = [r.full_name, r.index_no, r.programme, r.stream].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(term)) return false;
+      }
+      return true;
+    });
+
+    return [...filtered].sort((a, b) => {
+      switch (sort) {
+        case 'total100_desc': return compareNumber(a._total100, b._total100, 'desc') || compareNumber(a._totalCa, b._totalCa, 'desc') || byNameIndex(a, b);
+        case 'total100_asc': return compareNumber(a._total100, b._total100, 'asc') || compareNumber(a._totalCa, b._totalCa, 'asc') || byNameIndex(a, b);
+        case 'ca_desc': return compareNumber(a._totalCa, b._totalCa, 'desc') || byNameIndex(a, b);
+        case 'ca_asc': return compareNumber(a._totalCa, b._totalCa, 'asc') || byNameIndex(a, b);
+        case 'ca1_desc': return compareNumber(a._ca1, b._ca1, 'desc') || byNameIndex(a, b);
+        case 'ca1_asc': return compareNumber(a._ca1, b._ca1, 'asc') || byNameIndex(a, b);
+        case 'ca2_desc': return compareNumber(a._ca2, b._ca2, 'desc') || byNameIndex(a, b);
+        case 'ca2_asc': return compareNumber(a._ca2, b._ca2, 'asc') || byNameIndex(a, b);
+        case 'exam_desc': return compareNumber(a._exam, b._exam, 'desc') || byNameIndex(a, b);
+        case 'exam_asc': return compareNumber(a._exam, b._exam, 'asc') || byNameIndex(a, b);
+        case 'name_desc': return compareText(a.full_name, b.full_name, 'desc') || compareText(a.index_no, b.index_no, 'asc');
+        case 'index_asc': return compareText(a.index_no, b.index_no, 'asc') || byNameIndex(a, b);
+        case 'index_desc': return compareText(a.index_no, b.index_no, 'desc') || byNameIndex(a, b);
+        case 'prog_asc': return compareText(a.programme, b.programme, 'asc') || compareText(a.stream, b.stream, 'asc') || byNameIndex(a, b);
+        case 'prog_desc': return compareText(a.programme, b.programme, 'desc') || compareText(a.stream, b.stream, 'asc') || byNameIndex(a, b);
+        case 'stream_asc': return compareText(a.stream, b.stream, 'asc') || compareText(a.programme, b.programme, 'asc') || byNameIndex(a, b);
+        case 'name_asc':
+        default: return byNameIndex(a, b);
+      }
+    });
+  }, [data.rows, saved, caConfig, course.ca_total, examConfig, dec, group, gradeFilter, q, sort]);
+
+  const hasFilters = Boolean(q.trim() || gradeFilter !== 'all' || group.programme !== '*' || group.stream !== '*' || sort !== 'name_asc');
+  function clearFilters() {
+    setQ('');
+    setGradeFilter('all');
+    setGroup(ALL_GROUPS);
+    setSort('name_asc');
+  }
 
   const avg = rows.length ? rows.reduce((s, r) => s + Number(r.total), 0) / rows.length : null;
   const change = (key, patch) => { setComps(comps.map((c) => (c.key === key ? { ...c, ...patch } : c))); setDirty(true); };
@@ -493,15 +552,54 @@ function CAInner({ course, data, reload, onCourseChanged }) {
 
       {/* Grade Table Section */}
       <section className="card-flush">
-        <div className="card-head" style={{ flexWrap: 'wrap' }}>
-          <div className="row-wrap">
+        <div className="card-head" style={{ flexWrap: 'wrap', gap: 12 }}>
+          <div className="row-wrap" style={{ flex: 1, minWidth: 260 }}>
             <h2>Dual-CA & Final Exam Gradebook</h2>
             <label className="search">
               <span className="sr-only">Search</span>
               <Icon name="search" size={16} />
-              <input className="input" style={{ width: 220, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name or index number" />
+              <input className="input" style={{ width: 220, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, index, programme, stream" />
             </label>
             <GroupFilters rows={data.rows} value={group} onChange={setGroup} />
+            <label className="row small" style={{ gap: 6 }}>
+              <span className="muted">Standing</span>
+              <select
+                aria-label="Filter by grade or CA standing"
+                className="select"
+                style={{ minHeight: 40, width: 'auto', fontSize: 13 }}
+                value={gradeFilter}
+                onChange={(e) => setGradeFilter(e.target.value)}
+              >
+                <option value="all">All grades</option>
+                <option value="A">Grade A (80–100)</option>
+                <option value="B">Grade B+ / B (70–79)</option>
+                <option value="C">Grade C+ / C (60–69)</option>
+                <option value="D">Grade D+ / D (50–59)</option>
+                <option value="E">Grade E / At Risk (&lt; 50)</option>
+                <option value="ca_pass">CA ≥ 20 / 40</option>
+                <option value="ca_risk">CA &lt; 20 / 40 (At Risk)</option>
+              </select>
+            </label>
+            <SortSelect
+              value={sort}
+              onChange={setSort}
+              options={[
+                { value: 'ca_desc', label: 'Total CA: High → Low' },
+                { value: 'ca_asc', label: 'Total CA: Low → High' },
+                { value: 'total100_desc', label: 'Final Total (/100): High → Low' },
+                { value: 'total100_asc', label: 'Final Total (/100): Low → High' },
+                { value: 'ca1_desc', label: 'CA 1: High → Low' },
+                { value: 'ca2_desc', label: 'CA 2: High → Low' },
+                { value: 'exam_desc', label: 'Exam (/60): High → Low' },
+                { value: 'exam_asc', label: 'Exam (/60): Low → High' },
+                { value: 'name_asc', label: 'Name (A → Z)' },
+                { value: 'name_desc', label: 'Name (Z → A)' },
+                { value: 'index_asc', label: 'Index no. (Ascending)' },
+                { value: 'index_desc', label: 'Index no. (Descending)' },
+                { value: 'prog_asc', label: 'Programme / Class (A → Z)' },
+                { value: 'stream_asc', label: 'Stream (A → Z)' },
+              ]}
+            />
           </div>
           <div className="row-wrap">
             {avg !== null && <span className="small muted">Class CA Avg: {fmtNumber(avg, 1)} / 40</span>}
@@ -511,31 +609,37 @@ function CAInner({ course, data, reload, onCourseChanged }) {
             </button>
           </div>
         </div>
+        {hasFilters && data.rows.length > 0 && (
+          <div className="filter-meta">
+            <span className="muted">Showing <strong>{rows.length}</strong> of {data.rows.length} student{data.rows.length === 1 ? '' : 's'}</span>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={clearFilters}>Reset filters &amp; sort</button>
+          </div>
+        )}
 
         {saved.length === 0 ? <Empty icon="chart" title="Set up the CA first">Add the parts above and save. Scores appear here straight away.</Empty> : (
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
-                  <th>Index no.</th>
-                  <th>Name</th>
-                  <th className="hide-sm">Group</th>
-                  <th className="num" style={{ color: 'var(--teal-dark)' }}>CA 1<div className="tiny" style={{ textTransform: 'none' }}>/ {caConfig.ca1_weight || 20}</div></th>
-                  <th className="num" style={{ color: 'var(--blue-ink)' }}>CA 2<div className="tiny" style={{ textTransform: 'none' }}>/ {caConfig.ca2_weight || 20}</div></th>
-                  <th className="num strong">Total CA<div className="tiny" style={{ textTransform: 'none' }}>/ 40</div></th>
-                  <th className="num">Exam<div className="tiny" style={{ textTransform: 'none' }}>/ 60</div></th>
-                  <th className="num">Total<div className="tiny" style={{ textTransform: 'none' }}>/ 100</div></th>
-                  <th>Grade</th>
+                  <SortTh label="Index no." ascKey="index_asc" descKey="index_desc" current={sort} onSort={setSort} />
+                  <SortTh label="Name" ascKey="name_asc" descKey="name_desc" current={sort} onSort={setSort} />
+                  <SortTh label="Group" ascKey="prog_asc" descKey="prog_desc" current={sort} onSort={setSort} className="hide-sm" />
+                  <SortTh label="CA 1" sub={<div className="tiny" style={{ textTransform: 'none' }}>/ {caConfig.ca1_weight || 20}</div>} ascKey="ca1_asc" descKey="ca1_desc" defaultDir="desc" current={sort} onSort={setSort} className="num" style={{ color: 'var(--teal-dark)' }} />
+                  <SortTh label="CA 2" sub={<div className="tiny" style={{ textTransform: 'none' }}>/ {caConfig.ca2_weight || 20}</div>} ascKey="ca2_asc" descKey="ca2_desc" defaultDir="desc" current={sort} onSort={setSort} className="num" style={{ color: 'var(--blue-ink)' }} />
+                  <SortTh label="Total CA" sub={<div className="tiny" style={{ textTransform: 'none' }}>/ 40</div>} ascKey="ca_asc" descKey="ca_desc" defaultDir="desc" current={sort} onSort={setSort} className="num strong" />
+                  <SortTh label="Exam" sub={<div className="tiny" style={{ textTransform: 'none' }}>/ 60</div>} ascKey="exam_asc" descKey="exam_desc" defaultDir="desc" current={sort} onSort={setSort} className="num" />
+                  <SortTh label="Total" sub={<div className="tiny" style={{ textTransform: 'none' }}>/ 100</div>} ascKey="total100_asc" descKey="total100_desc" defaultDir="desc" current={sort} onSort={setSort} className="num" />
+                  <SortTh label="Grade" ascKey="total100_asc" descKey="total100_desc" defaultDir="desc" current={sort} onSort={setSort} />
                 </tr>
               </thead>
               <tbody>
                 {rows.slice(0, 400).map((r) => {
-                  const { ca1, ca2, totalCa } = computeStudentCA(r, saved, caConfig, course.ca_total);
-                  const ex = examConfig.scores?.[r.index_no] !== undefined && examConfig.scores[r.index_no] !== ''
-                    ? Number(examConfig.scores[r.index_no])
-                    : null;
-                  const total100 = ex !== null ? Number((totalCa + ex).toFixed(dec)) : null;
-                  const grade = total100 !== null ? getGradeLetter(total100) : (totalCa >= 20 ? 'Pending' : 'At Risk');
+                  const ca1 = r._ca1;
+                  const ca2 = r._ca2;
+                  const totalCa = r._totalCa;
+                  const ex = r._exam;
+                  const total100 = r._total100;
+                  const grade = r._grade;
 
                   return (
                     <tr key={r.index_no}>

@@ -4,6 +4,8 @@ import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
 import { fmtFull, fmtNumber, pct } from '../../lib/format.js';
 import { downloadWorkbook } from '../../lib/sheets.js';
 import { ALL_GROUPS, GroupFilters, GroupSummaryTable, groupLabel, groupSummary, matchesGroup } from '../../components/Groups.jsx';
+import { SortSelect, SortTh } from '../../components/SortBar.jsx';
+import { byNameIndex, compareNumber, compareText } from '../../lib/sort.js';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import { Confirm, Empty, ErrorNote, Loading, Modal, Tabs, useAction, useLoad, useToast } from '../../components/ui.jsx';
@@ -111,8 +113,10 @@ function exitText(r) {
 
 function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
   const [filter, setFilter] = useState('all');
+  const [scoreBand, setScoreBand] = useState('all');
   const [group, setGroup] = useState(ALL_GROUPS);
   const [q, setQ] = useState('');
+  const [sort, setSort] = useState('name_asc');
   const [retake, setRetake] = useState(null);
   const [showLog, setShowLog] = useState(null);
   const [viewPhoto, setViewPhoto] = useState(null);
@@ -166,16 +170,81 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
   const maxCount = Math.max(1, ...counts);
   const summary = useMemo(() => groupSummary(allRows, isDone, (r) => pct(r.score, r.max_score)), [allRows]);
 
+  const compareRows = (a, b) => {
+    const scorePct = (r) => (r.status !== 'in_progress' && r.score !== null ? pct(r.score, r.max_score) : null);
+    const rawScore = (r) => (r.status !== 'in_progress' && r.score !== null ? Number(r.score) : null);
+    const mins = (r) => (r.minutes_used !== null ? Number(r.minutes_used) : null);
+    const statusOrder = { marked: 1, needs_marking: 2, in_progress: 3, not_started: 4, not_activated: 5 };
+    switch (sort) {
+      case 'score_desc':
+        return compareNumber(scorePct(a), scorePct(b), 'desc') || compareNumber(rawScore(a), rawScore(b), 'desc') || byNameIndex(a, b);
+      case 'score_asc':
+        return compareNumber(scorePct(a), scorePct(b), 'asc') || compareNumber(rawScore(a), rawScore(b), 'asc') || byNameIndex(a, b);
+      case 'name_desc':
+        return compareText(a.full_name, b.full_name, 'desc') || compareText(a.index_no, b.index_no, 'asc');
+      case 'index_asc':
+        return compareText(a.index_no, b.index_no, 'asc') || byNameIndex(a, b);
+      case 'index_desc':
+        return compareText(a.index_no, b.index_no, 'desc') || byNameIndex(a, b);
+      case 'prog_asc':
+        return compareText(a.programme, b.programme, 'asc') || compareText(a.stream, b.stream, 'asc') || byNameIndex(a, b);
+      case 'prog_desc':
+        return compareText(a.programme, b.programme, 'desc') || compareText(a.stream, b.stream, 'asc') || byNameIndex(a, b);
+      case 'stream_asc':
+        return compareText(a.stream, b.stream, 'asc') || compareText(a.programme, b.programme, 'asc') || byNameIndex(a, b);
+      case 'stream_desc':
+        return compareText(a.stream, b.stream, 'desc') || compareText(a.programme, b.programme, 'asc') || byNameIndex(a, b);
+      case 'time_asc':
+        return compareNumber(mins(a), mins(b), 'asc') || byNameIndex(a, b);
+      case 'time_desc':
+        return compareNumber(mins(a), mins(b), 'desc') || byNameIndex(a, b);
+      case 'exits_desc':
+        return compareNumber(a.exits, b.exits, 'desc') || compareNumber(a.devices, b.devices, 'desc') || byNameIndex(a, b);
+      case 'exits_asc':
+        return compareNumber(a.exits, b.exits, 'asc') || compareNumber(a.devices, b.devices, 'asc') || byNameIndex(a, b);
+      case 'status_asc':
+        return compareNumber(statusOrder[a.status] ?? 9, statusOrder[b.status] ?? 9, 'asc') || byNameIndex(a, b);
+      case 'status_desc':
+        return compareNumber(statusOrder[a.status] ?? 9, statusOrder[b.status] ?? 9, 'desc') || byNameIndex(a, b);
+      case 'name_asc':
+      default:
+        return byNameIndex(a, b);
+    }
+  };
+
   const shown = useMemo(() => {
     const term = q.trim().toLowerCase();
-    return rows.filter((r) => {
+    const filtered = rows.filter((r) => {
+      if (filter === 'marked' && r.status !== 'marked') return false;
       if (filter === 'marking' && r.status !== 'needs_marking') return false;
       if (filter === 'missing' && isDone(r)) return false;
       if (filter === 'fast' && !(r.minutes_used !== null && Number(r.minutes_used) < fastLimit && r.submitted_at)) return false;
       if (filter === 'flagged' && !(r.exits > 0 || r.devices > 1)) return false;
-      return !term || r.full_name.toLowerCase().includes(term) || r.index_no.toLowerCase().includes(term);
+      if (scoreBand !== 'all') {
+        const p = r.status !== 'in_progress' && r.score !== null ? pct(r.score, r.max_score) : null;
+        if (p === null) return false;
+        if (scoreBand === '80' && p < 80) return false;
+        if (scoreBand === '60' && (p < 60 || p >= 80)) return false;
+        if (scoreBand === '40' && (p < 40 || p >= 60)) return false;
+        if (scoreBand === 'low' && p >= 40) return false;
+      }
+      if (term) {
+        const hay = [r.full_name, r.index_no, r.programme, r.stream].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(term)) return false;
+      }
+      return true;
     });
-  }, [rows, filter, q, fastLimit]);
+    return [...filtered].sort(compareRows);
+  }, [rows, filter, scoreBand, q, fastLimit, sort]);
+
+  const hasFilters = Boolean(q.trim() || filter !== 'all' || scoreBand !== 'all' || group.programme !== '*' || group.stream !== '*' || sort !== 'name_asc');
+  function clearFilters() {
+    setQ('');
+    setFilter('all');
+    setScoreBand('all');
+    setGroup(ALL_GROUPS);
+    setSort('name_asc');
+  }
 
   function exportXlsx() {
     const header = ['Index number', 'Name', 'Programme', 'Stream', 'Status', 'Verification Photo', 'Auto-marked', 'Written', 'Total', 'Out of', 'Percent',
@@ -190,14 +259,15 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
       r.submitted_at ? fmtFull(r.submitted_at) : '', r.attempts_used, r.special ? 'Yes' : '',
     ];
     const widths = [16, 30, 18, 12, 16, 20, 12, 10, 10, 10, 10, 12, 14, 12, 22, 10, 14];
+    const sortedAll = [...allRows].sort(compareRows);
     const sheets = [
-      { name: 'All students', rows: [header, ...allRows.map(line)], widths },
+      { name: 'All students', rows: [header, ...sortedAll.map(line)], widths },
       { name: 'Summary', rows: [['Programme', 'Stream', 'Students', 'Submitted', 'Average %'],
         ...summary.map((g) => [groupLabel(g.programme), groupLabel(g.stream), g.students, g.submitted, g.average ?? ''])], widths: [22, 14, 10, 10, 10] },
     ];
     const streams = [...new Set(allRows.map((r) => r.stream || ''))];
     if (streams.length > 1) {
-      streams.sort().forEach((st) => sheets.push({ name: groupLabel(st), rows: [header, ...allRows.filter((r) => (r.stream || '') === st).map(line)], widths }));
+      streams.sort().forEach((st) => sheets.push({ name: groupLabel(st), rows: [header, ...sortedAll.filter((r) => (r.stream || '') === st).map(line)], widths }));
     }
     downloadWorkbook(`${quiz.courses.code} - ${quiz.title}.xlsx`, sheets);
   }
@@ -236,18 +306,52 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
       <GroupSummaryTable summary={summary} />
 
       <section className="card-flush">
-        <div className="card-head" style={{ flexWrap: 'wrap' }}>
-          <div className="row-wrap">
+        <div className="card-head" style={{ flexWrap: 'wrap', gap: 12 }}>
+          <div className="row-wrap" style={{ flex: 1, minWidth: 260 }}>
             <label className="search">
               <span className="sr-only">Search</span>
               <Icon name="search" size={16} />
-              <input className="input" style={{ width: 230, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name or index number" />
+              <input className="input" style={{ width: 230, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, index, programme, stream" />
             </label>
             <div className="chips" role="group" aria-label="Filter">
-              {[['all', `All · ${rows.length}`], ['marking', 'Needs marking'], ['missing', 'Not submitted'], ['flagged', `Flagged · ${suspicious.length}`], ['fast', `Under ${fmtNumber(fastLimit, 1)} min · ${fast.length}`]].map(([id, label]) => (
+              {[['all', `All · ${rows.length}`], ['marked', `Marked · ${rows.filter((r) => r.status === 'marked').length}`], ['marking', 'Needs marking'], ['missing', 'Not submitted'], ['flagged', `Flagged · ${suspicious.length}`], ['fast', `Under ${fmtNumber(fastLimit, 1)} min · ${fast.length}`]].map(([id, label]) => (
                 <button key={id} type="button" className="chip" aria-pressed={filter === id} onClick={() => setFilter(id)}>{label}</button>
               ))}
             </div>
+            <label className="row small" style={{ gap: 6 }}>
+              <span className="muted">Score</span>
+              <select
+                aria-label="Filter by score band"
+                className="select"
+                style={{ minHeight: 40, width: 'auto', fontSize: 13 }}
+                value={scoreBand}
+                onChange={(e) => setScoreBand(e.target.value)}
+              >
+                <option value="all">All scores</option>
+                <option value="80">80% – 100%</option>
+                <option value="60">60% – 79%</option>
+                <option value="40">40% – 59%</option>
+                <option value="low">Under 40%</option>
+              </select>
+            </label>
+            <SortSelect
+              value={sort}
+              onChange={setSort}
+              options={[
+                { value: 'score_desc', label: 'Score: High → Low' },
+                { value: 'score_asc', label: 'Score: Low → High' },
+                { value: 'name_asc', label: 'Name (A → Z)' },
+                { value: 'name_desc', label: 'Name (Z → A)' },
+                { value: 'index_asc', label: 'Index no. (Ascending)' },
+                { value: 'index_desc', label: 'Index no. (Descending)' },
+                { value: 'prog_asc', label: 'Programme / Class (A → Z)' },
+                { value: 'stream_asc', label: 'Stream (A → Z)' },
+                { value: 'time_asc', label: 'Time used (Fastest first)' },
+                { value: 'time_desc', label: 'Time used (Slowest first)' },
+                { value: 'exits_desc', label: 'Left quiz / Exits (Most first)' },
+                { value: 'status_asc', label: 'Status' },
+              ]}
+            />
           </div>
           <div className="row-wrap" style={{ gap: 8 }}>
             {photos?.size > 0 && !ta && (
@@ -264,11 +368,27 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
             <button type="button" className="btn btn-sm" onClick={exportXlsx}><Icon name="download" size={16} /> Export to Excel</button>
           </div>
         </div>
+        {hasFilters && allRows.length > 0 && (
+          <div className="filter-meta">
+            <span className="muted">Showing <strong>{shown.length}</strong> of {allRows.length} student{allRows.length === 1 ? '' : 's'}</span>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={clearFilters}>Reset filters &amp; sort</button>
+          </div>
+        )}
         {rows.length === 0 ? <Empty icon="users" title="No students in this group" /> : (
           <div className="table-wrap">
             <table className="table">
               <thead>
-                <tr><th>Index no.</th><th>Student</th><th className="hide-sm">Group</th><th className="num">Total</th><th className="num">%</th><th className="num hide-sm">Time</th><th>Left quiz</th><th>Status</th><th /></tr>
+                <tr>
+                  <SortTh label="Index no." ascKey="index_asc" descKey="index_desc" current={sort} onSort={setSort} />
+                  <SortTh label="Student" ascKey="name_asc" descKey="name_desc" current={sort} onSort={setSort} />
+                  <SortTh label="Group" ascKey="prog_asc" descKey="prog_desc" current={sort} onSort={setSort} className="hide-sm" />
+                  <SortTh label="Total" ascKey="score_asc" descKey="score_desc" defaultDir="desc" current={sort} onSort={setSort} className="num" />
+                  <SortTh label="%" ascKey="score_asc" descKey="score_desc" defaultDir="desc" current={sort} onSort={setSort} className="num" />
+                  <SortTh label="Time" ascKey="time_asc" descKey="time_desc" current={sort} onSort={setSort} className="num hide-sm" />
+                  <SortTh label="Left quiz" ascKey="exits_asc" descKey="exits_desc" defaultDir="desc" current={sort} onSort={setSort} />
+                  <SortTh label="Status" ascKey="status_asc" descKey="status_desc" current={sort} onSort={setSort} />
+                  <th />
+                </tr>
               </thead>
               <tbody>
                 {shown.slice(0, 400).map((r) => {

@@ -180,7 +180,7 @@ function StaffPanel({ course }) {
         <button type="button" className="btn btn-sm" onClick={() => setAdding(true)}><Icon name="plus" size={16} /> Add a TA</button>
       </div>
       <p className="small muted">
-        A TA can take attendance, mark written answers and assignments, see the class list and gradebooks, answer Q&amp;A,
+        A TA can take attendance, add students to the class list, mark written answers and assignments, see the class list and gradebooks, answer Q&amp;A,
         post announcements and reset student passwords. A TA cannot see or change questions, release results or marks,
         change the CA, delete anything or change course settings. Every mark records who gave it.
       </p>

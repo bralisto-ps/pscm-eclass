@@ -5,6 +5,8 @@ import { downloadExcel, downloadText, parseDelimited, readStudentFile, rowsToStu
 import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../../components/ui.jsx';
 import { ALL_GROUPS, GroupFilters, matchesGroup } from '../../../components/Groups.jsx';
+import { SortSelect, SortTh } from '../../../components/SortBar.jsx';
+import { byNameIndex, compareBool, compareDate, compareText } from '../../../lib/sort.js';
 
 export default function StudentsTab({ course, ta }) {
   const { data: loaded, error, loading, reload } = useLoad(async () => {
@@ -32,6 +34,8 @@ export default function StudentsTab({ course, ta }) {
   const [removing, setRemoving] = useState(null);
   const [editing, setEditing] = useState(null);
   const [group, setGroup] = useState(ALL_GROUPS);
+  const [activity, setActivity] = useState('all');
+  const [sort, setSort] = useState('name_asc');
   const [act, busy] = useAction();
   useEffect(() => {
     if (filter !== 'risk' || risk) return;
@@ -42,10 +46,53 @@ export default function StudentsTab({ course, ta }) {
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
-    return (data || []).filter((r) =>
-      (filter === 'all' || (filter === 'risk' ? risk?.has(r.index_no) : filter === 'active' ? r.activated : !r.activated)) && matchesGroup(r, group) &&
-      (!term || r.index_no.toLowerCase().includes(term) || r.full_name.toLowerCase().includes(term)));
-  }, [data, q, filter, group, risk]);
+    const now = Date.now();
+    const dayMs = 86400000;
+    const filtered = (data || []).filter((r) => {
+      if (filter === 'risk' && !risk?.has(r.index_no)) return false;
+      if (filter === 'active' && !r.activated) return false;
+      if (filter === 'inactive' && r.activated) return false;
+      if (!matchesGroup(r, group)) return false;
+      if (activity !== 'all') {
+        const last = r.last_sign_in ? new Date(r.last_sign_in).getTime() : null;
+        if (activity === '7d' && (!last || now - last > 7 * dayMs)) return false;
+        if (activity === '30d' && (!last || now - last > 30 * dayMs)) return false;
+        if (activity === 'stale14' && last && now - last <= 14 * dayMs) return false;
+        if (activity === 'never' && last) return false;
+      }
+      if (term) {
+        const hay = [r.index_no, r.full_name, r.programme, r.stream].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(term)) return false;
+      }
+      return true;
+    });
+    return [...filtered].sort((a, b) => {
+      switch (sort) {
+        case 'name_desc': return compareText(a.full_name, b.full_name, 'desc') || compareText(a.index_no, b.index_no, 'asc');
+        case 'index_asc': return compareText(a.index_no, b.index_no, 'asc') || byNameIndex(a, b);
+        case 'index_desc': return compareText(a.index_no, b.index_no, 'desc') || byNameIndex(a, b);
+        case 'prog_asc': return compareText(a.programme, b.programme, 'asc') || compareText(a.stream, b.stream, 'asc') || byNameIndex(a, b);
+        case 'prog_desc': return compareText(a.programme, b.programme, 'desc') || compareText(a.stream, b.stream, 'asc') || byNameIndex(a, b);
+        case 'stream_asc': return compareText(a.stream, b.stream, 'asc') || compareText(a.programme, b.programme, 'asc') || byNameIndex(a, b);
+        case 'stream_desc': return compareText(a.stream, b.stream, 'desc') || compareText(a.programme, b.programme, 'asc') || byNameIndex(a, b);
+        case 'active_desc': return compareBool(a.activated, b.activated, 'desc') || byNameIndex(a, b);
+        case 'active_asc': return compareBool(a.activated, b.activated, 'asc') || byNameIndex(a, b);
+        case 'signin_desc': return compareDate(a.last_sign_in, b.last_sign_in, 'desc') || byNameIndex(a, b);
+        case 'signin_asc': return compareDate(a.last_sign_in, b.last_sign_in, 'asc') || byNameIndex(a, b);
+        case 'name_asc':
+        default: return byNameIndex(a, b);
+      }
+    });
+  }, [data, q, filter, group, activity, sort, risk]);
+
+  const hasFilters = Boolean(q.trim() || filter !== 'all' || group.programme !== '*' || group.stream !== '*' || activity !== 'all' || sort !== 'name_asc');
+  function clearFilters() {
+    setQ('');
+    setFilter('all');
+    setGroup(ALL_GROUPS);
+    setActivity('all');
+    setSort('name_asc');
+  }
 
   if (loading) return <Loading />;
   if (error) return <ErrorNote error={error} onRetry={reload} />;
@@ -67,9 +114,10 @@ export default function StudentsTab({ course, ta }) {
   }
 
   function exportList() {
+    const list = rows.length ? rows : data;
     downloadExcel(`${course.code} class list.xlsx`, [
       ['Index number', 'Full name', 'Programme', 'Stream', 'Account activated', 'Last sign-in'],
-      ...data.map((r) => [r.index_no, r.full_name, r.programme, r.stream, r.activated ? 'Yes' : 'No', r.last_sign_in ? fmtFull(r.last_sign_in) : '']),
+      ...list.map((r) => [r.index_no, r.full_name, r.programme, r.stream, r.activated ? 'Yes' : 'No', r.last_sign_in ? fmtFull(r.last_sign_in) : '']),
     ], [18, 32, 20, 14, 18, 22]);
   }
 
@@ -96,28 +144,68 @@ export default function StudentsTab({ course, ta }) {
       )}
 
       <div className="card-flush">
-        <div className="card-head" style={{ flexWrap: 'wrap' }}>
-          <div className="row-wrap">
+        <div className="card-head" style={{ flexWrap: 'wrap', gap: 12 }}>
+          <div className="row-wrap" style={{ flex: 1, minWidth: 260 }}>
             <label className="search">
               <span className="sr-only">Search students</span>
               <Icon name="search" size={16} />
-              <input className="input" style={{ width: 240, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name or index number" />
+              <input className="input" style={{ width: 240, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, index, programme, stream" />
             </label>
             <div className="chips" role="group" aria-label="Filter">
-              <button type="button" className="chip" aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>All</button>
-              <button type="button" className="chip" aria-pressed={filter === 'active'} onClick={() => setFilter('active')}>Activated</button>
-              <button type="button" className="chip" aria-pressed={filter === 'inactive'} onClick={() => setFilter('inactive')}>Not activated</button>
+              <button type="button" className="chip" aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>All ({data.length})</button>
+              <button type="button" className="chip" aria-pressed={filter === 'active'} onClick={() => setFilter('active')}>Activated ({activated})</button>
+              <button type="button" className="chip" aria-pressed={filter === 'inactive'} onClick={() => setFilter('inactive')}>Not activated ({data.length - activated})</button>
               <button type="button" className="chip" aria-pressed={filter === 'risk'} onClick={() => setFilter('risk')}>At risk{risk ? ` · ${risk.size}` : ''}</button>
             </div>
             <GroupFilters rows={data} value={group} onChange={setGroup} />
+            <label className="row small" style={{ gap: 6 }}>
+              <span className="muted">Sign-in</span>
+              <select
+                aria-label="Filter by sign-in activity"
+                className="select"
+                style={{ minHeight: 40, width: 'auto', fontSize: 13 }}
+                value={activity}
+                onChange={(e) => setActivity(e.target.value)}
+              >
+                <option value="all">All</option>
+                <option value="7d">Active (last 7d)</option>
+                <option value="30d">Active (last 30d)</option>
+                <option value="stale14">Inactive 14+ days</option>
+                <option value="never">Never signed in</option>
+              </select>
+            </label>
+            <SortSelect
+              value={sort}
+              onChange={setSort}
+              options={[
+                { value: 'name_asc', label: 'Name (A → Z)' },
+                { value: 'name_desc', label: 'Name (Z → A)' },
+                { value: 'index_asc', label: 'Index no. (Ascending)' },
+                { value: 'index_desc', label: 'Index no. (Descending)' },
+                { value: 'prog_asc', label: 'Programme / Class (A → Z)' },
+                { value: 'prog_desc', label: 'Programme / Class (Z → A)' },
+                { value: 'stream_asc', label: 'Stream (A → Z)' },
+                { value: 'stream_desc', label: 'Stream (Z → A)' },
+                { value: 'active_desc', label: 'Account (Activated first)' },
+                { value: 'active_asc', label: 'Account (Not activated first)' },
+                { value: 'signin_desc', label: 'Last sign-in (Most recent)' },
+                { value: 'signin_asc', label: 'Last sign-in (Oldest / Never)' },
+              ]}
+            />
           </div>
           <div className="row-wrap">
             <button type="button" className="btn btn-sm" style={{ borderColor: "#fca5a5", color: "#991b1b", background: "#fef2f2" }} onClick={() => setOutreach(true)} title="Send academic advisory to at-risk students"><Icon name="chat" size={16} /> At-Risk Outreach</button>
-            {data.length > 0 && <button type="button" className="btn btn-sm" onClick={exportList}><Icon name="download" size={16} /> Export</button>}
-            {!ta && <button type="button" className="btn btn-sm" onClick={() => setAdding(true)}><Icon name="plus" size={16} /> Add student</button>}
-            {!ta && <button type="button" className="btn btn-sm btn-primary" onClick={() => setImporting(true)}><Icon name="upload" size={16} /> Upload class list</button>}
+            {data.length > 0 && <button type="button" className="btn btn-sm" onClick={exportList}><Icon name="download" size={16} /> {rows.length !== data.length ? `Export (${rows.length})` : 'Export'}</button>}
+            <button type="button" className="btn btn-sm" onClick={() => setAdding(true)}><Icon name="plus" size={16} /> Add student</button>
+            <button type="button" className="btn btn-sm btn-primary" onClick={() => setImporting(true)}><Icon name="upload" size={16} /> Upload class list</button>
           </div>
         </div>
+        {hasFilters && data.length > 0 && (
+          <div className="filter-meta">
+            <span className="muted">Showing <strong>{rows.length}</strong> of {data.length} student{data.length === 1 ? '' : 's'}</span>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={clearFilters}>Reset filters &amp; sort</button>
+          </div>
+        )}
 
         {!ta && selected.size > 0 && (
           <BulkAssign
@@ -136,13 +224,24 @@ export default function StudentsTab({ course, ta }) {
         )}
 
         {data.length === 0 ? (
-          <Empty icon="users" title="No students yet" action={ta ? null : <button type="button" className="btn btn-primary" onClick={() => setImporting(true)}>Upload class list</button>}>
-            Upload an Excel or CSV file with index numbers and names. Students can then activate their accounts.
+          <Empty icon="users" title="No students yet" action={<div className="row-wrap"><button type="button" className="btn" onClick={() => setAdding(true)}><Icon name="plus" size={16} /> Add student</button><button type="button" className="btn btn-primary" onClick={() => setImporting(true)}><Icon name="upload" size={16} /> Upload class list</button></div>}>
+            Add a student or upload an Excel or CSV file with index numbers and names. Students can then activate their accounts.
           </Empty>
         ) : (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr>{!ta && <th style={{ width: 36 }}><input type="checkbox" aria-label="Select all shown students" checked={allShownSelected} onChange={toggleAll} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} /></th>}<th>Index no.</th><th>Name</th><th>Programme</th><th>Stream</th><th>{filter === 'risk' ? 'Why' : 'Account'}</th><th className="hide-sm">Last sign-in</th><th /></tr></thead>
+              <thead>
+                <tr>
+                  {!ta && <th style={{ width: 36 }}><input type="checkbox" aria-label="Select all shown students" checked={allShownSelected} onChange={toggleAll} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} /></th>}
+                  <SortTh label="Index no." ascKey="index_asc" descKey="index_desc" current={sort} onSort={setSort} />
+                  <SortTh label="Name" ascKey="name_asc" descKey="name_desc" current={sort} onSort={setSort} />
+                  <SortTh label="Programme" ascKey="prog_asc" descKey="prog_desc" current={sort} onSort={setSort} />
+                  <SortTh label="Stream" ascKey="stream_asc" descKey="stream_desc" current={sort} onSort={setSort} />
+                  <SortTh label={filter === 'risk' ? 'Why' : 'Account'} ascKey="active_asc" descKey="active_desc" defaultDir="desc" current={sort} onSort={setSort} />
+                  <SortTh label="Last sign-in" ascKey="signin_asc" descKey="signin_desc" defaultDir="desc" current={sort} onSort={setSort} className="hide-sm" />
+                  <th />
+                </tr>
+              </thead>
               <tbody>
                 {rows.slice(0, 300).map((r) => (
                   <tr key={r.index_no} style={selected.has(r.index_no) ? { background: 'var(--teal-50)' } : undefined}>
@@ -178,8 +277,8 @@ export default function StudentsTab({ course, ta }) {
         <strong> Activate your account</strong>, enter their index number and choose a password.
       </div>
 
-      {adding && <AddStudentModal course={course} programmes={programmes} streams={streams} onClose={() => setAdding(false)} onDone={reload} />}
-      {importing && <ImportModal course={course} onClose={() => setImporting(false)} onDone={reload} />}
+      {adding && <AddStudentModal course={course} ta={ta} programmes={programmes} streams={streams} onClose={() => setAdding(false)} onDone={reload} />}
+      {importing && <ImportModal course={course} ta={ta} onClose={() => setImporting(false)} onDone={reload} />}
       {resetting && <ResetModal student={resetting} onClose={() => setResetting(null)} />}
       {editing && <EditModal student={editing} programmes={programmes} streams={streams} onClose={() => setEditing(null)} onSaved={reload} />}
       {(outreach || targetStudent) && (
@@ -200,7 +299,41 @@ export default function StudentsTab({ course, ta }) {
   );
 }
 
-function ImportModal({ course, onClose, onDone }) {
+const TA_IMPORT_SQL = `create or replace function public.import_roster(p_course uuid, p_rows jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $
+declare r jsonb; v_idx text; v_name text; v_prog text; v_stream text;
+        n_new int := 0; n_enrolled int := 0; n_skipped int := 0;
+begin
+  perform public.require_staff(p_course);
+  for r in select * from jsonb_array_elements(p_rows) loop
+    v_idx := public.norm_index(r->>'index_no');
+    v_name := trim(coalesce(r->>'full_name', ''));
+    v_prog := trim(coalesce(r->>'programme', ''));
+    v_stream := trim(coalesce(r->>'stream', ''));
+    if v_idx = '' then n_skipped := n_skipped + 1; continue; end if;
+    if not exists (select 1 from public.roster where index_no = v_idx) then
+      insert into public.roster (index_no, full_name, programme, stream)
+      values (v_idx, coalesce(nullif(v_name, ''), v_idx), v_prog, v_stream);
+      n_new := n_new + 1;
+    else
+      update public.roster
+         set full_name = coalesce(nullif(v_name, ''), full_name),
+             programme = coalesce(nullif(v_prog, ''), programme),
+             stream    = coalesce(nullif(v_stream, ''), stream)
+       where index_no = v_idx;
+      if v_name <> '' then update public.profiles set full_name = v_name where index_no = v_idx; end if;
+    end if;
+    insert into public.enrollments (course_id, index_no) values (p_course, v_idx)
+    on conflict do nothing;
+    if found then n_enrolled := n_enrolled + 1; end if;
+    if v_prog <> '' then insert into public.group_options values ('programme', v_prog) on conflict do nothing; end if;
+    if v_stream <> '' then insert into public.group_options values ('stream', v_stream) on conflict do nothing; end if;
+  end loop;
+  return jsonb_build_object('new_students', n_new, 'enrolled', n_enrolled, 'skipped', n_skipped);
+end;
+$;`;
+
+function ImportModal({ course, ta, onClose, onDone }) {
   const toast = useToast();
   const [students, setStudents] = useState([]);
   const [paste, setPaste] = useState('');
@@ -265,7 +398,19 @@ function ImportModal({ course, onClose, onDone }) {
       <Field label="…or paste from Excel" hint="copy the two columns and paste here">
         <textarea className="textarea mono" value={paste} onChange={(e) => onPaste(e.target.value)} placeholder={'Index number\tFull name\tProgramme\tStream\n4021180\tKofi Mensah\tMarketing\tRegular'} />
       </Field>
-      {error && <div className="notice notice-error">{error}</div>}
+      {error && (
+        <div className="notice notice-error stack-sm">
+          <div>{error}</div>
+          {ta && /only the lecturer/i.test(error) && (
+            <div className="tiny stack-sm">
+              <span>Ask the course lecturer to run the updated <span className="mono">import_roster</span> SQL function in Supabase so TAs on this course can add students.</span>
+              <button type="button" className="btn btn-sm" style={{ alignSelf: 'flex-start' }} onClick={() => { navigator.clipboard?.writeText(TA_IMPORT_SQL); toast('SQL snippet copied to clipboard.'); }}>
+                Copy SQL update
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {students.length > 0 && (
         <div className="stack-sm">
           <strong>{students.length} students found{missingNames ? ` · ${missingNames} without a name` : ''}</strong>
@@ -594,29 +739,53 @@ function GroupManager({ programmes, streams, students = [], onChanged }) {
   );
 }
 
-function AddStudentModal({ course, programmes, streams, onClose, onDone }) {
-  const [act, busy] = useAction();
+function AddStudentModal({ course, ta, programmes, streams, onClose, onDone }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
   const [f, setF] = useState({ index_no: '', full_name: '', programme: '', stream: '' });
 
   async function save(e) {
     e?.preventDefault();
+    setError('');
     const idx = f.index_no.trim();
     const name = f.full_name.trim();
-    if (!idx) throw new Error('Please enter an index number.');
-    if (!name) throw new Error('Please enter the student full name.');
+    if (!idx) return setError('Please enter an index number.');
+    if (!name) return setError('Please enter the student full name.');
 
-    await act(() => rpc('import_roster', {
-      p_course: course.id,
-      p_rows: [{ index_no: idx, full_name: name, programme: f.programme, stream: f.stream }]
-    }), 'Student added to course.');
-    onDone();
-    onClose();
+    setBusy(true);
+    try {
+      await rpc('import_roster', {
+        p_course: course.id,
+        p_rows: [{ index_no: idx, full_name: name, programme: f.programme, stream: f.stream }]
+      });
+      toast('Student added to course.');
+      onDone();
+      onClose();
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
-    <Modal title="Add student to course" onClose={onClose}
-      footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button><button type="button" className="btn btn-primary" onClick={save} disabled={busy}>Add student</button></>}>
+    <Modal title={`Add student · ${course.code}`} onClose={() => !busy && onClose()}
+      footer={<><button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button><button type="button" className="btn btn-primary" onClick={save} disabled={busy}>{busy ? 'Adding…' : 'Add student'}</button></>}>
       <form onSubmit={save} className="stack">
+        {error && (
+          <div className="notice notice-error stack-sm">
+            <div>{error}</div>
+            {ta && /only the lecturer/i.test(error) && (
+              <div className="tiny stack-sm">
+                <span>Ask the course lecturer to run the updated <span className="mono">import_roster</span> SQL function in Supabase so TAs on this course can add students.</span>
+                <button type="button" className="btn btn-sm" style={{ alignSelf: 'flex-start' }} onClick={() => { navigator.clipboard?.writeText(TA_IMPORT_SQL); toast('SQL snippet copied to clipboard.'); }}>
+                  Copy SQL update
+                </button>
+              </div>
+            )}
+          </div>
+        )}
         <Field label="Index number *">
           <input className="input mono" placeholder="e.g. PSCM/2024/001" value={f.index_no} onChange={(e) => setF({ ...f, index_no: e.target.value })} required autoFocus />
         </Field>

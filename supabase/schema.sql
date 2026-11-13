@@ -1104,14 +1104,14 @@ begin
 end;
 $$;
 
--- Add or update students on a course from a class list.
+-- Add or update students on a course from a class list (lecturer or course TA).
 -- p_rows: [{"index_no":"4021180","full_name":"Kofi Mensah"}, ...]
 create or replace function public.import_roster(p_course uuid, p_rows jsonb) returns jsonb
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public as $
 declare r jsonb; v_idx text; v_name text; v_prog text; v_stream text;
         n_new int := 0; n_enrolled int := 0; n_skipped int := 0;
 begin
-  perform public.require_lecturer();
+  perform public.require_staff(p_course);
   for r in select * from jsonb_array_elements(p_rows) loop
     v_idx := public.norm_index(r->>'index_no');
     v_name := trim(coalesce(r->>'full_name', ''));

@@ -525,3 +525,33 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
   color: #15803d;
   border: 1px solid #bbf7d0;
 }
+
+/* ---------- sortable table headers & filter bar ---------- */
+.th-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  width: 100%;
+}
+.th-sort-btn:hover { color: var(--ink); }
+.th-sort-btn.active { color: var(--teal-dark); }
+.th-sort-btn.num { justify-content: flex-end; }
+.filter-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 18px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line-2);
+  font-size: 13px;
+}

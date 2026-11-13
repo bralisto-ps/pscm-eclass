@@ -6,6 +6,8 @@ import { openStoredFile } from '../../lib/files.js';
 import { fmtFull, fmtNumber, pct, relative } from '../../lib/format.js';
 import { downloadWorkbook } from '../../lib/sheets.js';
 import { ALL_GROUPS, GroupFilters, GroupSummaryTable, groupLabel, groupSummary, matchesGroup } from '../../components/Groups.jsx';
+import { SortSelect, SortTh } from '../../components/SortBar.jsx';
+import { byNameIndex, compareDate, compareNumber, compareText } from '../../lib/sort.js';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
@@ -37,6 +39,7 @@ export default function AssignmentMarking() {
   const [filter, setFilter] = useState('tomark');
   const [q, setQ] = useState('');
   const [group, setGroup] = useState(ALL_GROUPS);
+  const [sort, setSort] = useState('name_asc');
   const [marking, setMarking] = useState(null); // index in `shown`
   const [editing, setEditing] = useState(false);
   const [act, busy] = useAction();
@@ -44,15 +47,35 @@ export default function AssignmentMarking() {
   const shown = useMemo(() => {
     if (!data) return [];
     const term = q.trim().toLowerCase();
-    return data.rows.filter((r) => {
+    const filtered = data.rows.filter((r) => {
       if (!matchesGroup(r, group)) return false;
       if (filter === 'tomark' && !(r.sub && r.sub.marks === null)) return false;
       if (filter === 'marked' && !(r.sub && r.sub.marks !== null)) return false;
       if (filter === 'missing' && r.sub) return false;
       if (filter === 'late' && !r.sub?.is_late) return false;
-      return !term || String(r.full_name).toLowerCase().includes(term) || String(r.index_no).toLowerCase().includes(term);
+      if (term) {
+        const hay = [r.full_name, r.index_no, r.programme, r.stream].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(term)) return false;
+      }
+      return true;
     });
-  }, [data, filter, q, group]);
+    return [...filtered].sort((a, b) => {
+      switch (sort) {
+        case 'marks_desc': return compareNumber(a.sub?.marks, b.sub?.marks, 'desc') || byNameIndex(a, b);
+        case 'marks_asc': return compareNumber(a.sub?.marks, b.sub?.marks, 'asc') || byNameIndex(a, b);
+        case 'sub_desc': return compareDate(a.sub?.submitted_at, b.sub?.submitted_at, 'desc') || byNameIndex(a, b);
+        case 'sub_asc': return compareDate(a.sub?.submitted_at, b.sub?.submitted_at, 'asc') || byNameIndex(a, b);
+        case 'name_desc': return compareText(a.full_name, b.full_name, 'desc') || compareText(a.index_no, b.index_no, 'asc');
+        case 'index_asc': return compareText(a.index_no, b.index_no, 'asc') || byNameIndex(a, b);
+        case 'index_desc': return compareText(a.index_no, b.index_no, 'desc') || byNameIndex(a, b);
+        case 'prog_asc': return compareText(a.programme, b.programme, 'asc') || compareText(a.stream, b.stream, 'asc') || byNameIndex(a, b);
+        case 'prog_desc': return compareText(a.programme, b.programme, 'desc') || compareText(a.stream, b.stream, 'asc') || byNameIndex(a, b);
+        case 'stream_asc': return compareText(a.stream, b.stream, 'asc') || compareText(a.programme, b.programme, 'asc') || byNameIndex(a, b);
+        case 'name_asc':
+        default: return byNameIndex(a, b);
+      }
+    });
+  }, [data, filter, q, group, sort]);
 
   if (loading) return <Loading />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
@@ -121,25 +144,50 @@ export default function AssignmentMarking() {
         )}
 
         <section className="card-flush">
-          <div className="card-head" style={{ flexWrap: 'wrap' }}>
-            <div className="row-wrap">
+          <div className="card-head" style={{ flexWrap: 'wrap', gap: 12 }}>
+            <div className="row-wrap" style={{ flex: 1, minWidth: 260 }}>
               <label className="search">
                 <span className="sr-only">Search</span>
                 <Icon name="search" size={16} />
-                <input className="input" style={{ width: 230, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name or index number" />
+                <input className="input" style={{ width: 230, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, index, programme, stream" />
               </label>
               <div className="chips" role="group" aria-label="Filter">
                 {[['tomark', `To mark · ${submitted.length - marked.length}`], ['marked', 'Marked'], ['late', 'Late'], ['missing', 'Not submitted'], ['all', 'All']].map(([id, label]) => (
                   <button key={id} type="button" className="chip" aria-pressed={filter === id} onClick={() => setFilter(id)}>{label}</button>
                 ))}
               </div>
+              <SortSelect
+                value={sort}
+                onChange={setSort}
+                options={[
+                  { value: 'marks_desc', label: 'Marks: High → Low' },
+                  { value: 'marks_asc', label: 'Marks: Low → High' },
+                  { value: 'name_asc', label: 'Name (A → Z)' },
+                  { value: 'name_desc', label: 'Name (Z → A)' },
+                  { value: 'index_asc', label: 'Index no. (Ascending)' },
+                  { value: 'index_desc', label: 'Index no. (Descending)' },
+                  { value: 'prog_asc', label: 'Programme / Class (A → Z)' },
+                  { value: 'stream_asc', label: 'Stream (A → Z)' },
+                  { value: 'sub_desc', label: 'Submitted (Newest first)' },
+                  { value: 'sub_asc', label: 'Submitted (Oldest first)' },
+                ]}
+              />
             </div>
             <button type="button" className="btn btn-sm" onClick={exportXlsx}><Icon name="download" size={16} /> Export to Excel</button>
           </div>
           {shown.length === 0 ? <Empty icon="inbox">{filter === 'tomark' ? 'Nothing waiting to be marked.' : 'No students match.'}</Empty> : (
             <div className="table-wrap">
               <table className="table">
-                <thead><tr><th>Index no.</th><th>Student</th><th className="hide-sm">Group</th><th>Submitted</th><th className="num">Marks</th><th /></tr></thead>
+                <thead>
+                  <tr>
+                    <SortTh label="Index no." ascKey="index_asc" descKey="index_desc" current={sort} onSort={setSort} />
+                    <SortTh label="Student" ascKey="name_asc" descKey="name_desc" current={sort} onSort={setSort} />
+                    <SortTh label="Group" ascKey="prog_asc" descKey="prog_desc" current={sort} onSort={setSort} className="hide-sm" />
+                    <SortTh label="Submitted" ascKey="sub_asc" descKey="sub_desc" defaultDir="desc" current={sort} onSort={setSort} />
+                    <SortTh label="Marks" ascKey="marks_asc" descKey="marks_desc" defaultDir="desc" current={sort} onSort={setSort} className="num" />
+                    <th />
+                  </tr>
+                </thead>
                 <tbody>
                   {shown.slice(0, 400).map((r, i) => (
                     <tr key={r.index_no}>
