@@ -60,12 +60,12 @@ function AntiCameraShield({ text, blurred, onResume }) {
       }}>
         <span>🔒 ANTI-CHEAT ACTIVE</span>
         <span style={{ opacity: 0.6 }}>·</span>
-        <span style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>${safe}</span>
+        <span style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{safe}</span>
       </div>
       {blurred && (
         <div onClick={onResume} style={{
           position: 'fixed', inset: 0, zIndex: 9999,
-          background: 'rgba(255,255,255,0.88)', backdropFilter: 'blur(32px)', WebkitBackdropFilter: 'blur(32px)',
+          background: 'rgba(255,255,255,0.92)', backdropFilter: 'blur(34px)', WebkitBackdropFilter: 'blur(34px)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center',
           cursor: 'pointer',
         }}>
@@ -73,12 +73,16 @@ function AntiCameraShield({ text, blurred, onResume }) {
             <div style={{ width: 60, height: 60, borderRadius: '50%', background: '#fef3c7', color: '#d97706', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto', fontSize: 30 }}>
               ⚠️
             </div>
-            <h2 style={{ margin: '8px 0 0', color: '#111827' }}>Exam Content Protected & Blurred</h2>
+            <h2 style={{ margin: '8px 0 0', color: '#111827' }}>
+              {blurred === 'zoom' ? 'Browser Zoom-Out Blocked' : 'Exam Content Protected & Blurred'}
+            </h2>
             <p className="small muted" style={{ margin: '8px 0 16px', lineHeight: 1.6 }}>
-              The quiz window is currently not in focus or you switched to another tab. All screen exits and unfocus events are logged for your lecturer.
+              {blurred === 'zoom'
+                ? 'Zooming out (Ctrl + - or browser zoom) is not allowed during an exam. Press Ctrl + 0 (or Cmd + 0 on Mac) to reset your browser zoom to 100% and continue.'
+                : 'The quiz window is currently not in focus, was resized, or you switched to another tab. All screen exits and unfocus events are logged for your lecturer.'}
             </p>
             <button type="button" className="btn btn-primary" style={{ minHeight: 44, fontWeight: 600 }} onClick={(e) => { e.stopPropagation(); onResume?.(); }}>
-              Click Here to Resume Exam
+              {blurred === 'zoom' ? 'I Reset Zoom to 100% — Resume Exam' : 'Click Here to Resume Exam'}
             </button>
           </div>
         </div>
@@ -335,6 +339,8 @@ function Runner({ initial }) {
 
   const antiCaptureMode = true;
   const [blurred, setBlurred] = useState(false);
+  const [zoomBlocked, setZoomBlocked] = useState(false);
+  const physicalZoomOutRef = useRef(false);
   const cameraActiveRef = useRef(false);
   const [selfiePrompt, setSelfiePrompt] = useState(false);
   const [selfieDone, setSelfieDone] = useState(() => {
@@ -601,6 +607,69 @@ function Runner({ initial }) {
     }
   }, [qRemaining, perQSeconds, current, questions.length, submit, saveNow]);
 
+  // Block Ctrl + - / _ / Ctrl + wheel zoom-out & detect zoomed-out viewport across all exams
+  useEffect(() => {
+    const isZoomedOut = () => {
+      if (typeof window === 'undefined') return false;
+      // Desktop check: zooming out increases innerWidth beyond outerWidth
+      if (window.outerWidth > 400 && window.innerWidth > window.outerWidth * 1.12) {
+        return true;
+      }
+      // Trackpad / browser pinch-zoom out check
+      if (window.visualViewport && typeof window.visualViewport.scale === 'number' && window.visualViewport.scale < 0.92) {
+        return true;
+      }
+      return false;
+    };
+
+    const evaluateZoom = () => {
+      if (doneRef.current || cameraActiveRef.current || selfiePrompt) return;
+      if (isZoomedOut()) {
+        physicalZoomOutRef.current = true;
+        setZoomBlocked(true);
+        if (strict) recordExit('zoom-out');
+      } else if (physicalZoomOutRef.current) {
+        physicalZoomOutRef.current = false;
+        setZoomBlocked(false);
+      }
+    };
+
+    const onZoomKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && (
+        e.key === '-' ||
+        e.key === '_' ||
+        e.code === 'Minus' ||
+        e.code === 'NumpadSubtract'
+      )) {
+        e.preventDefault();
+        setZoomBlocked(true);
+        if (strict) recordExit('zoom-out');
+      }
+    };
+
+    const onWheel = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.deltaY > 0) {
+        e.preventDefault();
+        setZoomBlocked(true);
+        if (strict) recordExit('zoom-out');
+      }
+    };
+
+    evaluateZoom();
+    window.addEventListener('keydown', onZoomKey, { capture: true });
+    window.addEventListener('wheel', onWheel, { passive: false, capture: true });
+    window.addEventListener('resize', evaluateZoom);
+    window.visualViewport?.addEventListener('resize', evaluateZoom);
+    const zoomInterval = setInterval(evaluateZoom, 1200);
+    return () => {
+      window.removeEventListener('keydown', onZoomKey, { capture: true });
+      window.removeEventListener('wheel', onWheel, { capture: true });
+      window.removeEventListener('resize', evaluateZoom);
+      window.visualViewport?.removeEventListener('resize', evaluateZoom);
+      clearInterval(zoomInterval);
+    };
+  }, [strict, recordExit, selfiePrompt]);
+
   useEffect(() => {
     if (!strict) return undefined;
     const onVis = () => {
@@ -676,7 +745,20 @@ function Runner({ initial }) {
 
   return (
     <div className={`quiz-shell ${strict ? 'strict' : ''}`}>
-      <AntiCameraShield text={student?.name ? `${student.name} · ${student.index_no || ''}` : 'CONFIDENTIAL EXAM · E-CLASS PSCM'} blurred={blurred && !selfiePrompt} onResume={() => setBlurred(false)} />
+      <AntiCameraShield
+        text={student?.name ? `${student.name} · ${student.index_no || ''}` : 'CONFIDENTIAL EXAM · E-CLASS PSCM'}
+        blurred={selfiePrompt ? false : (zoomBlocked ? 'zoom' : blurred)}
+        onResume={() => {
+          if (zoomBlocked) {
+            const stillZoomedOut =
+              (window.outerWidth > 400 && window.innerWidth > window.outerWidth * 1.12) ||
+              (window.visualViewport && window.visualViewport.scale < 0.92);
+            if (!stillZoomedOut) setZoomBlocked(false);
+          } else {
+            setBlurred(false);
+          }
+        }}
+      />
       {selfiePrompt && <SelfieModal attemptId={attempt.id} onPhotoCaptured={uploadSelfieBackground} onDone={handleSelfieDone} />}
       {needFs && (
         <div className="fs-gate" role="dialog" aria-modal="true" aria-label="Full screen required">
@@ -737,7 +819,7 @@ function Runner({ initial }) {
       )}
 
       <div className="quiz-body">
-        <main className="question-card" style={{ filter: blurred ? 'blur(16px)' : 'none', transition: 'filter 0.2s' }}>
+        <main className="question-card" style={{ filter: (blurred || zoomBlocked) ? 'blur(16px)' : 'none', transition: 'filter 0.2s' }}>
           {perQSeconds && (
             <div
               style={{
@@ -973,10 +1055,35 @@ function Runner({ initial }) {
                   </div>
                 )}
               </div>
+              {antiCaptureMode && (
+                <div
+                  aria-hidden="true"
+                  style={{
+                    minHeight: '45vh',
+                    margin: '16px 0',
+                    borderRadius: 12,
+                    border: '1.5px dashed rgba(13, 148, 136, 0.28)',
+                    background: 'repeating-linear-gradient(-45deg, rgba(15, 23, 42, 0.025), rgba(15, 23, 42, 0.025) 10px, rgba(13, 148, 136, 0.025) 10px, rgba(13, 148, 136, 0.025) 20px)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    padding: '24px 16px',
+                    textAlign: 'center',
+                    userSelect: 'none',
+                  }}
+                >
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 999, background: 'rgba(15, 23, 42, 0.06)', color: 'var(--text-2)', fontSize: 12, fontWeight: 700, letterSpacing: '0.04em' }}>
+                    <span>🛡️ ANTI-CAPTURE SECURITY BUFFER</span>
+                  </div>
+                  <span className="tiny muted">Keep scrolling down to reach your response options ↓</span>
+                </div>
+              )}
               <div
                 className="answer-box"
                 style={{
-                  marginTop: antiCaptureMode ? '56px' : '18px',
+                  marginTop: antiCaptureMode ? '12px' : '18px',
                   padding: '24px 22px',
                   scrollMarginTop: '80px',
                   border: '1.5px solid var(--line-2)',
