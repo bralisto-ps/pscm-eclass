@@ -1104,6 +1104,62 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------------
+-- Staff & TA Activity Audit Log
+-- ---------------------------------------------------------------------
+create table if not exists public.course_audit_logs (
+  id         uuid primary key default gen_random_uuid(),
+  course_id  uuid not null references public.courses on delete cascade,
+  actor_id   uuid references public.profiles on delete set null,
+  actor_name text not null default '',
+  actor_role text not null default '',
+  action     text not null,
+  summary    text not null,
+  details    jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists course_audit_logs_course_idx on public.course_audit_logs (course_id, created_at desc);
+
+alter table public.course_audit_logs enable row level security;
+drop policy if exists lecturer_all on public.course_audit_logs;
+create policy lecturer_all on public.course_audit_logs for all to authenticated
+  using (public.is_lecturer()) with check (public.is_lecturer());
+
+create or replace function public.log_course_audit(p_course uuid, p_action text, p_summary text, p_details jsonb default '{}'::jsonb) returns void
+language plpgsql security definer set search_path = public as $
+declare v_name text; v_role text;
+begin
+  if p_course is null then return; end if;
+  select full_name, role into v_name, v_role from public.profiles where id = auth.uid();
+  insert into public.course_audit_logs (course_id, actor_id, actor_name, actor_role, action, summary, details)
+  values (p_course, auth.uid(), coalesce(nullif(trim(v_name), ''), 'Staff'), coalesce(v_role, 'staff'), p_action, p_summary, coalesce(p_details, '{}'::jsonb));
+exception when others then
+  null;
+end;
+$;
+
+create or replace function public.log_course_action(p_course uuid, p_action text, p_summary text, p_details jsonb default '{}'::jsonb) returns void
+language plpgsql security definer set search_path = public as $
+begin
+  perform public.require_staff(p_course);
+  perform public.log_course_audit(p_course, p_action, p_summary, p_details);
+end;
+$;
+
+create or replace function public.course_audit_log_list(p_course uuid, p_limit int default 150)
+returns table (id uuid, actor_name text, actor_role text, action text, summary text, details jsonb, created_at timestamptz)
+language plpgsql stable security definer set search_path = public as $
+begin
+  perform public.require_lecturer();
+  return query
+    select l.id, l.actor_name, l.actor_role, l.action, l.summary, l.details, l.created_at
+      from public.course_audit_logs l
+     where l.course_id = p_course
+     order by l.created_at desc
+     limit greatest(1, least(coalesce(p_limit, 150), 500));
+end;
+$;
+
 -- Add or update students on a course from a class list (lecturer or course TA).
 -- p_rows: [{"index_no":"4021180","full_name":"Kofi Mensah"}, ...]
 create or replace function public.import_roster(p_course uuid, p_rows jsonb) returns jsonb
@@ -1136,9 +1192,17 @@ begin
     if v_prog <> '' then insert into public.group_options values ('programme', v_prog) on conflict do nothing; end if;
     if v_stream <> '' then insert into public.group_options values ('stream', v_stream) on conflict do nothing; end if;
   end loop;
+  if jsonb_array_length(coalesce(p_rows, '[]'::jsonb)) > 0 then
+    perform public.log_course_audit(
+      p_course,
+      'roster_import',
+      format('Added/updated class list (%s new, %s enrolled)', n_new, n_enrolled),
+      jsonb_build_object('new_students', n_new, 'enrolled', n_enrolled, 'rows', jsonb_array_length(p_rows))
+    );
+  end if;
   return jsonb_build_object('new_students', n_new, 'enrolled', n_enrolled, 'skipped', n_skipped);
 end;
-$$;
+$;
 
 -- The programmes and streams present on a course's class list.
 create or replace function public.course_groups(p_course uuid) returns jsonb
@@ -1272,6 +1336,9 @@ begin
   update auth.users set encrypted_password = extensions.crypt(p_password, extensions.gen_salt('bf')),
                         updated_at = now()
    where id = v_id;
+  perform public.log_course_audit(e.course_id, 'password_reset', format('Reset password for student %s', public.norm_index(p_index)), jsonb_build_object('index_no', public.norm_index(p_index)))
+    from public.enrollments e
+   where e.index_no = public.norm_index(p_index) and public.is_staff(e.course_id);
   return true;
 end;
 $$;
@@ -1371,8 +1438,14 @@ begin
          is_correct = (p_marks = v_max), marked_by = auth.uid()
    where id = p_response;
   perform public.recalc_attempt(v_attempt);
+  perform public.log_course_audit(
+    (select qz.course_id from public.attempts a join public.quizzes qz on qz.id = a.quiz_id where a.id = v_attempt),
+    'mark_quiz_response',
+    format('Marked written quiz response (%s / %s)', p_marks, v_max),
+    jsonb_build_object('response_id', p_response, 'marks', p_marks, 'max', v_max)
+  );
 end;
-$$;
+$;
 
 -- Marks and feedback for one assignment submission (lecturer or TA).
 create or replace function public.mark_submission(p_submission uuid, p_marks numeric, p_feedback text) returns void
@@ -1391,6 +1464,12 @@ begin
          marked_at = case when p_marks is null then null else now() end,
          marked_by = case when p_marks is null then null else auth.uid() end
    where id = p_submission;
+  perform public.log_course_audit(
+    v_course,
+    'mark_assignment',
+    case when p_marks is null then 'Cleared assignment mark' else format('Marked assignment (%s / %s)', p_marks, v_max) end,
+    jsonb_build_object('submission_id', p_submission, 'marks', p_marks, 'max', v_max)
+  );
 end;
 $$;
 
@@ -1681,6 +1760,7 @@ begin
           now() + make_interval(mins => greatest(1, least(coalesce(p_minutes, 10), 240))),
           coalesce(p_ask_row, true), coalesce(p_classes, '{}'))
   returning id into v;
+  perform public.log_course_audit(p_course, 'attendance_start', format('Started attendance session "%s"', coalesce(nullif(trim(p_title), ''), 'Class session')), jsonb_build_object('session_id', v));
   return v;
 end;
 $$;
@@ -1836,6 +1916,12 @@ begin
   else
     delete from public.attendance where session_id = p_session and index_no = public.norm_index(p_index);
   end if;
+  perform public.log_course_audit(
+    (select course_id from public.attendance_sessions where id = p_session),
+    'attendance_manual',
+    format('%s %s manually', case when p_present then 'Marked present' else 'Marked absent' end, public.norm_index(p_index)),
+    jsonb_build_object('session_id', p_session, 'index_no', public.norm_index(p_index), 'present', p_present)
+  );
 end;
 $$;
 
@@ -2232,6 +2318,12 @@ begin
      set answer = nullif(trim(coalesce(p_answer, '')), ''),
          answered_at = case when nullif(trim(coalesce(p_answer, '')), '') is null then null else now() end
    where id = p_post;
+  perform public.log_course_audit(
+    (select course_id from public.forum_posts where id = p_post),
+    'forum_answer',
+    'Answered a student Q&A question',
+    jsonb_build_object('post_id', p_post)
+  );
 end;
 $$;
 
@@ -2523,3 +2615,8 @@ create policy student_messages_policy on public.course_messages
   for all to authenticated
   using (student_id = auth.uid() or public.is_lecturer())
   with check (student_id = auth.uid() or public.is_lecturer());
+
+revoke execute on function public.log_course_action(uuid, text, text, jsonb) from public, anon;
+grant execute on function public.log_course_action(uuid, text, text, jsonb) to authenticated;
+revoke execute on function public.course_audit_log_list(uuid, int) from public, anon;
+grant execute on function public.course_audit_log_list(uuid, int) to authenticated;

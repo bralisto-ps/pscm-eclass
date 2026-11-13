@@ -516,6 +516,12 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
   );
 }
 
+function normalizeWrittenAnswer(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return '__EMPTY__';
+  return raw.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim() || raw.toLowerCase();
+}
+
 function Marking({ queue, onMarked }) {
   const questions = useMemo(() => {
     const m = new Map();
@@ -527,23 +533,64 @@ function Marking({ queue, onMarked }) {
   }, [queue]);
   const [selected, setSelected] = useState(questions[0]?.id);
   const [onlyPending, setOnlyPending] = useState(true);
+  const [groupSimilar, setGroupSimilar] = useState(true);
+
+  const current = questions.find((x) => x.id === selected) || questions[0] || null;
+  const items = useMemo(
+    () => (current ? current.items.filter((r) => !onlyPending || r.marks_awarded === null) : []),
+    [current, onlyPending]
+  );
+  const markedCount = current ? current.items.filter((r) => r.marks_awarded !== null).length : 0;
+
+  const groups = useMemo(() => {
+    const m = new Map();
+    for (const r of items) {
+      const k = normalizeWrittenAnswer(r.answer);
+      if (!m.has(k)) m.set(k, { key: k, sampleAnswer: r.answer, max_marks: r.max_marks, items: [] });
+      m.get(k).items.push(r);
+    }
+    return [...m.values()].sort((a, b) => b.items.length - a.items.length);
+  }, [items]);
 
   if (!questions.length) return <div className="card"><Empty icon="edit" title="No written answers">This quiz has no written-answer questions, or nobody has submitted yet.</Empty></div>;
 
-  const current = questions.find((x) => x.id === selected) || questions[0];
-  const items = current.items.filter((r) => !onlyPending || r.marks_awarded === null);
-  const markedCount = current.items.filter((r) => r.marks_awarded !== null).length;
+  const savedClusters = items.length - groups.length;
 
   return (
     <div className="two-col" style={{ gridTemplateColumns: 'minmax(0,1fr) 340px' }}>
       <main className="stack">
-        <div className="between" style={{ flexWrap: 'wrap' }}>
-          <span className="small muted">{markedCount} of {current.items.length} marked for this question</span>
-          <label className="check small"><input type="checkbox" checked={onlyPending} onChange={(e) => setOnlyPending(e.target.checked)} /> Show only unmarked</label>
+        <div className="between" style={{ flexWrap: 'wrap', gap: 10 }}>
+          <span className="small muted">
+            {markedCount} of {current.items.length} marked for this question
+            {groupSimilar && savedClusters > 0 ? ` · ${groups.length} distinct answer groups (saves ${savedClusters} clicks)` : ''}
+          </span>
+          <div className="row-wrap" style={{ gap: 14 }}>
+            <label className="check small">
+              <input type="checkbox" checked={groupSimilar} onChange={(e) => setGroupSimilar(e.target.checked)} />
+              Group matching answers
+            </label>
+            <label className="check small">
+              <input type="checkbox" checked={onlyPending} onChange={(e) => setOnlyPending(e.target.checked)} />
+              Show only unmarked
+            </label>
+          </div>
         </div>
         {items.length === 0 && <div className="card"><Empty icon="check" title="All marked">Every answer to this question has marks.</Empty></div>}
-        {items.slice(0, 50).map((r) => <MarkCard key={r.response_id} r={r} onMarked={onMarked} />)}
-        {items.length > 50 && <p className="small muted">Showing 50 at a time — marked answers disappear from this list as you go.</p>}
+        {groupSimilar ? (
+          <>
+            {groups.slice(0, 50).map((g) => (
+              g.items.length === 1
+                ? <MarkCard key={g.items[0].response_id} r={g.items[0]} onMarked={onMarked} />
+                : <MarkGroupCard key={g.key + '-' + g.items.map((x) => x.response_id).join(',')} group={g} onMarked={onMarked} />
+            ))}
+            {groups.length > 50 && <p className="small muted">Showing 50 groups at a time — marked groups disappear from this list as you go.</p>}
+          </>
+        ) : (
+          <>
+            {items.slice(0, 50).map((r) => <MarkCard key={r.response_id} r={r} onMarked={onMarked} />)}
+            {items.length > 50 && <p className="small muted">Showing 50 at a time — marked answers disappear from this list as you go.</p>}
+          </>
+        )}
       </main>
       <aside className="stack" style={{ position: 'sticky', top: 90, alignSelf: 'start' }}>
         {questions.length > 1 && (
@@ -570,8 +617,82 @@ function Marking({ queue, onMarked }) {
   );
 }
 
+function MarkGroupCard({ group, onMarked }) {
+  const toast = useToast();
+  const max = Number(group.max_marks);
+  const firstAwarded = group.items.every((x) => x.marks_awarded === group.items[0].marks_awarded) ? group.items[0].marks_awarded : null;
+  const [marks, setMarks] = useState(firstAwarded ?? (group.key === '__EMPTY__' ? 0 : ''));
+  const [feedback, setFeedback] = useState(group.items[0].feedback || '');
+  const [busy, setBusy] = useState(false);
+  const [showStudents, setShowStudents] = useState(false);
+
+  async function saveAll(overrideMarks) {
+    const val = overrideMarks !== undefined ? overrideMarks : marks;
+    const m = Number(val);
+    if (val === '' || Number.isNaN(m)) return toast('Enter marks first.', 'error');
+    setBusy(true);
+    try {
+      for (let i = 0; i < group.items.length; i += 8) {
+        const batch = group.items.slice(i, i + 8);
+        await Promise.all(batch.map((r) => rpc('mark_response', { p_response: r.response_id, p_marks: m, p_feedback: feedback })));
+      }
+      group.items.forEach((r) => onMarked(r.response_id, m, feedback));
+      toast(`Saved ${m} / ${fmtNumber(max)} for ${group.items.length} matching answers.`);
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <article className="card stack-sm" style={{ borderLeft: '4px solid var(--teal)' }}>
+      <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <div className="row-wrap" style={{ gap: 8 }}>
+          <span className="badge badge-teal">{group.items.length} matching answers</span>
+          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowStudents(!showStudents)}>
+            {showStudents ? 'Hide students' : `View ${group.items.length} students`}
+          </button>
+        </div>
+        <div className="row" style={{ gap: 4 }}>
+          <button type="button" className="btn btn-sm" onClick={() => setMarks(0)} disabled={busy}>0</button>
+          <button type="button" className="btn btn-sm" onClick={() => setMarks(Number((max / 2).toFixed(2)))} disabled={busy}>50%</button>
+          <button type="button" className="btn btn-sm" onClick={() => setMarks(max)} disabled={busy}>Full ({fmtNumber(max)})</button>
+        </div>
+      </div>
+      {showStudents && (
+        <div className="row-wrap" style={{ gap: 6, padding: '8px 10px', background: 'var(--surface-2)', borderRadius: 8 }}>
+          {group.items.map((r) => (
+            <span key={r.response_id} className="badge" style={{ fontSize: 12 }}>
+              {r.full_name} <span className="mono tiny muted" style={{ marginLeft: 4 }}>{r.index_no}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      <p className="pre" style={{ background: 'var(--surface-2)', padding: '12px 14px', borderRadius: 8 }}>
+        {group.sampleAnswer || <span className="muted">No answer submitted</span>}
+      </p>
+      <div className="row-wrap" style={{ alignItems: 'flex-end' }}>
+        <label className="field" style={{ width: 120 }}>
+          <span>Marks / {fmtNumber(max)}</span>
+          <input className="input mono" type="number" min="0" max={max} step="0.5" value={marks} onChange={(e) => setMarks(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && saveAll()} />
+        </label>
+        <label className="field" style={{ flex: 1, minWidth: 200 }}>
+          <span>Feedback for all {group.items.length} <span className="hint">· optional</span></span>
+          <input className="input" value={feedback} onChange={(e) => setFeedback(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && saveAll()} />
+        </label>
+        <button type="button" className="btn btn-primary" onClick={() => saveAll()} disabled={busy}>
+          {busy ? 'Saving…' : `Save all (${group.items.length})`}
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function MarkCard({ r, onMarked }) {
   const toast = useToast();
+  const max = Number(r.max_marks);
   const [marks, setMarks] = useState(r.marks_awarded ?? '');
   const [feedback, setFeedback] = useState(r.feedback || '');
   const [busy, setBusy] = useState(false);
@@ -593,15 +714,20 @@ function MarkCard({ r, onMarked }) {
 
   return (
     <article className="card stack-sm">
-      <div className="between">
+      <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
         <span className="strong">{r.full_name} <span className="mono tiny muted">{r.index_no}</span></span>
-        {r.marks_awarded !== null && <span className="badge badge-teal">{fmtNumber(r.marks_awarded)} / {fmtNumber(r.max_marks)}</span>}
+        <div className="row" style={{ gap: 4 }}>
+          {r.marks_awarded !== null && <span className="badge badge-teal">{fmtNumber(r.marks_awarded)} / {fmtNumber(max)}</span>}
+          <button type="button" className="btn btn-sm" onClick={() => setMarks(0)} disabled={busy}>0</button>
+          <button type="button" className="btn btn-sm" onClick={() => setMarks(Number((max / 2).toFixed(2)))} disabled={busy}>50%</button>
+          <button type="button" className="btn btn-sm" onClick={() => setMarks(max)} disabled={busy}>Full</button>
+        </div>
       </div>
       <p className="pre" style={{ background: 'var(--surface-2)', padding: '12px 14px', borderRadius: 8 }}>{r.answer || <span className="muted">No answer</span>}</p>
       <div className="row-wrap" style={{ alignItems: 'flex-end' }}>
         <label className="field" style={{ width: 120 }}>
-          <span>Marks / {fmtNumber(r.max_marks)}</span>
-          <input className="input mono" type="number" min="0" max={r.max_marks} step="0.5" value={marks} onChange={(e) => setMarks(e.target.value)}
+          <span>Marks / {fmtNumber(max)}</span>
+          <input className="input mono" type="number" min="0" max={max} step="0.5" value={marks} onChange={(e) => setMarks(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && save()} />
         </label>
         <label className="field" style={{ flex: 1, minWidth: 200 }}>

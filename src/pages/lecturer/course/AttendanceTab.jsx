@@ -5,6 +5,10 @@ import { downloadWorkbook } from '../../../lib/sheets.js';
 import Icon from '../../../components/Icon.jsx';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad } from '../../../components/ui.jsx';
 import { ALL_GROUPS, GroupFilters, matchesGroup } from '../../../components/Groups.jsx';
+import { SortSelect, SortTh } from '../../../components/SortBar.jsx';
+import { byNameIndex, compareNumber, compareText } from '../../../lib/sort.js';
+import PrintReportModal from '../../../components/PrintReportModal.jsx';
+import { buildAttendanceReportHtml } from '../../../lib/printReport.js';
 
 // Same rule as the database: chosen classes win over chosen streams; nothing chosen = everyone.
 export function sessionFor(session, student) {
@@ -35,14 +39,32 @@ export default function AttendanceTab({ course }) {
   const [checking, setChecking] = useState(null);
   const [group, setGroup] = useState(ALL_GROUPS);
   const [low, setLow] = useState(false);
+  const [below75, setBelow75] = useState(false);
   const [q, setQ] = useState('');
+  const [sort, setSort] = useState('name_asc');
+  const [printing, setPrinting] = useState(false);
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
-    return (data?.students || []).filter((r) => matchesGroup(r, group)
+    const rate = (r) => (r.applicable ? r.attended / r.applicable : null);
+    const filtered = (data?.students || []).filter((r) => matchesGroup(r, group)
       && (!low || (r.applicable > 0 && r.attended / r.applicable < 0.5))
-      && (!term || r.full_name.toLowerCase().includes(term) || r.index_no.toLowerCase().includes(term)));
-  }, [data, group, low, q]);
+      && (!below75 || (r.applicable > 0 && r.attended / r.applicable < 0.75))
+      && (!term || [r.full_name, r.index_no, r.programme, r.stream].filter(Boolean).join(' ').toLowerCase().includes(term)));
+    return [...filtered].sort((a, b) => {
+      switch (sort) {
+        case 'rate_desc': return compareNumber(rate(a), rate(b), 'desc') || compareNumber(a.attended, b.attended, 'desc') || byNameIndex(a, b);
+        case 'rate_asc': return compareNumber(rate(a), rate(b), 'asc') || compareNumber(a.attended, b.attended, 'asc') || byNameIndex(a, b);
+        case 'name_desc': return compareText(a.full_name, b.full_name, 'desc') || compareText(a.index_no, b.index_no, 'asc');
+        case 'index_asc': return compareText(a.index_no, b.index_no, 'asc') || byNameIndex(a, b);
+        case 'index_desc': return compareText(a.index_no, b.index_no, 'desc') || byNameIndex(a, b);
+        case 'prog_asc': return compareText(a.programme, b.programme, 'asc') || compareText(a.stream, b.stream, 'asc') || byNameIndex(a, b);
+        case 'prog_desc': return compareText(a.programme, b.programme, 'desc') || compareText(a.stream, b.stream, 'asc') || byNameIndex(a, b);
+        case 'name_asc':
+        default: return byNameIndex(a, b);
+      }
+    });
+  }, [data, group, low, below75, q, sort]);
 
   if (loading) return <Loading />;
   if (error) return <ErrorNote error={error} onRetry={reload} />;
@@ -51,6 +73,7 @@ export default function AttendanceTab({ course }) {
   const openSession = data.sessions.find((s) => new Date(s.opens_at).getTime() <= now && new Date(s.closes_at).getTime() > now);
   const pct = (r) => (r.applicable ? Math.round((r.attended / r.applicable) * 100) : null);
   const lowCount = data.students.filter((r) => r.applicable > 0 && r.attended / r.applicable < 0.5).length;
+  const below75Count = data.students.filter((r) => r.applicable > 0 && r.attended / r.applicable < 0.75).length;
 
   function exportXlsx() {
     const sess = [...data.sessions].reverse();
@@ -128,14 +151,39 @@ export default function AttendanceTab({ course }) {
               <Icon name="search" size={16} />
               <input className="input" style={{ width: 220, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name or index number" />
             </label>
+            <button type="button" className="chip" aria-pressed={below75} onClick={() => setBelow75(!below75)}>Below 75% · {below75Count}</button>
             <button type="button" className="chip" aria-pressed={low} onClick={() => setLow(!low)}>Below 50% · {lowCount}</button>
             <GroupFilters rows={data.students} value={group} onChange={setGroup} />
+            <SortSelect
+              value={sort}
+              onChange={setSort}
+              options={[
+                { value: 'name_asc', label: 'Name (A → Z)' },
+                { value: 'name_desc', label: 'Name (Z → A)' },
+                { value: 'index_asc', label: 'Index no. (Ascending)' },
+                { value: 'index_desc', label: 'Index no. (Descending)' },
+                { value: 'rate_desc', label: 'Attendance: High → Low' },
+                { value: 'rate_asc', label: 'Attendance: Low → High' },
+                { value: 'prog_asc', label: 'Programme / Class (A → Z)' },
+              ]}
+            />
           </div>
-          <button type="button" className="btn btn-sm" onClick={exportXlsx} disabled={!data.students.length}><Icon name="download" size={16} /> Export to Excel</button>
+          <div className="row-wrap" style={{ gap: 8 }}>
+            <button type="button" className="btn btn-sm" onClick={() => setPrinting(true)} disabled={!data.students.length}><Icon name="file" size={16} /> Print / PDF Register</button>
+            <button type="button" className="btn btn-sm" onClick={exportXlsx} disabled={!data.students.length}><Icon name="download" size={16} /> Export to Excel</button>
+          </div>
         </div>
         <div className="table-wrap">
           <table className="table">
-            <thead><tr><th>Index no.</th><th>Name</th><th className="hide-sm">Group</th><th className="num">Attended</th><th style={{ width: 200 }}>Rate</th></tr></thead>
+            <thead>
+              <tr>
+                <SortTh label="Index no." ascKey="index_asc" descKey="index_desc" current={sort} onSort={setSort} />
+                <SortTh label="Name" ascKey="name_asc" descKey="name_desc" current={sort} onSort={setSort} />
+                <SortTh label="Group" ascKey="prog_asc" descKey="prog_desc" current={sort} onSort={setSort} className="hide-sm" />
+                <SortTh label="Attended" ascKey="rate_asc" descKey="rate_desc" defaultDir="desc" current={sort} onSort={setSort} className="num" />
+                <SortTh label="Rate" ascKey="rate_asc" descKey="rate_desc" defaultDir="desc" current={sort} onSort={setSort} style={{ width: 200 }} />
+              </tr>
+            </thead>
             <tbody>
               {rows.slice(0, 400).map((r) => {
                 const p = pct(r);
@@ -166,6 +214,23 @@ export default function AttendanceTab({ course }) {
       {live && <LiveView sessionId={live} course={course} onClose={() => { setLive(null); reload(); }} />}
       {checking && <SessionCheck sessionId={checking} course={course} onClose={() => { setChecking(null); reload(); }} />}
       {viewing && <RegisterModal session={viewing} course={course} students={data.students} onClose={() => setViewing(null)} onChanged={reload} />}
+      {printing && (
+        <PrintReportModal
+          title={`Attendance Register · ${course.code}`}
+          html={buildAttendanceReportHtml({
+            course,
+            sessions: data.sessions,
+            students: rows,
+            groupLabelText: [
+              group.programme !== '*' ? (group.programme || 'Not set') : '',
+              group.stream !== '*' ? (group.stream || 'Not set') : '',
+              below75 ? 'Below 75%' : '',
+              low ? 'Below 50%' : '',
+            ].filter(Boolean).join(' · '),
+          })}
+          onClose={() => setPrinting(false)}
+        />
+      )}
     </div>
   );
 }

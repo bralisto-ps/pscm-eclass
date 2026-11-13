@@ -6,6 +6,7 @@ import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../../components/ui.jsx';
 import { ALL_GROUPS, GroupFilters, matchesGroup } from '../../../components/Groups.jsx';
 import { SortSelect, SortTh } from '../../../components/SortBar.jsx';
+import StudentDrawer from '../../../components/StudentDrawer.jsx';
 import { byNameIndex, compareBool, compareDate, compareText } from '../../../lib/sort.js';
 
 export default function StudentsTab({ course, ta }) {
@@ -33,6 +34,7 @@ export default function StudentsTab({ course, ta }) {
   const [resetting, setResetting] = useState(null);
   const [removing, setRemoving] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [viewingStudent, setViewingStudent] = useState(null);
   const [group, setGroup] = useState(ALL_GROUPS);
   const [activity, setActivity] = useState('all');
   const [sort, setSort] = useState('name_asc');
@@ -247,7 +249,16 @@ export default function StudentsTab({ course, ta }) {
                   <tr key={r.index_no} style={selected.has(r.index_no) ? { background: 'var(--teal-50)' } : undefined}>
                     {!ta && <td><input type="checkbox" aria-label={`Select ${r.full_name}`} checked={selected.has(r.index_no)} onChange={() => toggle(r.index_no)} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} /></td>}
                     <td className="mono small">{r.index_no}</td>
-                    <td>{r.full_name}</td>
+                    <td>
+                      <button
+                        type="button"
+                        onClick={() => setViewingStudent(r)}
+                        title="Open Student 360° profile"
+                        style={{ border: 0, background: 'transparent', padding: 0, font: 'inherit', color: 'var(--teal-dark)', fontWeight: 600, cursor: 'pointer', textAlign: 'left' }}
+                      >
+                        {r.full_name}
+                      </button>
+                    </td>
                     <td className="small">{r.programme || <span className="muted">—</span>}</td>
                     <td className="small">{r.stream || <span className="muted">—</span>}</td>
                     <td>{filter === 'risk' && risk?.get(r.index_no) ? (
@@ -256,6 +267,7 @@ export default function StudentsTab({ course, ta }) {
                     <td className="small muted hide-sm">{r.last_sign_in ? relative(r.last_sign_in) : '—'}</td>
                     <td>
                       <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
+                        <button type="button" className="icon-btn plain" title={`View 360° profile for ${r.full_name}`} onClick={() => setViewingStudent(r)}><Icon name="user" size={16} /></button>
                         <button type="button" className="icon-btn plain" title={`Send academic advisory to ${r.full_name}`} onClick={() => setTargetStudent(r)}><Icon name="chat" size={16} /></button>
                         {r.activated && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setResetting(r)}><Icon name="key" size={16} /> Reset password</button>}
                         {!ta && <button type="button" className="icon-btn plain" aria-label={`Edit ${r.full_name}`} onClick={() => setEditing(r)}><Icon name="edit" /></button>}
@@ -288,6 +300,16 @@ export default function StudentsTab({ course, ta }) {
           riskMap={risk}
           preSelectedStudent={targetStudent}
           onClose={() => { setOutreach(false); setTargetStudent(null); }}
+        />
+      )}
+      {viewingStudent && (
+        <StudentDrawer
+          course={course}
+          student={viewingStudent}
+          ta={ta}
+          onClose={() => setViewingStudent(null)}
+          onOutreach={(st) => { setViewingStudent(null); setTargetStudent(st); }}
+          onResetPassword={(st) => { setViewingStudent(null); setResetting(st); }}
         />
       )}
       {removing && (

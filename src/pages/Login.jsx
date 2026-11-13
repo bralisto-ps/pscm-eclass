@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { Field } from '../components/ui.jsx';
+import { OfflineIndicator, PWAInstallButton } from '../components/PWABanner.jsx';
 
 export default function Login({ mode }) {
   const { signIn, activate, activateStaff } = useAuth();
@@ -46,9 +47,12 @@ export default function Login({ mode }) {
           <span className="brand-mark">PS</span>
           <span className="brand-name">PSCM E-class</span>
         </div>
-        <div>
+        <div className="stack">
           <h2>Virtual Classroom for Procurement and Supply Chain Management Courses</h2>
           <p>L.O Appiah, PhD</p>
+          <div style={{ alignSelf: 'flex-start' }}>
+            <PWAInstallButton dark />
+          </div>
         </div>
         <div />
       </aside>
@@ -61,6 +65,7 @@ export default function Login({ mode }) {
               <strong>PSCM E-class</strong>
             </div>
             <span className="small muted">Virtual Classroom for Procurement and Supply Chain Management Courses · L.O Appiah, PhD</span>
+            <div style={{ marginTop: 4 }}><PWAInstallButton /></div>
           </div>
           <div className="stack-sm">
             <h1>{staff ? 'Teaching assistant account' : activating ? 'Activate your account' : 'Sign in'}</h1>
@@ -136,6 +141,7 @@ export default function Login({ mode }) {
           )}
         </form>
       </main>
+      <OfflineIndicator />
     </div>
   );
 }

@@ -20,6 +20,12 @@ export default function AnnouncementsTab({ course, ta }) {
     if (!title.trim()) return;
     const ok = await act(() => run(supabase.from('announcements').insert({ course_id: course.id, title: title.trim(), body })), 'Announcement posted.');
     if (ok !== undefined) {
+      supabase.rpc('log_course_action', {
+        p_course: course.id,
+        p_action: 'announcement',
+        p_summary: `Posted announcement "${title.trim()}"`,
+        p_details: {},
+      }).catch(() => {});
       setTitle('');
       setBody('');
       reload();

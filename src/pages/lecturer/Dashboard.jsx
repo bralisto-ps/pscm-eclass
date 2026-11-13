@@ -6,11 +6,13 @@ import { COURSE_COLORS, contrastWithWhite, greeting, initials } from '../../lib/
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import { Bar, ErrorNote, Field, Loading, Modal, Swatch, useAction, useLoad } from '../../components/ui.jsx';
+import CloneCourseModal from '../../components/CloneCourseModal.jsx';
 
 export default function Dashboard() {
   const { profile, isTA } = useAuth();
   const { data, error, loading, reload } = useLoad(() => rpc('lecturer_overview'), []);
   const [creating, setCreating] = useState(false);
+  const [cloning, setCloning] = useState(false);
   const courses = (data || []).filter((c) => !c.archived);
   const archived = (data || []).filter((c) => c.archived);
   const totals = courses.reduce(
@@ -23,9 +25,16 @@ export default function Dashboard() {
       <Topbar title={`${greeting()}, ${(isTA ? (profile.full_name || '').split(' ')[0] : (profile.full_name || '').split(' ').slice(-1)[0]) || 'Lecturer'}`}
         sub={isTA ? 'Teaching assistant' : 'Lecturer dashboard'}>
         {!isTA && (
-          <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
-            <Icon name="plus" /> New course
-          </button>
+          <div className="row-wrap" style={{ gap: 8 }}>
+            {(data || []).length > 0 && (
+              <button type="button" className="btn" onClick={() => setCloning(true)}>
+                <Icon name="layers" /> Clone for new semester
+              </button>
+            )}
+            <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+              <Icon name="plus" /> New course
+            </button>
+          </div>
         )}
       </Topbar>
       <div className="page stack-lg">
@@ -95,6 +104,7 @@ export default function Dashboard() {
         )}
       </div>
       {creating && <CourseForm onClose={() => setCreating(false)} />}
+      {cloning && <CloneCourseModal courses={data || []} onClose={() => setCloning(false)} />}
     </>
   );
 }

@@ -16,6 +16,8 @@ import AnnouncementsTab from './course/AnnouncementsTab.jsx';
 import AttendanceTab from './course/AttendanceTab.jsx';
 import CATab from './course/CATab.jsx';
 import Forum from '../../components/Forum.jsx';
+import CloneCourseModal from '../../components/CloneCourseModal.jsx';
+import AuditLogPanel from '../../components/AuditLogPanel.jsx';
 
 const TABS = [
   { id: 'materials', label: 'Materials' },
@@ -87,6 +89,7 @@ function SettingsTab({ course, reload }) {
   const navigate = useNavigate();
   const [act, busy] = useAction();
   const [editing, setEditing] = useState(false);
+  const [cloning, setCloning] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [typed, setTyped] = useState('');
 
@@ -110,7 +113,7 @@ function SettingsTab({ course, reload }) {
   }
 
   return (
-    <div className="stack-lg" style={{ maxWidth: 760 }}>
+    <div className="stack-lg" style={{ maxWidth: 880 }}>
       <section className="card stack">
         <div className="between">
           <h2>Course details</h2>
@@ -124,6 +127,20 @@ function SettingsTab({ course, reload }) {
       </section>
 
       <StaffPanel course={course} />
+
+      <AuditLogPanel course={course} />
+
+      <section className="card stack">
+        <h2>Clone course for new semester</h2>
+        <p className="small muted">
+          Create a fresh copy of {course.code} with your weekly modules, learning materials, quizzes, question bank, assignments, and CA structure — without copying old students, attempts, submissions, grades, or attendance.
+        </p>
+        <div>
+          <button type="button" className="btn" onClick={() => setCloning(true)}>
+            <Icon name="layers" size={16} /> Clone for new semester
+          </button>
+        </div>
+      </section>
 
       <section className="card stack">
         <h2>{course.archived ? 'Restore course' : 'Archive course'}</h2>
@@ -143,6 +160,7 @@ function SettingsTab({ course, reload }) {
       </section>
 
       {editing && <CourseForm course={course} onClose={() => setEditing(false)} onSaved={reload} />}
+      {cloning && <CloneCourseModal sourceCourse={course} onClose={() => setCloning(false)} />}
       {deleting && (
         <Confirm
           title="Delete course permanently?"

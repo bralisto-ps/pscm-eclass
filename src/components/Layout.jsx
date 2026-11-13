@@ -4,6 +4,7 @@ import Icon from './Icon.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { supabase } from '../lib/supabase.js';
 import { initials } from '../lib/format.js';
+import { OfflineIndicator, PWAInstallButton } from './PWABanner.jsx';
 
 export function Topbar({ title, sub, children }) {
   return (
@@ -83,6 +84,9 @@ export default function Layout() {
         <NavLink to="/account" className="nav-link" style={{ marginTop: 16 }}>
           <Icon name="settings" /> Account Settings
         </NavLink>
+        <div style={{ padding: '4px 4px 0' }}>
+          <PWAInstallButton dark />
+        </div>
 
         <div className="sidebar-foot" style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: '10px 10px 10px 8px' }}>
           <div className="avatar" style={{ border: '1px solid rgba(255,255,255,0.15)', background: 'var(--ink-2)' }}>
@@ -106,10 +110,12 @@ export default function Layout() {
             <Icon name="menu" />
           </button>
           <span className="brand-mark" style={{ width: 30, height: 30, fontSize: 12 }}>PS</span>
-          <strong style={{ letterSpacing: '-0.01em' }}>PSCM E-class</strong>
+          <strong style={{ letterSpacing: '-0.01em', flex: 1 }}>PSCM E-class</strong>
+          <PWAInstallButton compact dark />
         </div>
         <Outlet />
       </div>
+      <OfflineIndicator />
     </div>
   );
 }

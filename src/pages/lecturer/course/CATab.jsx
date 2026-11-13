@@ -6,6 +6,8 @@ import { parseCourseMeta, serializeCourseMeta, computeStudentCA } from '../../..
 import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../../components/ui.jsx';
 import { ALL_GROUPS, GroupFilters, groupLabel, matchesGroup } from '../../../components/Groups.jsx';
+import PrintReportModal from '../../../components/PrintReportModal.jsx';
+import { buildCAReportHtml } from '../../../lib/printReport.js';
 import { SortSelect, SortTh } from '../../../components/SortBar.jsx';
 import { byNameIndex, compareNumber, compareText } from '../../../lib/sort.js';
 
@@ -101,6 +103,7 @@ function CAInner({ course, data, reload, onCourseChanged }) {
   const [entering, setEntering] = useState(null);
   const [removing, setRemoving] = useState(null);
   const [examModal, setExamModal] = useState(false);
+  const [printingReport, setPrintingReport] = useState(false);
   const [group, setGroup] = useState(ALL_GROUPS);
   const [q, setQ] = useState('');
   const [gradeFilter, setGradeFilter] = useState('all');
@@ -603,6 +606,7 @@ function CAInner({ course, data, reload, onCourseChanged }) {
           </div>
           <div className="row-wrap">
             {avg !== null && <span className="small muted">Class CA Avg: {fmtNumber(avg, 1)} / 40</span>}
+            <button type="button" className="btn btn-sm" onClick={() => setPrintingReport(true)} disabled={!saved.length}><Icon name="file" size={16} /> Print / PDF Sign-Off</button>
             <button type="button" className="btn btn-sm" onClick={exportOfficialXlsx} disabled={!saved.length}><Icon name="download" size={16} /> Export Excel (CA 1 & 2)</button>
             <button type="button" className={`btn btn-sm ${course.ca_released ? '' : 'btn-primary'}`} onClick={toggleRelease} disabled={!saved.length}>
               {course.ca_released ? 'Hide CA from students' : 'Show CA to students'}
@@ -692,6 +696,25 @@ function CAInner({ course, data, reload, onCourseChanged }) {
           onClose={() => setRemoving(null)} onConfirm={() => { setComps(comps.filter((c) => c.key !== removing.key)); setDirty(true); setRemoving(null); }} />
       )}
 
+      {printingReport && (
+        <PrintReportModal
+          title={`CA & Exam Sign-Off Sheet · ${course.code}`}
+          html={buildCAReportHtml({
+            course,
+            rows,
+            caConfig,
+            dec,
+            getGradeLetter,
+            getGradeRemarks,
+            groupLabelText: [
+              group.programme !== '*' ? (group.programme || 'Not set') : '',
+              group.stream !== '*' ? (group.stream || 'Not set') : '',
+              gradeFilter !== 'all' ? `Standing: ${gradeFilter}` : '',
+            ].filter(Boolean).join(' · '),
+          })}
+          onClose={() => setPrintingReport(false)}
+        />
+      )}
       {examModal && (
         <ExamReleaseModal
           course={course}
