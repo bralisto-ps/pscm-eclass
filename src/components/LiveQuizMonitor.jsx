@@ -3,6 +3,7 @@ import { rpc, rpcAll } from '../lib/supabase.js';
 import { fmtDateTime, fmtNumber, relative } from '../lib/format.js';
 import { compareDate, compareNumber, compareText } from '../lib/sort.js';
 import { LIVE_EXAM_AND_PHOTOS_SQL } from '../lib/liveExamSql.js';
+import StudentScriptModal from './StudentScriptModal.jsx';
 import Icon from './Icon.jsx';
 import { ALL_GROUPS, GroupFilters, matchesGroup } from './Groups.jsx';
 import { SortSelect, SortTh } from './SortBar.jsx';
@@ -46,6 +47,7 @@ export default function LiveQuizMonitor({ quiz, isTA, onMutate }) {
   const [resumeTarget, setResumeTarget] = useState(null);
   const [resumeMins, setResumeMins] = useState('15');
   const [forceTarget, setForceTarget] = useState(null);
+  const [scriptTarget, setScriptTarget] = useState(null);
 
   const load = useCallback(async (silent = false) => {
     if (silent) setRefreshing(true);
@@ -388,7 +390,7 @@ export default function LiveQuizMonitor({ quiz, isTA, onMutate }) {
                   <SortTh label="Last saved" ascKey="saved_desc" descKey="saved_desc" defaultDir="desc" current={sort} onSort={setSort} className="hide-sm" />
                   <SortTh label="Time left" ascKey="time_left_asc" descKey="time_left_asc" current={sort} onSort={setSort} />
                   <SortTh label="Flags" ascKey="exits_desc" descKey="exits_desc" defaultDir="desc" current={sort} onSort={setSort} />
-                  {!isTA && <th style={{ textAlign: 'right' }}>Control</th>}
+                  <th style={{ textAlign: 'right' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -444,10 +446,20 @@ export default function LiveQuizMonitor({ quiz, isTA, onMutate }) {
                           {!r.flagged && <span className="muted small">—</span>}
                         </div>
                       </td>
-                      {!isTA && (
-                        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                          {r.status === 'in_progress' && (
-                            <div className="row" style={{ gap: 4, justifyContent: 'flex-end' }}>
+                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        <div className="row" style={{ gap: 4, justifyContent: 'flex-end' }}>
+                          {r.attempt_id && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-ghost"
+                              onClick={() => setScriptTarget(r)}
+                              title="Inspect student answer choices"
+                            >
+                              <Icon name="eye" size={13} /> Script
+                            </button>
+                          )}
+                          {!isTA && r.status === 'in_progress' && (
+                            <>
                               <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={() => quickExtend(r, 5)} title="Add 5 minutes">
                                 +5m
                               </button>
@@ -473,9 +485,9 @@ export default function LiveQuizMonitor({ quiz, isTA, onMutate }) {
                               >
                                 Submit
                               </button>
-                            </div>
+                            </>
                           )}
-                          {r.isDone && (
+                          {!isTA && r.isDone && (
                             <button
                               type="button"
                               className="btn btn-sm btn-ghost"
@@ -486,8 +498,8 @@ export default function LiveQuizMonitor({ quiz, isTA, onMutate }) {
                               <Icon name="play" size={13} /> Resume
                             </button>
                           )}
-                        </td>
-                      )}
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -631,6 +643,16 @@ export default function LiveQuizMonitor({ quiz, isTA, onMutate }) {
         </Modal>
       )}
 
+      {scriptTarget && (
+        <StudentScriptModal
+          attemptId={scriptTarget.attempt_id}
+          student={scriptTarget}
+          quiz={quiz}
+          isTA={isTA}
+          onClose={() => setScriptTarget(null)}
+          onMarked={() => { load(true); onMutate?.(); }}
+        />
+      )}
       {forceTarget && (
         <Confirm
           title="Force-submit this attempt?"

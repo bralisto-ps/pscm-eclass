@@ -12,6 +12,7 @@ import { Confirm, Empty, ErrorNote, Loading, Modal, Tabs, useAction, useLoad, us
 import { ItemAnalysis, Integrity } from './QuizInsights.jsx';
 import { useAuth } from '../../lib/auth.jsx';
 import LiveQuizMonitor from '../../components/LiveQuizMonitor.jsx';
+import StudentScriptModal from '../../components/StudentScriptModal.jsx';
 import { deleteQuizProctorPhoto, loadQuizProctorPhotos, purgeQuizProctorPhotos } from '../../lib/proctorPhotos.js';
 
 const BINS = [
@@ -119,6 +120,7 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoM
   const [retake, setRetake] = useState(null);
   const [showLog, setShowLog] = useState(null);
   const [viewPhoto, setViewPhoto] = useState(null);
+  const [viewScript, setViewScript] = useState(null);
   const [purgingPhotos, setPurgingPhotos] = useState(false);
   const [act, busy] = useAction();
 
@@ -427,7 +429,18 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoM
                         </div>
                       </td>
                       <td><span className={`badge ${cls}`}>{label}</span></td>
-                      <td>{!ta && r.attempts_used > 0 && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setRetake(r)}>Allow retake</button>}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <div className="row" style={{ gap: 4 }}>
+                          {r.attempt_id && (
+                            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setViewScript(r)} title="View every question and student answer choice">
+                              <Icon name="eye" size={14} /> View script
+                            </button>
+                          )}
+                          {!ta && r.attempts_used > 0 && (
+                            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setRetake(r)}>Allow retake</button>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -472,6 +485,16 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoM
           message={`This will permanently delete all ${photoMeta.size || photos.size} student webcam verification snapshots stored for this quiz to free up storage and protect student privacy.`}
           onClose={() => setPurgingPhotos(false)}
           onConfirm={purgeAllPhotos}
+        />
+      )}
+      {viewScript && (
+        <StudentScriptModal
+          attemptId={viewScript.attempt_id}
+          student={viewScript}
+          quiz={quiz}
+          isTA={ta}
+          onClose={() => setViewScript(null)}
+          onMarked={reload}
         />
       )}
       {viewPhoto && (

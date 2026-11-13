@@ -2949,3 +2949,67 @@ begin
     execute format('grant execute on function public.%s to authenticated', f);
   end loop;
 end $$;
+
+-- Staff script viewer: view any student's full attempt choices, unique figures & marks
+create or replace function public.staff_attempt_review(p_attempt uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  a public.attempts;
+  qz public.quizzes;
+  pr public.profiles;
+  qs jsonb;
+begin
+  select * into a from public.attempts where id = p_attempt;
+  if not found then raise exception 'Attempt not found.'; end if;
+  select * into qz from public.quizzes where id = a.quiz_id;
+  perform public.require_staff(qz.course_id);
+  select * into pr from public.profiles where id = a.student_id;
+
+  select jsonb_agg(jsonb_build_object(
+           'response_id', r.id,
+           'id', q.id,
+           'kind', q.kind,
+           'prompt', q.prompt,
+           'marks', q.marks,
+           'unit', q.unit,
+           'vars', case when coalesce(trim(q.formula), '') <> ''
+                        then public.gen_vars(a.seed, q.id, q.params) else '{}'::jsonb end,
+           'options', case when q.kind in ('mcq','truefalse') then q.options else '[]'::jsonb end,
+           'value', r.value,
+           'is_correct', r.is_correct,
+           'marks_awarded', r.marks_awarded,
+           'feedback', r.feedback,
+           'correct', case
+                        when q.kind in ('mcq','truefalse') then q.answer->'correct'
+                        when q.kind = 'short' then q.answer->'accepted'
+                        when q.kind = 'numeric' then (select to_jsonb(public.expected_value(q, a.seed)))
+                        else null
+                      end,
+           'explanation', q.explanation)
+         order by o.ord)
+    into qs
+    from unnest(a.question_order) with ordinality as o(qid, ord)
+    join public.questions q on q.id = o.qid
+    left join public.responses r on r.attempt_id = a.id and r.question_id = q.id;
+
+  return jsonb_build_object(
+    'attempt_id', a.id,
+    'quiz_id', qz.id,
+    'title', qz.title,
+    'status', a.status,
+    'score', a.score,
+    'max_score', a.max_score,
+    'started_at', a.started_at,
+    'submitted_at', a.submitted_at,
+    'student', jsonb_build_object(
+      'id', pr.id,
+      'full_name', coalesce(pr.full_name, 'Student'),
+      'index_no', coalesce(pr.index_no, '')
+    ),
+    'questions', coalesce(qs, '[]'::jsonb)
+  );
+end;
+$$;
+
+revoke execute on function public.staff_attempt_review(uuid) from public, anon;
+grant execute on function public.staff_attempt_review(uuid) to authenticated;
