@@ -206,7 +206,7 @@ export function Integrity({ quiz, rows, photos = new Map() }) {
             </div>
             <div className="stack-sm" style={{ gap: 4 }}>
               <strong style={{ fontSize: 16 }}>{viewingPhoto.student.full_name}</strong>
-              <span className="mono muted">{viewingPhoto.student.index_no} {viewingPhoto.student.programme ? `· ${viewPhoto.student.programme}` : ''}</span>
+              <span className="mono muted">{viewingPhoto.student.index_no} {viewingPhoto.student.programme ? `· ${viewingPhoto.student.programme}` : ''}</span>
               <span className="small muted">
                 Captured mid-exam from the candidate webcam during the test session.
               </span>
