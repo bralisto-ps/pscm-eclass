@@ -13,6 +13,9 @@ const ACTION_LABELS = {
   attendance_manual: 'Attendance edit',
   forum_answer: 'Q&A reply',
   announcement: 'Announcement',
+  quiz_extend_time: 'Extended quiz time',
+  quiz_reopen_attempt: 'Resumed attempt',
+  quiz_force_submit: 'Force-submitted quiz',
 };
 
 const AUDIT_SQL_SNIPPET = `create table if not exists public.course_audit_logs (

@@ -11,6 +11,8 @@ import { Topbar } from '../../components/Layout.jsx';
 import { Confirm, Empty, ErrorNote, Loading, Modal, Tabs, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { ItemAnalysis, Integrity } from './QuizInsights.jsx';
 import { useAuth } from '../../lib/auth.jsx';
+import LiveQuizMonitor from '../../components/LiveQuizMonitor.jsx';
+import { deleteQuizProctorPhoto, loadQuizProctorPhotos, purgeQuizProctorPhotos } from '../../lib/proctorPhotos.js';
 
 const BINS = [
   { label: '0–39%', lo: 0, hi: 39.999, color: 'var(--amber)' },
@@ -35,29 +37,20 @@ export default function QuizResults() {
   const [tab, setTab] = useState('gradebook');
   const { data, error, loading, reload, setData } = useLoad(async () => {
     const quiz = await run(supabase.from('quizzes').select('*, courses(id, code, title)').eq('id', quizId).single());
-    const [rows, queue, photos] = await Promise.all([
+    const [rows, queue] = await Promise.all([
       rpcAll('quiz_gradebook', { p_quiz: quizId }),
       rpcAll('marking_queue', { p_quiz: quizId }),
-      supabase
-        .from('course_messages')
-        .select('student_id, subject, message, created_at')
-        .eq('course_id', quiz.course_id)
-        .ilike('subject', '__PROCTOR_PHOTO__:%')
-        .then((res) => res.data || [])
-        .catch(() => []),
     ]);
-    return { quiz, rows, queue, photos };
+    const { photos, meta: photoMeta } = await loadQuizProctorPhotos({
+      courseId: quiz.course_id,
+      quizId: quiz.id,
+      rows,
+    });
+    return { quiz, rows, queue, photos, photoMeta };
   }, [quizId]);
 
-  const photoMap = useMemo(() => {
-    const map = new Map();
-    (data?.photos || []).forEach((p) => {
-      const attemptId = p.subject?.replace('__PROCTOR_PHOTO__:', '')?.trim();
-      if (attemptId) map.set(attemptId, p.message);
-      if (p.student_id) map.set(p.student_id, p.message);
-    });
-    return map;
-  }, [data?.photos]);
+  const photoMap = data?.photos || new Map();
+  const photoMeta = data?.photoMeta || new Map();
   const [act, busy] = useAction();
 
   if (loading) return <Loading label="Collecting results…" />;
@@ -65,6 +58,7 @@ export default function QuizResults() {
 
   const { quiz, rows, queue } = data;
   const pending = queue.filter((r) => r.marks_awarded === null).length;
+  const activeCount = rows.filter((r) => r.status === 'in_progress').length;
 
   async function toggleRelease() {
     const next = !quiz.results_released;
@@ -93,10 +87,15 @@ export default function QuizResults() {
         {quiz.results_released
           ? <div className="notice notice-info">Results are released. Students can see their scores{quiz.show_answers ? ' and the correct answers' : ''}.</div>
           : <div className="notice notice-warn">Results are hidden. Students only see "submitted" until {isTA ? 'the lecturer releases' : 'you release'} them.</div>}
-        <Tabs tabs={[{ id: 'gradebook', label: 'Gradebook' }, { id: 'marking', label: 'Written answers', count: pending },
-          ...(isTA ? [] : [{ id: 'analysis', label: 'Question analysis' }, { id: 'integrity', label: 'Integrity checks' }])]} value={tab}
+        <Tabs tabs={[
+          { id: 'gradebook', label: 'Gradebook' },
+          { id: 'live', label: 'Live monitor', count: activeCount },
+          { id: 'marking', label: 'Written answers', count: pending },
+          ...(isTA ? [] : [{ id: 'analysis', label: 'Question analysis' }, { id: 'integrity', label: 'Integrity checks' }]),
+        ]} value={tab}
           onChange={(t) => { setTab(t); if (t === 'gradebook') reload(); }} />
-        {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} ta={isTA} photos={photoMap} />}
+        {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} ta={isTA} photos={photoMap} photoMeta={photoMeta} />}
+        {tab === 'live' && <LiveQuizMonitor quiz={quiz} isTA={isTA} onMutate={reload} />}
         {tab === 'marking' && <Marking queue={queue} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
         {tab === 'analysis' && !isTA && <ItemAnalysis quiz={quiz} />}
         {tab === 'integrity' && !isTA && <Integrity quiz={quiz} rows={rows} photos={photoMap} />}
@@ -111,7 +110,7 @@ function exitText(r) {
   return (r.exit_log || []).map((e) => `${new Date(e.at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} — ${kinds[e.kind] || e.kind}`).join('\n');
 }
 
-function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
+function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoMeta = new Map() }) {
   const [filter, setFilter] = useState('all');
   const [scoreBand, setScoreBand] = useState('all');
   const [group, setGroup] = useState(ALL_GROUPS);
@@ -125,16 +124,14 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
 
   async function deleteSinglePhoto(item) {
     if (!item?.student) return;
-    const attemptId = item.student.attempt_id;
-    const studentId = item.student.student_id;
     const ok = await act(async () => {
-      let query = supabase.from('course_messages').delete().eq('course_id', quiz.course_id);
-      if (attemptId) {
-        query = query.eq('subject', `__PROCTOR_PHOTO__:${attemptId}`);
-      } else if (studentId) {
-        query = query.eq('student_id', studentId).ilike('subject', '__PROCTOR_PHOTO__:%');
-      }
-      await run(query);
+      await deleteQuizProctorPhoto({
+        courseId: quiz.course_id,
+        quizId: quiz.id,
+        attemptId: item.student.attempt_id,
+        studentId: item.student.student_id,
+        meta: photoMeta,
+      });
     }, 'Verification photo deleted.');
     if (ok !== undefined) {
       setViewPhoto(null);
@@ -144,14 +141,13 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
 
   async function purgeAllPhotos() {
     const ok = await act(async () => {
-      await run(
-        supabase
-          .from('course_messages')
-          .delete()
-          .eq('course_id', quiz.course_id)
-          .ilike('subject', '__PROCTOR_PHOTO__:%')
-      );
-    }, 'All verification photos purged permanently.');
+      await purgeQuizProctorPhotos({
+        courseId: quiz.course_id,
+        quizId: quiz.id,
+        rows: allRows,
+        meta: photoMeta,
+      });
+    }, 'All verification photos for this quiz purged permanently.');
     if (ok !== undefined) {
       setPurgingPhotos(false);
       reload();
@@ -362,7 +358,7 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
                 onClick={() => setPurgingPhotos(true)}
                 title="Permanently remove candidate snapshot photos to save storage"
               >
-                <Icon name="trash" size={14} /> Clear Photos ({photos.size})
+                <Icon name="trash" size={14} /> Clear Photos ({photoMeta.size || photos.size})
               </button>
             )}
             <button type="button" className="btn btn-sm" onClick={exportXlsx}><Icon name="download" size={16} /> Export to Excel</button>
@@ -473,7 +469,7 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map() }) {
           danger
           confirmLabel="Permanently delete all photos"
           busy={busy}
-          message={`This will permanently delete all ${photos.size} student webcam verification snapshots stored for this quiz to free up storage and protect student privacy.`}
+          message={`This will permanently delete all ${photoMeta.size || photos.size} student webcam verification snapshots stored for this quiz to free up storage and protect student privacy.`}
           onClose={() => setPurgingPhotos(false)}
           onConfirm={purgeAllPhotos}
         />

@@ -3,7 +3,8 @@ import { Link, useParams } from 'react-router-dom';
 import { rpc, run, supabase } from '../../lib/supabase.js';
 import { fillVars, fmtNumber, initials } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
-import { ErrorNote, Loading, Modal, Swatch, useLoad } from '../../components/ui.jsx';
+import { ErrorNote, Loading, Modal, Swatch, useLoad, useToast } from '../../components/ui.jsx';
+import { uploadProctorSnapshot } from '../../lib/proctorPhotos.js';
 import { deviceLabel } from '../../lib/device.js';
 import { cleanText, FORMAT_LABELS, getQuestionTimeLimit, parseQuizMeta } from '../../lib/quizMeta.js';
 
@@ -26,6 +27,49 @@ function writeFlags(id, set) {
   } catch {
     /* private browsing: flags just won't persist */
   }
+}
+
+const queueKey = (attemptId) => `pscm_quiz_queue_${attemptId}`;
+
+function readAnswerQueue(attemptId) {
+  if (!attemptId) return {};
+  try {
+    const raw = localStorage.getItem(queueKey(attemptId));
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeAnswerQueue(attemptId, map) {
+  if (!attemptId) return;
+  try {
+    const keys = Object.keys(map || {});
+    if (keys.length === 0) localStorage.removeItem(queueKey(attemptId));
+    else localStorage.setItem(queueKey(attemptId), JSON.stringify(map));
+  } catch {
+    /* storage quota or private browsing */
+  }
+}
+
+function upsertQueuedAnswer(attemptId, qid, value) {
+  const cur = readAnswerQueue(attemptId);
+  cur[qid] = { value, updatedAt: Date.now() };
+  writeAnswerQueue(attemptId, cur);
+}
+
+function removeQueuedAnswer(attemptId, qid) {
+  const cur = readAnswerQueue(attemptId);
+  if (qid in cur) {
+    delete cur[qid];
+    writeAnswerQueue(attemptId, cur);
+  }
+}
+
+function clearAnswerQueue(attemptId) {
+  if (!attemptId) return;
+  try { localStorage.removeItem(queueKey(attemptId)); } catch {}
 }
 
 
@@ -262,7 +306,7 @@ function Done({ quiz, status, autoSubmitted }) {
             <Icon name="check" size={24} />
           </div>
         </div>
-        <h1>{autoSubmitted === 'exits' ? 'Quiz submitted automatically' : autoSubmitted ? 'Time is up — quiz submitted' : 'Quiz submitted'}</h1>
+        <h1>{autoSubmitted === 'exits' ? 'Quiz submitted automatically' : autoSubmitted === 'staff' ? 'Quiz submitted by your lecturer' : autoSubmitted ? 'Time is up — quiz submitted' : 'Quiz submitted'}</h1>
         {autoSubmitted === 'exits' && (
           <div className="notice notice-error">You left the quiz screen too many times, so your quiz was submitted with the answers you had saved. Your lecturer can see when each exit happened.</div>
         )}
@@ -302,13 +346,30 @@ function Runner({ initial }) {
     );
   }
 
+  const toast = useToast();
   const strict = !!quiz.lockdown;
   const allowBack = !quiz.no_backtrack;
   const fsSupported = canFullscreen();
-  const offset = useMemo(() => new Date(attempt.server_now || Date.now()).getTime() - Date.now(), [attempt.server_now]);
-  const deadline = new Date(attempt.deadline_at || Date.now() + 3600000).getTime();
-  const [answers, setAnswers] = useState(() => Object.fromEntries(questions.map((q) => [q.id, q.value ?? ''])));
-  const [saveState, setSaveState] = useState({});
+  const [offset, setOffset] = useState(() => new Date(attempt.server_now || Date.now()).getTime() - Date.now());
+  const [deadlineMs, setDeadlineMs] = useState(() => new Date(attempt.deadline_at || Date.now() + 3600000).getTime());
+  const deadlineRef = useRef(deadlineMs);
+  deadlineRef.current = deadlineMs;
+
+  const initialQueue = useMemo(() => readAnswerQueue(attempt.id), [attempt.id]);
+  const [answers, setAnswers] = useState(() => {
+    const base = Object.fromEntries(questions.map((q) => [q.id, q.value ?? '']));
+    Object.entries(initialQueue).forEach(([qid, entry]) => {
+      if (qid in base && entry && 'value' in entry) base[qid] = entry.value;
+    });
+    return base;
+  });
+  const [saveState, setSaveState] = useState(() => {
+    const init = {};
+    Object.keys(initialQueue).forEach((qid) => { init[qid] = 'error'; });
+    return init;
+  });
+  const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
+  const [pendingCount, setPendingCount] = useState(() => Object.keys(initialQueue).length);
   const [current, setCurrent] = useState(() => (allowBack ? 0 : Math.min(attempt.current_index || 0, Math.max(0, questions.length - 1))));
   const [needFs, setNeedFs] = useState(() => strict && fsSupported && !document.fullscreenElement);
   const [exitWarn, setExitWarn] = useState(null);
@@ -317,7 +378,7 @@ function Runner({ initial }) {
   const doneRef = useRef(false);
   const lastExit = useRef(0);
   const [flags, setFlags] = useState(() => readFlags(attempt.id));
-  const [remaining, setRemaining] = useState(deadline - (Date.now() + offset));
+  const [remaining, setRemaining] = useState(() => deadlineMs - (Date.now() + offset));
   const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [finished, setFinished] = useState(null);
@@ -333,10 +394,6 @@ function Runner({ initial }) {
   const isTwoPhase = Boolean(quizMeta?.two_phase_screens);
   const [phase, setPhase] = useState('question'); // 'question' | 'response'
 
-  useEffect(() => {
-    setPhase('question');
-  }, [current]);
-
   const antiCaptureMode = true;
   const [blurred, setBlurred] = useState(false);
   const [zoomBlocked, setZoomBlocked] = useState(false);
@@ -347,7 +404,9 @@ function Runner({ initial }) {
     try { return localStorage.getItem(`selfie:${attempt.id}`) === 'done'; } catch { return false; }
   });
 
-  const latest = useRef({});     // question id -> latest value not yet confirmed saved
+  const latest = useRef(
+    Object.fromEntries(Object.entries(initialQueue).map(([qid, entry]) => [qid, entry?.value]))
+  ); // question id -> latest value not yet confirmed saved
   const inflight = useRef({});   // question id -> true while saving
   const timers = useRef({});     // debounce timers
 
@@ -377,21 +436,35 @@ function Runner({ initial }) {
     if (!dataUrl || !attempt?.id) return;
     (async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) return;
-        await supabase.from('course_messages').insert({
-          course_id: quiz.course_id,
-          student_id: user.id,
-          subject: `__PROCTOR_PHOTO__:${attempt.id}`,
-          message: dataUrl,
+        await uploadProctorSnapshot({
+          courseId: quiz.course_id,
+          quizId: quiz.id,
+          attemptId: attempt.id,
+          dataUrl,
         });
         try { localStorage.removeItem(`pending_photo:${attempt.id}`); } catch {}
       } catch (e) {
-        console.warn('Background proctor snapshot upload deferred to submit:', e);
+        console.warn('Background proctor snapshot upload deferred:', e);
         try { localStorage.setItem(`pending_photo:${attempt.id}`, dataUrl); } catch {}
       }
     })();
-  }, [quiz?.course_id, attempt?.id]);
+  }, [quiz?.course_id, quiz?.id, attempt?.id]);
+
+  const retryPendingPhoto = useCallback(async () => {
+    try {
+      const pending = localStorage.getItem(`pending_photo:${attempt.id}`);
+      if (!pending) return;
+      await uploadProctorSnapshot({
+        courseId: quiz.course_id,
+        quizId: quiz.id,
+        attemptId: attempt.id,
+        dataUrl: pending,
+      });
+      localStorage.removeItem(`pending_photo:${attempt.id}`);
+    } catch {
+      /* keep pending in localStorage for next retry */
+    }
+  }, [quiz?.course_id, quiz?.id, attempt?.id]);
 
   const handleSelfieDone = useCallback(() => {
     setSelfiePrompt(false);
@@ -412,13 +485,22 @@ function Runner({ initial }) {
     setSaveState((s) => ({ ...s, [qid]: 'saving' }));
     try {
       await rpc('save_response', { p_attempt: attempt.id, p_question: qid, p_value: value });
-      if (latest.current[qid] === value) delete latest.current[qid];
+      if (latest.current[qid] === value) {
+        delete latest.current[qid];
+        removeQueuedAnswer(attempt.id, qid);
+        setPendingCount(Object.keys(latest.current).length);
+      }
       setSaveState((s) => ({ ...s, [qid]: 'saved' }));
     } catch (e) {
       setSaveState((s) => ({ ...s, [qid]: 'error' }));
-      if (/Time is up/i.test(e.message)) {
-        latest.current = {};
+      if (/locked/i.test(e.message)) {
+        delete latest.current[qid];
+        removeQueuedAnswer(attempt.id, qid);
+        setPendingCount(Object.keys(latest.current).length);
+      } else if (/Time is up/i.test(e.message)) {
         setFatal('Time is up for this attempt. Your saved answers have been submitted.');
+      } else {
+        setPendingCount(Object.keys(latest.current).length);
       }
     } finally {
       inflight.current[qid] = false;
@@ -432,15 +514,50 @@ function Runner({ initial }) {
     for (let i = 0; i < 40 && Object.values(inflight.current).some(Boolean); i++) {
       await new Promise((r) => setTimeout(r, 150));
     }
+    setPendingCount(Object.keys(latest.current).length);
   }, [saveNow]);
+
+  const syncDeadline = useCallback(async () => {
+    if (doneRef.current) return;
+    try {
+      const info = await rpc('attempt_deadline', { p_attempt: attempt.id });
+      if (!info) return;
+      if (info.server_now) {
+        setOffset(new Date(info.server_now).getTime() - Date.now());
+      }
+      if (info.status && info.status !== 'in_progress' && !doneRef.current) {
+        doneRef.current = true;
+        clearAnswerQueue(attempt.id);
+        setPendingCount(0);
+        if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+        setFinished({ status: info.status, auto: 'staff' });
+        return;
+      }
+      if (info.deadline_at) {
+        const nextDead = new Date(info.deadline_at).getTime();
+        if (Number.isFinite(nextDead) && Math.abs(nextDead - deadlineRef.current) > 4000) {
+          const diffMin = Math.round((nextDead - deadlineRef.current) / 60000);
+          setDeadlineMs(nextDead);
+          setFatal((prev) => (/Time is up/i.test(prev) ? '' : prev));
+          if (diffMin > 0) {
+            toast?.(`Extra time granted (+${diffMin} min) — your timer has been updated.`);
+          }
+        }
+      }
+    } catch {
+      /* ignore if offline or RPC not deployed yet */
+    }
+  }, [attempt.id, toast]);
 
   function setAnswer(qid, value, immediate) {
     setAnswers((a) => ({ ...a, [qid]: value }));
     latest.current[qid] = value;
+    upsertQueuedAnswer(attempt.id, qid, value);
+    setPendingCount(Object.keys(latest.current).length);
     setSaveState((s) => ({ ...s, [qid]: 'pending' }));
     clearTimeout(timers.current[qid]);
     if (immediate) saveNow(qid);
-    else timers.current[qid] = setTimeout(() => saveNow(qid), 800);
+    else timers.current[qid] = setTimeout(() => saveNow(qid), 750);
   }
 
   const submit = useCallback(async (auto) => {
@@ -448,33 +565,35 @@ function Runner({ initial }) {
     setSubmitting(true);
     doneRef.current = true;
     await flushAll();
-    try {
-      const pending = localStorage.getItem(`pending_photo:${attempt.id}`);
-      if (pending) {
-        supabase.auth.getUser().then(({ data: { user } }) => {
-          if (user) {
-            supabase.from('course_messages').insert({
-              course_id: quiz.course_id,
-              student_id: user.id,
-              subject: `__PROCTOR_PHOTO__:${attempt.id}`,
-              message: pending,
-            }).then(() => {
-              localStorage.removeItem(`pending_photo:${attempt.id}`);
-            }).catch(() => {});
-          }
-        });
-      }
-    } catch {}
+    await retryPendingPhoto();
+
+    const unsyncedCount = Object.keys(latest.current).length;
+    if (!auto && unsyncedCount > 0) {
+      doneRef.current = false;
+      setSubmitting(false);
+      setConfirming(false);
+      setFatal(
+        `You appear to be offline and ${unsyncedCount} answer${unsyncedCount === 1 ? '' : 's'} ${unsyncedCount === 1 ? 'is' : 'are'} saved only on this device. Reconnect briefly so your answers sync before submitting.`
+      );
+      return;
+    }
+
     try {
       const status = await rpc('submit_attempt', { p_attempt: attempt.id });
+      clearAnswerQueue(attempt.id);
+      setPendingCount(0);
       setFinished({ status, auto });
       if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
     } catch (e) {
       doneRef.current = false;
-      setFatal(e.message);
+      setFatal(
+        unsyncedCount > 0
+          ? `Could not submit while offline (${unsyncedCount} answer${unsyncedCount === 1 ? '' : 's'} safely saved on your device). Keep this page open until your connection returns.`
+          : e.message
+      );
       setSubmitting(false);
     }
-  }, [attempt.id, flushAll, submitting, quiz?.course_id]);
+  }, [attempt.id, flushAll, retryPendingPhoto, submitting]);
 
   async function enterFullscreen() {
     try {
@@ -517,8 +636,42 @@ function Runner({ initial }) {
 
   // ---------------- All useEffect hooks (all dependencies declared) ----------------
   useEffect(() => {
+    setPhase('question');
+  }, [current]);
+
+  useEffect(() => {
     setQRemaining(perQSeconds);
   }, [current, perQSeconds]);
+
+  // Network online/offline listeners + auto-flush queued answers on reconnect or mount
+  useEffect(() => {
+    if (Object.keys(latest.current).length > 0 && navigator.onLine) {
+      flushAll();
+    }
+    retryPendingPhoto();
+    const onOnline = () => {
+      setOnline(true);
+      setFatal((prev) => (/offline/i.test(prev) ? '' : prev));
+      flushAll();
+      retryPendingPhoto();
+      syncDeadline();
+    };
+    const onOffline = () => setOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, [flushAll, retryPendingPhoto, syncDeadline]);
+
+  // Poll lecturer-granted extra time or staff force-submit every 25s
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (navigator.onLine) syncDeadline();
+    }, 25000);
+    return () => clearInterval(t);
+  }, [syncDeadline]);
 
   const midpoint = Math.floor(questions.length / 2);
   useEffect(() => {
@@ -567,7 +720,7 @@ function Runner({ initial }) {
 
   useEffect(() => {
     const t = setInterval(() => {
-      const left = deadline - (Date.now() + offset);
+      const left = deadlineMs - (Date.now() + offset);
       setRemaining(left);
       if (left <= 0) {
         clearInterval(t);
@@ -575,7 +728,7 @@ function Runner({ initial }) {
       }
     }, 500);
     return () => clearInterval(t);
-  }, [deadline, offset, submit]);
+  }, [deadlineMs, offset, submit]);
 
   useEffect(() => {
     if (!perQSeconds || doneRef.current) return undefined;
@@ -810,10 +963,15 @@ function Runner({ initial }) {
         <div className="progress"><div style={{ width: `${(answeredCount / questions.length) * 100}%` }} /></div>
       </header>
 
-      {(unsaved || fatal) && (
+      {(!online || unsaved || pendingCount > 0 || fatal) && (
         <div style={{ padding: '12px 28px 0', maxWidth: 1280, margin: '0 auto', width: '100%' }}>
-          <div className={`notice ${fatal ? 'notice-error' : 'notice-warn'}`}>
-            {fatal || 'Some answers could not be saved — check your internet connection. We keep retrying every few seconds; do not close this page.'}
+          <div className={`notice ${fatal ? 'notice-error' : 'notice-warn'}`} role="status" aria-live="polite">
+            {fatal
+              || (!online
+                ? `Connection interrupted — ${pendingCount > 0 ? `${pendingCount} answer${pendingCount === 1 ? '' : 's'} saved safely on your device` : 'answers you enter are saved on this device'} and will sync automatically when you reconnect.`
+                : pendingCount > 0
+                  ? `Syncing ${pendingCount} queued answer${pendingCount === 1 ? '' : 's'} from this device to the server… Keep this page open.`
+                  : 'Some answers could not be saved yet — retrying automatically every few seconds.')}
           </div>
         </div>
       )}
@@ -1007,7 +1165,7 @@ function Runner({ initial }) {
                     {st === 'saving' && 'Saving…'}
                     {st === 'pending' && 'Editing…'}
                     {st === 'saved' && <span style={{ color: 'var(--teal-dark)' }}>✓ Saved</span>}
-                    {st === 'error' && 'Not saved yet — retrying'}
+                    {st === 'error' && (online ? 'Not saved yet — retrying' : 'Saved on device · will sync online')}
                   </span>
                 </div>
               </>
@@ -1207,6 +1365,13 @@ function Runner({ initial }) {
             <p className="small muted">
               Flagged for review: {questions.map((x, i) => (flags.has(x.id) ? i + 1 : null)).filter(Boolean).join(', ')}
             </p>
+          )}
+          {(!online || pendingCount > 0) && (
+            <div className="notice notice-warn">
+              {pendingCount > 0
+                ? `${pendingCount} answer${pendingCount === 1 ? '' : 's'} ${pendingCount === 1 ? 'is' : 'are'} queued on your device and will sync automatically before submission completes.`
+                : 'Your internet connection looks interrupted. Submitting requires a brief connection.'}
+            </div>
           )}
           <p className="small muted">After you submit you cannot change your answers.</p>
         </Modal>
