@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
+import Icon, { BrandMark } from '../components/Icon.jsx';
 import { Field } from '../components/ui.jsx';
 import { OfflineIndicator, PWAInstallButton } from '../components/PWABanner.jsx';
 
@@ -11,8 +12,10 @@ export default function Login({ mode }) {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [name, setName] = useState('');
+  const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
   const staff = mode === 'staff';
   const activating = mode === 'activate' || staff;
 
@@ -20,7 +23,13 @@ export default function Login({ mode }) {
     e.preventDefault();
     setError('');
     if (!id.trim() || !password) {
-      setError(staff ? 'Enter your email and choose a password.' : activating ? 'Enter your index number and choose a password.' : 'Enter your index number and password.');
+      setError(
+        staff
+          ? 'Enter your email and choose a password.'
+          : activating
+            ? 'Enter your index number and choose a password.'
+            : 'Enter your index number and password.',
+      );
       return;
     }
     if (activating) {
@@ -43,44 +52,82 @@ export default function Login({ mode }) {
   return (
     <div className="auth">
       <aside className="auth-side">
+        <div className="auth-grid-bg" aria-hidden="true" />
         <div className="brand" style={{ padding: 0 }}>
-          <span className="brand-mark">PS</span>
-          <span className="brand-name">PSCM E-class</span>
+          <BrandMark size={40} />
+          <div>
+            <div className="brand-name" style={{ fontSize: 17 }}>PSCM E-class</div>
+            <div className="brand-sub" style={{ color: '#94a3b8' }}>Academic Learning &amp; Assessment</div>
+          </div>
         </div>
+
         <div className="stack">
-          <h2>Virtual Classroom for Procurement and Supply Chain Management Courses</h2>
-          <p>L.O Appiah, PhD</p>
-          <div style={{ alignSelf: 'flex-start' }}>
+          <div>
+            <h2>Virtual Classroom for Procurement and Supply Chain Management</h2>
+            <p>Course Coordinator: <strong style={{ color: '#fff', fontWeight: 600 }}>L.O Appiah, PhD</strong></p>
+          </div>
+
+          <div className="auth-highlights">
+            <div className="auth-highlight">
+              <span className="auth-highlight-ico"><Icon name="book" size={16} /></span>
+              <span>Lecture notes, study desk flashcards, and downloadable handouts</span>
+            </div>
+            <div className="auth-highlight">
+              <span className="auth-highlight-ico"><Icon name="shield" size={16} /></span>
+              <span>Timed online assessments with live attendance check-in</span>
+            </div>
+            <div className="auth-highlight">
+              <span className="auth-highlight-ico"><Icon name="chart" size={16} /></span>
+              <span>Instant quiz feedback, continuous assessment, and grade tracking</span>
+            </div>
+          </div>
+
+          <div style={{ alignSelf: 'flex-start', marginTop: 4 }}>
             <PWAInstallButton dark />
           </div>
         </div>
-        <div />
+
+        <div className="tiny" style={{ color: '#64748b' }}>
+          Department of Procurement &amp; Supply Chain Management
+        </div>
       </aside>
 
       <main className="auth-main">
         <form className="auth-card" onSubmit={submit} noValidate>
-          <div className="auth-mobile-head stack-sm" style={{ marginBottom: 8 }}>
-            <div className="row">
-              <span className="brand-mark">PS</span>
-              <strong>PSCM E-class</strong>
+          <div className="auth-mobile-head stack-sm" style={{ marginBottom: 4 }}>
+            <div className="row" style={{ gap: 10 }}>
+              <BrandMark size={34} />
+              <div>
+                <div className="strong" style={{ fontSize: 16 }}>PSCM E-class</div>
+                <div className="tiny muted">L.O Appiah, PhD</div>
+              </div>
             </div>
-            <span className="small muted">Virtual Classroom for Procurement and Supply Chain Management Courses · L.O Appiah, PhD</span>
+            <span className="small muted">Virtual Classroom for Procurement and Supply Chain Management Courses</span>
             <div style={{ marginTop: 4 }}><PWAInstallButton /></div>
           </div>
-          <div className="stack-sm">
-            <h1>{staff ? 'Teaching assistant account' : activating ? 'Activate your account' : 'Sign in'}</h1>
-            <p className="muted">
+
+          <nav className="auth-switch" aria-label="Account mode">
+            <Link to="/login" className={mode === 'signin' ? 'active' : ''}>Sign in</Link>
+            <Link to="/activate" className={mode === 'activate' ? 'active' : ''}>Activate</Link>
+            <Link to="/staff" className={mode === 'staff' ? 'active' : ''}>Staff setup</Link>
+          </nav>
+
+          <div className="stack-sm" style={{ gap: 4 }}>
+            <h1 style={{ fontSize: 22 }}>
+              {staff ? 'Teaching assistant account' : activating ? 'Activate your account' : 'Welcome back'}
+            </h1>
+            <p className="muted small">
               {staff
                 ? 'Use the email address your lecturer added for you, and choose a password.'
                 : activating
                   ? 'First time here? Enter your index number and choose a password you will remember.'
-                  : 'Students sign in with their index number.'}
+                  : 'Sign in with your student index number or staff email.'}
             </p>
           </div>
 
           {error && <div className="notice notice-error" role="alert">{error}</div>}
 
-          <Field label={staff ? 'Email' : activating ? 'Index number' : 'Index number (or staff email)'}>
+          <Field label={staff ? 'Email address' : activating ? 'Index number' : 'Index number or staff email'}>
             <input
               className={staff ? 'input' : 'input mono'}
               type={staff ? 'email' : 'text'}
@@ -92,25 +139,38 @@ export default function Login({ mode }) {
               placeholder={staff ? 'you@gmail.com' : 'e.g. 4021180'}
             />
           </Field>
+
           {staff && (
-            <Field label="Your name">
-              <input className="input" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
+            <Field label="Full name">
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" placeholder="e.g. Kwame Boateng" />
             </Field>
           )}
+
           <Field label={activating ? 'Choose a password' : 'Password'} hint={activating ? 'at least 6 characters' : undefined}>
-            <input
-              className="input"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete={activating ? 'new-password' : 'current-password'}
-            />
-          </Field>
-          {activating && (
-            <Field label="Type the password again">
+            <div className="input-wrap">
               <input
                 className="input"
-                type="password"
+                type={showPw ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete={activating ? 'new-password' : 'current-password'}
+              />
+              <button
+                type="button"
+                className="input-eye"
+                onClick={() => setShowPw((v) => !v)}
+                aria-label={showPw ? 'Hide password' : 'Show password'}
+              >
+                <Icon name={showPw ? 'eyeOff' : 'eye'} size={17} />
+              </button>
+            </div>
+          </Field>
+
+          {activating && (
+            <Field label="Confirm password">
+              <input
+                className="input"
+                type={showPw ? 'text' : 'password'}
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
                 autoComplete="new-password"
@@ -122,18 +182,6 @@ export default function Login({ mode }) {
             {busy ? 'Please wait…' : activating ? 'Activate and sign in' : 'Sign in'}
           </button>
 
-          <div className="small muted" style={{ textAlign: 'center' }}>
-            {activating ? (
-              <>Already activated? <Link to="/login">Sign in</Link></>
-            ) : (
-              <>First time? <Link to="/activate">Activate your account</Link></>
-            )}
-          </div>
-          {!activating && (
-            <p className="tiny muted" style={{ textAlign: 'center' }}>
-              Teaching assistant? <Link to="/staff">Set up your account</Link>
-            </p>
-          )}
           {!activating && (
             <p className="tiny muted" style={{ textAlign: 'center' }}>
               Forgot your password? Ask your lecturer to reset it.

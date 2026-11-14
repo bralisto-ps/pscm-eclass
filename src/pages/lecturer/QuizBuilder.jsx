@@ -897,7 +897,7 @@ function Settings({ quiz, count, questions = [], windows, streams, classes, onSa
                   const qCount = formatCounts[k] || 0;
                   const defaultSecs = k === 'mcq' ? 30 : k === 'truefalse' ? 20 : k === 'short' ? 45 : k === 'numeric' ? 90 : 180;
                   return (
-                    <div key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '5px 8px', background: '#fff', borderRadius: 6, border: '1px solid var(--line-2)' }}>
+                    <div key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '5px 8px', background: 'var(--surface)', borderRadius: 6, border: '1px solid var(--line-2)' }}>
                       <div>
                         <span className="small"><strong>{label}</strong></span>
                         <span className="tiny muted" style={{ marginLeft: 6 }}>({qCount} in quiz)</span>
@@ -1040,7 +1040,7 @@ function Settings({ quiz, count, questions = [], windows, streams, classes, onSa
                   const qVal = quotas[k] ?? '';
                   const over = Number(qVal) > avail;
                   return (
-                    <div key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '5px 8px', background: '#fff', borderRadius: 6, border: `1px solid ${over ? '#fca5a5' : 'var(--line-2)'}` }}>
+                    <div key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '5px 8px', background: 'var(--surface)', borderRadius: 6, border: `1px solid ${over ? '#fca5a5' : 'var(--line-2)'}` }}>
                       <div>
                         <span className="small"><strong>{label}</strong></span>
                         <span className="tiny muted" style={{ marginLeft: 6 }}>({avail} in bank)</span>
@@ -1426,7 +1426,7 @@ export function UniversalImportModal({ quizId, start, onClose, onDone }) {
               border: '1px solid var(--line-2)',
               borderRadius: 8,
               padding: '6px 8px',
-              background: '#fff',
+              background: 'var(--surface)',
             }}
           >
             {parsed.map((q, idx) => (

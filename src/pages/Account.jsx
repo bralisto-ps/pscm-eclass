@@ -1,11 +1,14 @@
 import { useState } from 'react';
 import { useAuth } from '../lib/auth.jsx';
+import { useTheme } from '../lib/theme.js';
 import { supabase, friendlyError } from '../lib/supabase.js';
+import Icon from '../components/Icon.jsx';
 import { Topbar } from '../components/Layout.jsx';
 import { Field, useToast } from '../components/ui.jsx';
 
 export default function Account() {
   const { profile, isStaff: isLecturer, session, signOut } = useAuth();
+  const [theme, setTheme] = useTheme();
   const toast = useToast();
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
@@ -35,7 +38,7 @@ export default function Account() {
           <div className="grid-2">
             <div className="stack-sm">
               <span className="eyebrow">Name</span>
-              <span>{profile.full_name}</span>
+              <span className="strong">{profile.full_name}</span>
             </div>
             <div className="stack-sm">
               <span className="eyebrow">{isLecturer ? 'Email' : 'Index number'}</span>
@@ -45,6 +48,35 @@ export default function Account() {
           {!isLecturer && (
             <p className="small muted">If your name is spelt wrongly, ask your lecturer to correct it on the class list.</p>
           )}
+        </section>
+
+        <section className="card stack">
+          <div className="between" style={{ flexWrap: 'wrap' }}>
+            <div>
+              <h2>Appearance</h2>
+              <p className="small muted" style={{ marginTop: 4 }}>
+                Switch between bright daylight mode and night study mode for comfortable reading.
+              </p>
+            </div>
+            <div className="row" style={{ gap: 8 }}>
+              <button
+                type="button"
+                className={`btn btn-sm ${theme === 'light' ? 'btn-primary' : ''}`}
+                onClick={() => setTheme('light')}
+                aria-pressed={theme === 'light'}
+              >
+                <Icon name="sun" size={15} /> Light
+              </button>
+              <button
+                type="button"
+                className={`btn btn-sm ${theme === 'dark' ? 'btn-primary' : ''}`}
+                onClick={() => setTheme('dark')}
+                aria-pressed={theme === 'dark'}
+              >
+                <Icon name="moon" size={15} /> Night Study
+              </button>
+            </div>
+          </div>
         </section>
 
         <form className="card stack" onSubmit={change}>

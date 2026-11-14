@@ -4,8 +4,9 @@ import CheckInModal from '../../components/CheckIn.jsx';
 import { useAuth } from '../../lib/auth.jsx';
 import { rpc, run, supabase } from '../../lib/supabase.js';
 import { dayChip, fmtDateTime, greeting, initials, relative } from '../../lib/format.js';
+import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
-import { Empty, ErrorNote, Loading, Swatch, useLoad } from '../../components/ui.jsx';
+import { DashboardSkeleton, Empty, ErrorNote, Swatch, useLoad } from '../../components/ui.jsx';
 
 function describe(item) {
   if (item.kind === 'quiz') {
@@ -35,22 +36,27 @@ export default function StudentHome() {
 
   return (
     <>
-      <Topbar title={`${greeting()}, ${firstName}`} sub={new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} />
+      <Topbar
+        title={`${greeting()}, ${firstName}`}
+        sub={new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}
+      />
       <div className="page">
-        {loading && <Loading />}
+        {loading && <DashboardSkeleton />}
         <ErrorNote error={error} onRetry={reload} />
         {data && (
           <div className="two-col">
             <main className="stack-lg">
               {data.openAtt.map((a) => (
                 <section key={a.session_id} className="notice notice-info row-wrap" style={{ padding: '14px 18px' }} aria-label="Attendance open">
+                  <Icon name="shield" size={18} style={{ flexShrink: 0 }} />
                   <span style={{ flex: 1, minWidth: 200 }}>
-                    <strong>Attendance is open for {a.course_code}</strong> — {a.title}.
-                    {a.lat != null ? " 📍 GPS Geofence active (hall verification required)." : " Type the code shown in class."}
+                    <strong>Attendance is open for {a.course_code}</strong> — {a.title}.{' '}
+                    {a.lat != null ? 'GPS geofence active (hall verification required).' : 'Enter the code shown in class.'}
                   </span>
-                  <button type="button" className="btn btn-primary" onClick={() => setCheckIn(a)}>Check in</button>
+                  <button type="button" className="btn btn-primary btn-sm" onClick={() => setCheckIn(a)}>Check in</button>
                 </section>
               ))}
+
               {data.upcoming[0] ? (
                 <NextUp item={data.upcoming[0]} />
               ) : (
@@ -58,7 +64,7 @@ export default function StudentHome() {
                   <div>
                     <div className="kicker">All caught up</div>
                     <div className="title">Nothing is due right now</div>
-                    <div className="meta">New quizzes and assignments will show up here.</div>
+                    <div className="meta">New quizzes and assignments will appear here as soon as they are published.</div>
                   </div>
                 </section>
               )}
@@ -80,14 +86,15 @@ export default function StudentHome() {
                       const next = data.upcoming.find((u) => u.course_id === c.id);
                       return (
                         <Link key={c.id} to={`/course/${c.id}`} className="course-tile">
+                          <div className="course-accent-bar" style={{ background: c.color }} />
                           <Swatch color={c.color} text={initials(c.title)} />
-                          <div className="stack-sm" style={{ minWidth: 0, flex: 1, gap: 4 }}>
-                            <div className="between" style={{ alignItems: 'flex-start' }}>
+                          <div className="stack-sm" style={{ minWidth: 0, flex: 1, gap: 4, paddingTop: 2 }}>
+                            <div className="between" style={{ alignItems: 'flex-start', gap: 8 }}>
                               <span className="strong">{c.title}</span>
                               <span className="mono tiny muted nowrap">{c.code}</span>
                             </div>
                             <span className="small muted">
-                              {next ? `Next: ${next.title} · ${relative(next.due)}` : 'Nothing due'}
+                              {next ? `Next: ${next.title} · ${relative(next.due)}` : c.semester || 'No upcoming deadlines'}
                             </span>
                           </div>
                         </Link>
@@ -106,7 +113,13 @@ export default function StudentHome() {
                   const d = dayChip(u.due);
                   return (
                     <Link key={u.kind + u.id} to={`/course/${u.course_id}?tab=${u.kind === 'quiz' ? 'quizzes' : 'assignments'}`} className="list-row">
-                      <div className="day-chip" style={{ background: u.kind === 'quiz' ? 'var(--amber-50)' : 'var(--teal-50)', color: u.kind === 'quiz' ? 'var(--amber-ink)' : 'var(--teal-dark)' }}>
+                      <div
+                        className="day-chip"
+                        style={{
+                          background: u.kind === 'quiz' ? 'var(--amber-50)' : 'var(--teal-50)',
+                          color: u.kind === 'quiz' ? 'var(--amber-ink)' : 'var(--teal-dark)',
+                        }}
+                      >
                         <span className="dw">{d.day}</span>
                         <span className="dd">{d.date}</span>
                       </div>
@@ -127,7 +140,11 @@ export default function StudentHome() {
                     <div className="list-main">
                       <span className="tiny muted">{n.courses?.code} · {relative(n.created_at)}</span>
                       <span className="strong small">{n.title}</span>
-                      {n.body && <span className="small pre" style={{ color: 'var(--text-2)' }}>{n.body.length > 220 ? `${n.body.slice(0, 220)}…` : n.body}</span>}
+                      {n.body && (
+                        <span className="small pre" style={{ color: 'var(--text-2)' }}>
+                          {n.body.length > 220 ? `${n.body.slice(0, 220)}…` : n.body}
+                        </span>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -146,9 +163,9 @@ function NextUp({ item }) {
   return (
     <section className="hero" aria-label="Next up">
       <div className="date-block">
-        <span className="tiny strong" style={{ color: '#f2c98b', letterSpacing: '0.08em' }}>{d.day}</span>
+        <span className="tiny strong" style={{ color: '#fcd34d', letterSpacing: '0.08em' }}>{d.day}</span>
         <span className="d">{d.date}</span>
-        <span className="tiny" style={{ color: '#9faab4' }}>{d.month}</span>
+        <span className="tiny" style={{ color: '#94a3b8' }}>{d.month}</span>
       </div>
       <div style={{ flex: 1, minWidth: 0 }} className="stack-sm">
         <span className="kicker">Next up · {item.kind === 'quiz' ? 'Quiz' : 'Assignment'}</span>

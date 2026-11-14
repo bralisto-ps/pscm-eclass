@@ -5,7 +5,7 @@ import { useAuth } from '../../lib/auth.jsx';
 import { COURSE_COLORS, contrastWithWhite, greeting, initials } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
-import { Bar, ErrorNote, Field, Loading, Modal, Swatch, useAction, useLoad } from '../../components/ui.jsx';
+import { Bar, DashboardSkeleton, ErrorNote, Field, Modal, Swatch, useAction, useLoad } from '../../components/ui.jsx';
 import CloneCourseModal from '../../components/CloneCourseModal.jsx';
 
 export default function Dashboard() {
@@ -13,45 +13,94 @@ export default function Dashboard() {
   const { data, error, loading, reload } = useLoad(() => rpc('lecturer_overview'), []);
   const [creating, setCreating] = useState(false);
   const [cloning, setCloning] = useState(false);
+
   const courses = (data || []).filter((c) => !c.archived);
   const archived = (data || []).filter((c) => c.archived);
   const totals = courses.reduce(
-    (t, c) => ({ students: t.students + c.students, activated: t.activated + c.activated, toMark: t.toMark + c.to_mark, quizzes: t.quizzes + c.quizzes }),
+    (t, c) => ({
+      students: t.students + c.students,
+      activated: t.activated + c.activated,
+      toMark: t.toMark + c.to_mark,
+      quizzes: t.quizzes + c.quizzes,
+    }),
     { students: 0, activated: 0, toMark: 0, quizzes: 0 },
   );
+  const activatedPct = totals.students ? Math.round((totals.activated / totals.students) * 100) : 0;
 
   return (
     <>
-      <Topbar title={`${greeting()}, ${(isTA ? (profile.full_name || '').split(' ')[0] : (profile.full_name || '').split(' ').slice(-1)[0]) || 'Lecturer'}`}
-        sub={isTA ? 'Teaching assistant' : 'Lecturer dashboard'}>
+      <Topbar
+        title={`${greeting()}, ${(isTA ? (profile.full_name || '').split(' ')[0] : (profile.full_name || '').split(' ').slice(-1)[0]) || 'Lecturer'}`}
+        sub={isTA ? 'Teaching assistant' : 'Lecturer dashboard'}
+      >
         {!isTA && (
           <div className="row-wrap" style={{ gap: 8 }}>
             {(data || []).length > 0 && (
               <button type="button" className="btn" onClick={() => setCloning(true)}>
-                <Icon name="layers" /> Clone for new semester
+                <Icon name="layers" size={16} /> Clone for new semester
               </button>
             )}
             <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
-              <Icon name="plus" /> New course
+              <Icon name="plus" size={16} /> New course
             </button>
           </div>
         )}
       </Topbar>
+
       <div className="page stack-lg">
-        {loading && <Loading />}
+        {loading && <DashboardSkeleton />}
         <ErrorNote error={error} onRetry={reload} />
         {data && (
           <>
             <section className="grid-4" aria-label="Summary">
-              <div className="kpi"><span className="l">Courses</span><span className="v">{courses.length}</span></div>
-              <div className="kpi"><span className="l">Enrolments</span><span className="v">{totals.students.toLocaleString()}</span></div>
               <div className="kpi">
-                <span className="l">Accounts activated</span>
-                <span className="v">{totals.students ? Math.round((totals.activated / totals.students) * 100) : 0}%</span>
+                <div className="kpi-head">
+                  <span className="l">Active courses</span>
+                  <span className="kpi-icon" style={{ background: 'var(--teal-50)', color: 'var(--teal-dark)' }}>
+                    <Icon name="book" size={15} />
+                  </span>
+                </div>
+                <span className="v">{courses.length}</span>
+                <span className="kpi-sub">{totals.quizzes} {totals.quizzes === 1 ? 'quiz' : 'quizzes'} created</span>
               </div>
+
               <div className="kpi">
-                <span className="l">Waiting for marking</span>
+                <div className="kpi-head">
+                  <span className="l">Enrolments</span>
+                  <span className="kpi-icon" style={{ background: 'var(--blue-50)', color: 'var(--blue-ink)' }}>
+                    <Icon name="users" size={15} />
+                  </span>
+                </div>
+                <span className="v">{totals.students.toLocaleString()}</span>
+                <span className="kpi-sub">Across {courses.length} {courses.length === 1 ? 'course' : 'courses'}</span>
+              </div>
+
+              <div className="kpi">
+                <div className="kpi-head">
+                  <span className="l">Accounts activated</span>
+                  <span className="kpi-icon" style={{ background: 'var(--teal-50)', color: 'var(--teal-dark)' }}>
+                    <Icon name="check" size={15} />
+                  </span>
+                </div>
+                <span className="v">{activatedPct}%</span>
+                <span className="kpi-sub">{totals.activated.toLocaleString()} of {totals.students.toLocaleString()} students</span>
+              </div>
+
+              <div className="kpi">
+                <div className="kpi-head">
+                  <span className="l">Waiting for marking</span>
+                  <span
+                    className="kpi-icon"
+                    style={{
+                      background: totals.toMark ? 'var(--amber-50)' : 'var(--grey-50)',
+                      color: totals.toMark ? 'var(--amber-ink)' : 'var(--muted)',
+                    }}
+                  >
+                    <Icon name="clock" size={15} />
+                  </span>
+                </div>
                 <span className="v" style={{ color: totals.toMark ? 'var(--amber-ink)' : undefined }}>{totals.toMark}</span>
+                <span className="kpi-sub">{totals.toMark ? 'Pending review' : 'All caught up'}</span>
               </div>
             </section>
 
@@ -77,7 +126,10 @@ export default function Dashboard() {
               </div>
             ) : (
               <section>
-                <div className="section-title"><h2>Your courses</h2></div>
+                <div className="section-title">
+                  <h2>Your courses</h2>
+                  <span className="small muted">{courses.length} active</span>
+                </div>
                 <div className="grid-2">
                   {courses.map((c) => <CourseCard key={c.id} c={c} />)}
                 </div>
@@ -89,9 +141,10 @@ export default function Dashboard() {
                 <div className="section-title"><h2 className="muted">Archived</h2></div>
                 <div className="grid-3">
                   {archived.map((c) => (
-                    <Link key={c.id} to={`/teach/course/${c.id}`} className="course-tile" style={{ opacity: 0.75 }}>
+                    <Link key={c.id} to={`/teach/course/${c.id}`} className="course-tile" style={{ opacity: 0.78 }}>
+                      <div className="course-accent-bar" style={{ background: c.color }} />
                       <Swatch color={c.color} text={initials(c.title)} size={34} />
-                      <span className="stack-sm" style={{ gap: 0 }}>
+                      <span className="stack-sm" style={{ gap: 2 }}>
                         <span className="strong small">{c.title}</span>
                         <span className="mono tiny muted">{c.code}</span>
                       </span>
@@ -103,6 +156,7 @@ export default function Dashboard() {
           </>
         )}
       </div>
+
       {creating && <CourseForm onClose={() => setCreating(false)} />}
       {cloning && <CloneCourseModal courses={data || []} onClose={() => setCloning(false)} />}
     </>
@@ -113,22 +167,27 @@ function CourseCard({ c }) {
   const activePct = c.students ? Math.round((c.activated / c.students) * 100) : 0;
   return (
     <Link to={`/teach/course/${c.id}`} className="course-tile" style={{ flexDirection: 'column', gap: 14 }}>
-      <div className="row" style={{ width: '100%' }}>
+      <div className="course-accent-bar" style={{ background: c.color }} />
+      <div className="row" style={{ width: '100%', paddingTop: 2 }}>
         <Swatch color={c.color} text={initials(c.title)} />
-        <div className="stack-sm" style={{ gap: 0, flex: 1, minWidth: 0 }}>
-          <span className="strong">{c.title}</span>
+        <div className="stack-sm" style={{ gap: 2, flex: 1, minWidth: 0 }}>
+          <span className="strong" style={{ fontSize: 16 }}>{c.title}</span>
           <span className="mono tiny muted">{c.code}{c.semester ? ` · ${c.semester}` : ''}</span>
         </div>
-        {c.to_mark > 0 && <span className="badge badge-amber">{c.to_mark} to mark</span>}
+        {c.to_mark > 0 && (
+          <span className="small strong nowrap" style={{ color: 'var(--amber-ink)' }}>
+            {c.to_mark} to mark
+          </span>
+        )}
       </div>
-      <div className="grid-3" style={{ width: '100%', gap: 8 }}>
+      <div className="grid-3" style={{ width: '100%', gap: 8, paddingTop: 2 }}>
         <Mini v={c.students} l="students" />
         <Mini v={c.materials} l="materials" />
         <Mini v={c.quizzes} l="quizzes" />
       </div>
       <div style={{ width: '100%' }} className="stack-sm">
         <Bar value={activePct} color={c.color} />
-        <span className="tiny muted">{c.activated} of {c.students} students have activated their account</span>
+        <span className="tiny muted">{c.activated} of {c.students} students activated ({activePct}%)</span>
       </div>
     </Link>
   );
@@ -137,7 +196,7 @@ function CourseCard({ c }) {
 function Mini({ v, l }) {
   return (
     <div className="stack-sm" style={{ gap: 0 }}>
-      <span className="mono" style={{ fontSize: 20 }}>{Number(v).toLocaleString()}</span>
+      <span className="mono strong" style={{ fontSize: 20 }}>{Number(v).toLocaleString()}</span>
       <span className="tiny muted">{l}</span>
     </div>
   );
@@ -196,14 +255,35 @@ export function CourseForm({ course, onClose, onSaved }) {
         <span className="field-label">Colour</span>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(36px, 1fr))', gap: 8 }}>
           {COURSE_COLORS.map((c) => (
-            <button key={c} type="button" onClick={() => setF({ ...f, color: c })} aria-label={`Colour ${c}`} aria-pressed={f.color.toLowerCase() === c.toLowerCase()}
-              style={{ width: '100%', aspectRatio: '1', minHeight: 36, borderRadius: 9, background: c, cursor: 'pointer', border: f.color.toLowerCase() === c.toLowerCase() ? '3px solid var(--ink)' : '3px solid transparent', outline: f.color.toLowerCase() === c.toLowerCase() ? '2px solid #fff' : 'none', outlineOffset: -5 }} />
+            <button
+              key={c}
+              type="button"
+              onClick={() => setF({ ...f, color: c })}
+              aria-label={`Colour ${c}`}
+              aria-pressed={f.color.toLowerCase() === c.toLowerCase()}
+              style={{
+                width: '100%',
+                aspectRatio: '1',
+                minHeight: 36,
+                borderRadius: 9,
+                background: c,
+                cursor: 'pointer',
+                border: f.color.toLowerCase() === c.toLowerCase() ? '3px solid var(--text)' : '3px solid transparent',
+                outline: f.color.toLowerCase() === c.toLowerCase() ? '2px solid var(--surface)' : 'none',
+                outlineOffset: -5,
+              }}
+            />
           ))}
         </div>
         <div className="row-wrap" style={{ marginTop: 8 }}>
           <label className="row small" style={{ gap: 8 }}>
-            <input type="color" value={f.color} onChange={(e) => setF({ ...f, color: e.target.value })} aria-label="Custom colour"
-              style={{ width: 44, height: 40, padding: 2, border: '1px solid var(--field)', borderRadius: 8, background: '#fff', cursor: 'pointer' }} />
+            <input
+              type="color"
+              value={f.color}
+              onChange={(e) => setF({ ...f, color: e.target.value })}
+              aria-label="Custom colour"
+              style={{ width: 44, height: 40, padding: 2, border: '1px solid var(--field)', borderRadius: 8, background: 'var(--surface)', cursor: 'pointer' }}
+            />
             Any colour
           </label>
           <div style={{ flex: 1, minWidth: 180, background: f.color, color: '#fff', borderRadius: 8, padding: '10px 14px' }}>

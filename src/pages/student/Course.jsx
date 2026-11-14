@@ -13,7 +13,7 @@ import { useAuth } from '../../lib/auth.jsx';
 import { fmtBytes, fmtDateTime, fmtFull, fmtNumber, hostOf, pct, relative } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import {
-  Empty, ErrorBoundary, ErrorNote, Field, KindTag, Loading, Modal, Tabs, useAction, useLoad, useToast,
+  CourseSkeleton, Empty, ErrorBoundary, ErrorNote, Field, KindTag, Loading, Modal, Tabs, useAction, useLoad, useToast,
 } from '../../components/ui.jsx';
 
 const TABS = [
@@ -49,7 +49,7 @@ export default function StudentCourse() {
     return { course, modules, materials, news, quizzes: quizzes || [], assignments: assignments || [], attendance, ca };
   }, [courseId]);
 
-  if (loading) return <Loading />;
+  if (loading) return <CourseSkeleton />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
   if (!data.course) {
     return (

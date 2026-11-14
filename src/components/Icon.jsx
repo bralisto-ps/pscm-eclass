@@ -26,10 +26,12 @@ const PATHS = {
   chevronRight: 'M9 6l6 6-6 6',
   arrowUp: 'M12 19V5M6 11l6-6 6 6',
   arrowDown: 'M12 5v14M6 13l6 6 6-6',
+  arrowRight: 'M5 12h14M13 6l6 6-6 6',
   flag: 'M5 21V4h11l-2 4 2 4H5',
   key: 'M14 10a4 4 0 11-1.2-2.8L21 15v3h-3v-2h-2v-2l-3.2-3.2',
   settings: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19 12l2-1-2-4-2 .5-1.5-1L15 4h-6l-.5 2.5-1.5 1L5 7l-2 4 2 1-.1 1.5L3 15l2 4 2-.5 1.5 1L9 22h6l.5-2.5 1.5-1 2 .5 2-4-2-1.5z',
   eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 15a3 3 0 100-6 3 3 0 000 6z',
+  eyeOff: 'M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19M1 1l22 22M14.12 14.12a3 3 0 11-4.24-4.24',
   calendar: 'M4 5h16v16H4zM4 10h16M9 3v4M15 3v4',
   alert: 'M12 3l10 18H2zM12 10v5M12 18v.5',
   layers: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5',
@@ -46,7 +48,37 @@ const PATHS = {
   image: 'M4 5h16v14H4zM8.5 10a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM21 15l-5-5L5 21',
   lock: 'M5 11h14v10H5zM7 11V7a5 5 0 0110 0v4',
   printer: 'M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z',
+  sun: 'M12 3v2M12 19v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M3 12h2M19 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41M12 16a4 4 0 100-8 4 4 0 000 8z',
+  moon: 'M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z',
+  graduation: 'M22 10L12 5 2 10l10 5 10-5zM6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5',
 };
+
+export function BrandMark({ size = 36 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 64 64"
+      aria-hidden="true"
+      style={{ flexShrink: 0, display: 'block', borderRadius: Math.round(size * 0.25), boxShadow: '0 2px 10px rgba(0,0,0,0.22)' }}
+    >
+      <defs>
+        <linearGradient id="pscmBrandGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#0d9488" />
+          <stop offset="100%" stopColor="#0f4c5c" />
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="16" fill="url(#pscmBrandGrad)" />
+      <rect x="2.5" y="2.5" width="59" height="59" rx="13.5" fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="1.5" />
+      <path
+        d="M20 44V20h10.5c5.2 0 8.5 3.1 8.5 7.8 0 4.8-3.3 7.9-8.5 7.9H25.2V44H20zm5.2-12.5h4.9c2.4 0 3.8-1.3 3.8-3.7s-1.4-3.6-3.8-3.6h-4.9v7.3z"
+        fill="#fff"
+      />
+      <circle cx="44" cy="40" r="4.5" fill="#5eead4" />
+      <path d="M44 22v11" stroke="rgba(255,255,255,0.65)" strokeWidth="2.5" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 export default function Icon({ name, size = 18, strokeWidth = 2, className, style }) {
   return (

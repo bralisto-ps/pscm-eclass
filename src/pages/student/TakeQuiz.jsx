@@ -1155,7 +1155,7 @@ function Runner({ initial }) {
                     padding: '24px 22px',
                     borderRadius: '12px',
                     border: '1.5px solid var(--line-2)',
-                    background: '#fff',
+                    background: 'var(--surface)',
                   }}
                 >
                   <div style={{ marginBottom: 14 }}>

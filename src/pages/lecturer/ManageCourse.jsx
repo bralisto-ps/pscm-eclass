@@ -6,7 +6,7 @@ import { useAuth } from '../../lib/auth.jsx';
 import { fmtDateTime } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import { removeFiles } from '../../lib/files.js';
-import { Confirm, Empty, ErrorBoundary, ErrorNote, Field, Loading, Modal, Tabs, useAction, useLoad } from '../../components/ui.jsx';
+import { Confirm, CourseSkeleton, Empty, ErrorBoundary, ErrorNote, Field, Loading, Modal, Tabs, useAction, useLoad } from '../../components/ui.jsx';
 import { CourseForm } from './Dashboard.jsx';
 import MaterialsTab from './course/MaterialsTab.jsx';
 import QuizzesTab from './course/QuizzesTab.jsx';
@@ -21,7 +21,7 @@ import AuditLogPanel from '../../components/AuditLogPanel.jsx';
 
 const TABS = [
   { id: 'materials', label: 'Materials' },
-  { id: 'quizzes', label: 'Quizzes ✨ AI' },
+  { id: 'quizzes', label: 'Quizzes' },
   { id: 'assignments', label: 'Assignments' },
   { id: 'attendance', label: 'Attendance' },
   { id: 'ca', label: 'CA' },
@@ -46,7 +46,7 @@ export default function ManageCourse() {
     [courseId],
   );
 
-  if (loading) return <Loading />;
+  if (loading) return <CourseSkeleton />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
   if (!course) return <div className="page"><div className="card"><Empty title="Course not found" /></div></div>;
 

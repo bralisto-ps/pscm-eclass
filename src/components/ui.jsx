@@ -40,8 +40,8 @@ export function ToastProvider({ children }) {
       <div className="toasts" role="status" aria-live="polite">
         {items.map((t) => (
           <div key={t.id} className={`toast ${t.kind === 'error' ? 'error' : ''}`}>
-            <Icon name={t.kind === 'error' ? 'alert' : 'check'} />
-            <span>{t.text}</span>
+            <Icon name={t.kind === 'error' ? 'alert' : 'check'} size={17} />
+            <span style={{ flex: 1 }}>{t.text}</span>
           </div>
         ))}
       </div>
@@ -79,6 +79,63 @@ export function Loading({ label = 'Loading…' }) {
     <div className="loading">
       <div className="spinner" />
       <span>{label}</span>
+    </div>
+  );
+}
+
+export function DashboardSkeleton() {
+  return (
+    <div className="stack-lg" aria-hidden="true">
+      <div className="grid-4">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="skel-card">
+            <div className="between">
+              <div className="skel" style={{ width: '48%', height: 13 }} />
+              <div className="skel" style={{ width: 28, height: 28, borderRadius: 8 }} />
+            </div>
+            <div className="skel" style={{ width: '36%', height: 28 }} />
+            <div className="skel" style={{ width: '62%', height: 11 }} />
+          </div>
+        ))}
+      </div>
+      <div className="grid-2">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="skel-card" style={{ minHeight: 150 }}>
+            <div className="row">
+              <div className="skel" style={{ width: 42, height: 42, borderRadius: 10 }} />
+              <div className="stack-sm" style={{ flex: 1, gap: 6 }}>
+                <div className="skel" style={{ width: '65%', height: 16 }} />
+                <div className="skel" style={{ width: '40%', height: 12 }} />
+              </div>
+            </div>
+            <div className="skel" style={{ width: '100%', height: 24, marginTop: 6 }} />
+            <div className="skel" style={{ width: '100%', height: 6 }} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function CourseSkeleton() {
+  return (
+    <div aria-hidden="true">
+      <div style={{ background: 'var(--ink)', padding: '24px 32px' }}>
+        <div className="skel" style={{ width: 90, height: 14, opacity: 0.28 }} />
+        <div className="skel" style={{ width: 120, height: 14, marginTop: 18, opacity: 0.28 }} />
+        <div className="skel" style={{ width: '42%', height: 28, marginTop: 8, opacity: 0.28 }} />
+      </div>
+      <div className="page stack-lg">
+        <div className="grid-2">
+          {[0, 1].map((i) => (
+            <div key={i} className="skel-card" style={{ minHeight: 140 }}>
+              <div className="skel" style={{ width: '45%', height: 16 }} />
+              <div className="skel" style={{ width: '85%', height: 13 }} />
+              <div className="skel" style={{ width: '70%', height: 13 }} />
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -179,6 +236,7 @@ const KIND_STYLE = {
   practice: ['Practice', 'var(--amber-50)', 'var(--amber-ink)'],
   assignment: ['Task', 'var(--teal-50)', 'var(--teal-dark)'],
 };
+
 export function KindTag({ kind }) {
   const [label, bg, fg] = KIND_STYLE[kind] || KIND_STYLE.file;
   return (
@@ -226,7 +284,6 @@ export function Confirm({ title, message, confirmLabel = 'Confirm', danger, onCo
   );
 }
 
-
 export class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -236,17 +293,17 @@ export class ErrorBoundary extends Component {
     return { hasError: true, error };
   }
   componentDidCatch(error, errorInfo) {
-    console.error("ErrorBoundary caught:", error, errorInfo);
+    console.error('ErrorBoundary caught:', error, errorInfo);
   }
   render() {
     if (this.state.hasError) {
       return (
-        <div className="card stack" style={{ margin: "20px 0", border: "1px solid var(--red-ink, #dc2626)" }}>
+        <div className="card stack" style={{ margin: '20px 0', borderColor: 'var(--red-ink)' }}>
           <div className="row" style={{ gap: 10 }}>
-            <span style={{ fontSize: 24 }}>⚠️</span>
+            <Icon name="alert" size={22} style={{ color: 'var(--red-ink)' }} />
             <div>
-              <h3 style={{ margin: "0 0 4px" }}>Something went wrong loading this section</h3>
-              <p className="small muted" style={{ margin: 0 }}>{this.state.error?.message || "An unexpected error occurred."}</p>
+              <h3 style={{ margin: '0 0 4px' }}>Something went wrong loading this section</h3>
+              <p className="small muted" style={{ margin: 0 }}>{this.state.error?.message || 'An unexpected error occurred.'}</p>
             </div>
           </div>
           <div>
