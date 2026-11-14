@@ -3013,3 +3013,903 @@ $$;
 
 revoke execute on function public.staff_attempt_review(uuid) from public, anon;
 grant execute on function public.staff_attempt_review(uuid) to authenticated;
+
+-- =====================================================================
+-- 15. PSCM E-Class Feature Pack (Features 1-7):
+--     Multi-Select Questions, Question Diagrams, Hall Access PIN,
+--     Short-Answer Clustering & One-Click Regrade, Material Read Tracking
+-- =====================================================================
+
+-- 1. Schema extensions (idempotent)
+alter table public.questions drop constraint if exists questions_kind_check;
+alter table public.questions add constraint questions_kind_check
+  check (kind in ('mcq','multiselect','truefalse','numeric','short','essay'));
+
+alter table public.questions add column if not exists image_path text not null default '';
+alter table public.quizzes add column if not exists access_pin text not null default '';
+
+-- 2. Public-read CDN Storage bucket for Question Diagrams (lecturer-only write)
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types) values
+  ('question_media', 'question_media', true, 5242880,
+   array['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'])
+on conflict (id) do update
+  set public = excluded.public,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "question media read" on storage.objects;
+create policy "question media read" on storage.objects for select to public
+  using (bucket_id = 'question_media');
+
+drop policy if exists "question media insert" on storage.objects;
+create policy "question media insert" on storage.objects for insert to authenticated
+  with check (bucket_id = 'question_media' and public.is_lecturer());
+
+drop policy if exists "question media update" on storage.objects;
+create policy "question media update" on storage.objects for update to authenticated
+  using (bucket_id = 'question_media' and public.is_lecturer())
+  with check (bucket_id = 'question_media' and public.is_lecturer());
+
+drop policy if exists "question media delete" on storage.objects;
+create policy "question media delete" on storage.objects for delete to authenticated
+  using (bucket_id = 'question_media' and public.is_lecturer());
+
+-- 3. Shared grading helper supporting MCQ, Multi-Select (with partial credit),
+--    True/False, Numeric/Formula, Short Answer & Essay
+create or replace function public.eval_question_grade(
+  q public.questions,
+  v jsonb,
+  p_seed int
+)
+returns table (is_correct boolean, marks_awarded numeric, feedback text)
+language plpgsql stable security definer set search_path = public as $$
+declare
+  txt text;
+  exp numeric;
+  giv numeric;
+  tol numeric;
+  corr_arr text[];
+  sel_arr text[];
+  corr_n int;
+  right_n int;
+  wrong_n int;
+  partial boolean;
+begin
+  is_correct := null;
+  marks_awarded := null;
+  feedback := null;
+  txt := case
+    when v is null or jsonb_typeof(v) = 'array' then ''
+    else coalesce(v #>> '{}', '')
+  end;
+
+  if q.kind in ('mcq', 'truefalse') then
+    is_correct := txt <> '' and txt = coalesce(q.answer->>'correct', '');
+    marks_awarded := case when is_correct then q.marks else 0 end;
+  elsif q.kind = 'multiselect' then
+    select coalesce(array_agg(el), '{}'::text[]) into corr_arr
+      from jsonb_array_elements_text(coalesce(q.answer->'correct', '[]'::jsonb)) el;
+    if v is not null and jsonb_typeof(v) = 'array' then
+      select coalesce(array_agg(distinct el), '{}'::text[]) into sel_arr
+        from jsonb_array_elements_text(v) el;
+    else
+      sel_arr := '{}'::text[];
+    end if;
+    corr_n := coalesce(array_length(corr_arr, 1), 0);
+    right_n := coalesce((select count(*)::int from unnest(sel_arr) s where s = any(corr_arr)), 0);
+    wrong_n := coalesce((select count(*)::int from unnest(sel_arr) s where not (s = any(corr_arr))), 0);
+    partial := coalesce((q.answer->>'partial')::boolean, true);
+    if corr_n = 0 or coalesce(array_length(sel_arr, 1), 0) = 0 then
+      is_correct := false;
+      marks_awarded := 0;
+    elsif partial then
+      is_correct := (right_n = corr_n and wrong_n = 0);
+      marks_awarded := round(q.marks * greatest(0::numeric, (right_n - wrong_n)::numeric / corr_n::numeric), 2);
+    else
+      is_correct := (right_n = corr_n and wrong_n = 0);
+      marks_awarded := case when is_correct then q.marks else 0 end;
+    end if;
+  elsif q.kind = 'numeric' then
+    begin
+      exp := public.expected_value(q, p_seed);
+      giv := public.parse_number(v);
+      tol := case when q.tolerance_type = 'pct' then abs(exp) * q.tolerance / 100 else q.tolerance end;
+      is_correct := giv is not null and abs(giv - exp) <= tol + 0.0000001;
+      marks_awarded := case when is_correct then q.marks else 0 end;
+    exception when others then
+      is_correct := false;
+      marks_awarded := 0;
+      feedback := 'This question could not be marked automatically. Your lecturer will check it.';
+    end;
+  elsif q.kind = 'short' then
+    is_correct := txt <> '' and exists (
+      select 1 from jsonb_array_elements_text(coalesce(q.answer->'accepted', '[]'::jsonb)) acc
+      where public.norm_text(acc) = public.norm_text(txt)
+    );
+    marks_awarded := case when is_correct then q.marks else 0 end;
+  else -- essay
+    if trim(txt) = '' then
+      is_correct := false;
+      marks_awarded := 0;
+    end if;
+  end if;
+
+  return next;
+end;
+$$;
+
+create or replace function public.finalize_attempt(p_attempt uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  a   public.attempts;
+  q   public.questions;
+  v   jsonb;
+  g   record;
+begin
+  select * into a from public.attempts where id = p_attempt for update;
+  if not found or a.status <> 'in_progress' then return; end if;
+
+  for q in select * from public.questions where id = any(a.question_order) loop
+    select r.value into v from public.responses r where r.attempt_id = a.id and r.question_id = q.id;
+    select * into g from public.eval_question_grade(q, v, a.seed);
+
+    insert into public.responses (attempt_id, question_id, value, is_correct, marks_awarded, feedback)
+    values (a.id, q.id, v, g.is_correct, g.marks_awarded, g.feedback)
+    on conflict (attempt_id, question_id)
+    do update set is_correct = excluded.is_correct,
+                  marks_awarded = excluded.marks_awarded,
+                  feedback = coalesce(excluded.feedback, public.responses.feedback);
+  end loop;
+
+  update public.attempts
+     set submitted_at = least(now(), deadline_at), status = 'marked'
+   where id = a.id;
+  perform public.recalc_attempt(a.id);
+end;
+$$;
+
+-- 4. One-click Regrade Quiz (preserves manual overrides & essays by default)
+create or replace function public.regrade_quiz(p_quiz uuid, p_preserve_manual boolean default true)
+returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  qz public.quizzes;
+  a  public.attempts;
+  q  public.questions;
+  r  public.responses;
+  g  record;
+  v_att_count int := 0;
+  v_resp_count int := 0;
+begin
+  perform public.require_lecturer();
+  select * into qz from public.quizzes where id = p_quiz;
+  if not found then raise exception 'Quiz not found.'; end if;
+
+  for a in select * from public.attempts where quiz_id = p_quiz and status <> 'in_progress' loop
+    v_att_count := v_att_count + 1;
+    for q in select * from public.questions where id = any(a.question_order) and kind <> 'essay' loop
+      select * into r from public.responses where attempt_id = a.id and question_id = q.id;
+      if p_preserve_manual and found and r.marked_by is not null then
+        continue;
+      end if;
+      select * into g from public.eval_question_grade(q, case when found then r.value else null end, a.seed);
+      insert into public.responses (attempt_id, question_id, value, is_correct, marks_awarded, feedback)
+      values (a.id, q.id, case when found then r.value else null end, g.is_correct, g.marks_awarded, g.feedback)
+      on conflict (attempt_id, question_id)
+      do update set is_correct = excluded.is_correct,
+                    marks_awarded = excluded.marks_awarded,
+                    feedback = coalesce(excluded.feedback, public.responses.feedback);
+      v_resp_count := v_resp_count + 1;
+    end loop;
+    perform public.recalc_attempt(a.id);
+  end loop;
+
+  perform public.log_course_audit(
+    qz.course_id,
+    'quiz_regrade',
+    format('Regraded "%s" (%s attempts recalculated)', qz.title, v_att_count),
+    jsonb_build_object('quiz_id', p_quiz, 'attempts_updated', v_att_count, 'responses_updated', v_resp_count, 'preserve_manual', p_preserve_manual)
+  );
+
+  return jsonb_build_object('attempts_updated', v_att_count, 'responses_updated', v_resp_count);
+end;
+$$;
+
+-- 5. Short-Answer Clustering & One-Click Accept
+create or replace function public.short_answer_groups(p_quiz uuid)
+returns table (
+  question_id uuid,
+  qposition int,
+  prompt text,
+  max_marks numeric,
+  accepted jsonb,
+  norm_answer text,
+  sample_answer text,
+  student_count int,
+  response_ids uuid[],
+  already_accepted boolean,
+  avg_marks numeric,
+  all_full_marks boolean
+)
+language plpgsql stable security definer set search_path = public as $$
+#variable_conflict use_column
+declare v_course uuid;
+begin
+  select course_id into v_course from public.quizzes where id = p_quiz;
+  if v_course is null then raise exception 'Quiz not found.'; end if;
+  perform public.require_staff(v_course);
+
+  return query
+  with raw as (
+    select
+      q.id as qid,
+      q.position as qpos,
+      q.prompt as qprompt,
+      q.marks as qmarks,
+      coalesce(q.answer->'accepted', '[]'::jsonb) as qacc,
+      r.id as rid,
+      trim(coalesce(r.value #>> '{}', '')) as raw_txt,
+      public.norm_text(coalesce(r.value #>> '{}', '')) as norm_txt,
+      r.marks_awarded as mk
+    from public.questions q
+    join public.responses r on r.question_id = q.id
+    join public.attempts a on a.id = r.attempt_id
+    where q.quiz_id = p_quiz
+      and q.kind = 'short'
+      and a.quiz_id = p_quiz
+      and a.status <> 'in_progress'
+      and trim(coalesce(r.value #>> '{}', '')) <> ''
+  )
+  select
+    raw.qid,
+    raw.qpos,
+    raw.qprompt,
+    raw.qmarks,
+    raw.qacc,
+    raw.norm_txt,
+    (array_agg(raw.raw_txt order by length(raw.raw_txt), raw.raw_txt))[1],
+    count(*)::int,
+    array_agg(raw.rid),
+    exists (
+      select 1 from jsonb_array_elements_text(raw.qacc) acc
+      where public.norm_text(acc) = raw.norm_txt
+    ),
+    round(avg(coalesce(raw.mk, 0)), 2),
+    bool_and(coalesce(raw.mk, 0) >= raw.qmarks)
+  from raw
+  group by raw.qid, raw.qpos, raw.qprompt, raw.qmarks, raw.qacc, raw.norm_txt
+  order by raw.qpos, count(*) desc, min(raw.raw_txt);
+end;
+$$;
+
+create or replace function public.accept_short_answer(p_quiz uuid, p_question uuid, p_answer text)
+returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  qz public.quizzes;
+  q  public.questions;
+  v_clean text := trim(coalesce(p_answer, ''));
+  v_norm text := public.norm_text(coalesce(p_answer, ''));
+  v_curr jsonb;
+  v_aids uuid[];
+  v_aid uuid;
+  v_cnt int := 0;
+begin
+  select * into qz from public.quizzes where id = p_quiz;
+  if not found then raise exception 'Quiz not found.'; end if;
+  perform public.require_staff(qz.course_id);
+
+  select * into q from public.questions where id = p_question and quiz_id = p_quiz;
+  if not found or q.kind <> 'short' then raise exception 'Short-answer question not found.'; end if;
+  if v_norm = '' then raise exception 'Answer text cannot be blank.'; end if;
+
+  v_curr := coalesce(q.answer->'accepted', '[]'::jsonb);
+  if not exists (
+    select 1 from jsonb_array_elements_text(v_curr) acc where public.norm_text(acc) = v_norm
+  ) then
+    update public.questions
+       set answer = coalesce(answer, '{}'::jsonb) || jsonb_build_object('accepted', v_curr || to_jsonb(v_clean))
+     where id = p_question;
+  end if;
+
+  with updated as (
+    update public.responses r
+       set is_correct = true,
+           marks_awarded = q.marks,
+           marked_by = auth.uid()
+      from public.attempts a
+     where r.attempt_id = a.id
+       and a.quiz_id = p_quiz
+       and a.status <> 'in_progress'
+       and r.question_id = p_question
+       and public.norm_text(coalesce(r.value #>> '{}', '')) = v_norm
+    returning r.attempt_id
+  )
+  select count(*)::int, coalesce(array_agg(distinct attempt_id), '{}'::uuid[])
+    into v_cnt, v_aids
+    from updated;
+
+  foreach v_aid in array v_aids loop
+    perform public.recalc_attempt(v_aid);
+  end loop;
+
+  perform public.log_course_audit(
+    qz.course_id,
+    'quiz_accept_short',
+    format('Accepted short answer "%s" on "%s" (%s responses awarded)', v_clean, qz.title, v_cnt),
+    jsonb_build_object('quiz_id', p_quiz, 'question_id', p_question, 'accepted_text', v_clean, 'updated_count', v_cnt)
+  );
+
+  return jsonb_build_object('updated_count', v_cnt);
+end;
+$$;
+
+-- 6. Hall Access PIN + Multi-Select Stratified Quotas in start_attempt
+drop function if exists public.start_attempt(uuid);
+create or replace function public.start_attempt(p_quiz uuid, p_pin text default null) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  qz       public.quizzes;
+  a        public.attempts;
+  w        record;
+  n        int;
+  v_order  uuid[];
+  v_dead   timestamptz;
+  v_id     uuid;
+begin
+  select * into qz from public.quizzes where id = p_quiz;
+  if not found or not qz.published or not public.is_enrolled(qz.course_id) then
+    raise exception 'This quiz is not available to you.';
+  end if;
+
+  select * into w from public.quiz_window_for(p_quiz, auth.uid());
+  if not w.allowed then
+    raise exception 'This quiz is not open to you.';
+  end if;
+
+  -- Resume existing live attempt cleanly (no PIN re-prompt on mid-exam refresh)
+  select * into a from public.attempts
+   where quiz_id = p_quiz and student_id = auth.uid() and status = 'in_progress'
+   order by attempt_no desc limit 1;
+  if found then
+    if now() <= a.deadline_at then return a.id; end if;
+    perform public.finalize_attempt(a.id);
+  end if;
+
+  -- Check optional Hall Access PIN before creating a new attempt
+  if coalesce(trim(qz.access_pin), '') <> '' then
+    if upper(trim(coalesce(p_pin, ''))) <> upper(trim(qz.access_pin)) then
+      raise exception 'Invalid Hall Access PIN. Ask your invigilator in the exam hall.';
+    end if;
+  end if;
+
+  if w.opens_at is not null and now() < w.opens_at then
+    raise exception 'This quiz has not opened yet.';
+  end if;
+  if w.closes_at is not null and now() > w.closes_at then
+    raise exception 'This quiz has closed.';
+  end if;
+
+  select count(*) into n from public.attempts where quiz_id = p_quiz and student_id = auth.uid();
+  if not qz.is_practice and n >= qz.max_attempts + coalesce((select x.extra_attempts from public.quiz_access x
+                                                              where x.quiz_id = p_quiz and x.index_no = public.my_index()), 0) then
+    raise exception 'You have used all your attempts for this quiz.';
+  end if;
+
+  if qz.instructions ~ '<!-- QUIZ_META:(.*?)-->' then
+    declare
+      v_meta jsonb;
+      q_mcq int; q_multi int; q_tf int; q_num int; q_short int; q_essay int;
+    begin
+      v_meta := (regexp_match(qz.instructions, '<!-- QUIZ_META:(.*?)-->'))[1]::jsonb;
+      if (v_meta->>'format_quotas_enabled')::boolean = true and v_meta ? 'format_quotas' then
+        q_mcq   := coalesce(nullif(v_meta->'format_quotas'->>'mcq', '')::int, 0);
+        q_multi := coalesce(nullif(v_meta->'format_quotas'->>'multiselect', '')::int, 0);
+        q_tf    := coalesce(nullif(v_meta->'format_quotas'->>'truefalse', '')::int, 0);
+        q_num   := coalesce(nullif(v_meta->'format_quotas'->>'numeric', '')::int, 0);
+        q_short := coalesce(nullif(v_meta->'format_quotas'->>'short', '')::int, 0);
+        q_essay := coalesce(nullif(v_meta->'format_quotas'->>'essay', '')::int, 0);
+        if (q_mcq + q_multi + q_tf + q_num + q_short + q_essay) > 0 then
+          select array_agg(x.id order by case when qz.shuffle_questions then random() else 0 end, x.position, x.created_at)
+            into v_order
+            from (
+              (select id, position, created_at from public.questions where quiz_id = p_quiz and kind = 'mcq' order by random() limit nullif(q_mcq, 0))
+              union all
+              (select id, position, created_at from public.questions where quiz_id = p_quiz and kind = 'multiselect' order by random() limit nullif(q_multi, 0))
+              union all
+              (select id, position, created_at from public.questions where quiz_id = p_quiz and kind = 'truefalse' order by random() limit nullif(q_tf, 0))
+              union all
+              (select id, position, created_at from public.questions where quiz_id = p_quiz and kind = 'numeric' order by random() limit nullif(q_num, 0))
+              union all
+              (select id, position, created_at from public.questions where quiz_id = p_quiz and kind = 'short' order by random() limit nullif(q_short, 0))
+              union all
+              (select id, position, created_at from public.questions where quiz_id = p_quiz and kind = 'essay' order by random() limit nullif(q_essay, 0))
+            ) x;
+        end if;
+      end if;
+    exception when others then
+      v_order := null;
+    end;
+  end if;
+
+  if v_order is null then
+    select array_agg(x.id order by case when qz.shuffle_questions then random() else 0 end, x.position, x.created_at)
+      into v_order
+      from (select id, position, created_at from public.questions
+             where quiz_id = p_quiz
+             order by random()
+             limit coalesce(nullif(qz.pool_size, 0), 100000)) x;
+  end if;
+  if v_order is null then raise exception 'This quiz has no questions yet.'; end if;
+
+  v_dead := now() + make_interval(mins => qz.duration_minutes);
+  if w.closes_at is not null and w.closes_at < v_dead then v_dead := w.closes_at; end if;
+
+  insert into public.attempts (quiz_id, student_id, attempt_no, question_order, deadline_at)
+  values (p_quiz, auth.uid(), n + 1, v_order, v_dead)
+  returning id into v_id;
+  return v_id;
+end;
+$$;
+
+-- 7. Updated quiz visibility, attempt, review & analytics RPCs (with image_path, requires_pin, multiselect)
+create or replace function public.my_quizzes(p_course uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r jsonb;
+begin
+  if not public.is_enrolled(p_course) then return '[]'::jsonb; end if;
+
+  perform public.finalize_attempt(a.id)
+     from public.attempts a join public.quizzes q on q.id = a.quiz_id
+    where q.course_id = p_course and a.student_id = auth.uid()
+      and a.status = 'in_progress' and a.deadline_at < now();
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'id', q.id, 'title', q.title, 'instructions', q.instructions,
+           'opens_at', w.opens_at, 'closes_at', w.closes_at,
+           'duration_minutes', q.duration_minutes,
+           'max_attempts', q.max_attempts + coalesce((select x.extra_attempts from public.quiz_access x
+                                                      where x.quiz_id = q.id and x.index_no = public.my_index()), 0),
+           'is_practice', q.is_practice, 'lockdown', q.lockdown, 'max_exits', q.max_exits,
+           'no_backtrack', q.no_backtrack,
+           'requires_pin', (coalesce(trim(q.access_pin), '') <> ''),
+           'question_count', least((select count(*) from public.questions x where x.quiz_id = q.id),
+                                   coalesce(nullif(q.pool_size, 0), 100000)),
+           'total_marks', case when coalesce(q.pool_size, 0) > 0 then null
+                               else (select coalesce(sum(marks), 0) from public.questions x where x.quiz_id = q.id) end,
+           'attempts_used', (select count(*) from public.attempts a where a.quiz_id = q.id and a.student_id = auth.uid()),
+           'in_progress', (select a.id from public.attempts a where a.quiz_id = q.id and a.student_id = auth.uid()
+                             and a.status = 'in_progress' order by attempt_no desc limit 1),
+           'released', (q.results_released or q.is_practice),
+           'best', (select jsonb_build_object('attempt_id', a.id, 'status', a.status,
+                             'score', case when q.results_released or q.is_practice then a.score end,
+                             'max_score', a.max_score, 'submitted_at', a.submitted_at)
+                      from public.attempts a
+                     where a.quiz_id = q.id and a.student_id = auth.uid() and a.status <> 'in_progress'
+                     order by a.score desc nulls last, a.submitted_at desc limit 1))
+         order by coalesce(w.opens_at, q.created_at)), '[]'::jsonb)
+    into r
+    from public.quizzes q
+    cross join lateral public.quiz_window_for(q.id, auth.uid()) w
+   where q.course_id = p_course and q.published and w.allowed;
+
+  return r;
+end;
+$$;
+
+drop function if exists public.get_attempt(uuid, text);
+create or replace function public.get_attempt(p_attempt uuid, p_device text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare a public.attempts; qz public.quizzes; c public.courses; pr public.profiles; qs jsonb;
+begin
+  select * into a from public.attempts where id = p_attempt and student_id = auth.uid();
+  if not found then raise exception 'Attempt not found.'; end if;
+
+  if a.status = 'in_progress' and now() > a.deadline_at then
+    perform public.finalize_attempt(a.id);
+    select * into a from public.attempts where id = p_attempt;
+  end if;
+
+  if a.status = 'in_progress' and coalesce(p_device, '') <> '' and not (left(p_device, 80) = any(a.devices)) then
+    update public.attempts set devices = array_append(devices, left(p_device, 80)) where id = a.id
+    returning * into a;
+  end if;
+
+  select * into qz from public.quizzes where id = a.quiz_id;
+  select * into c from public.courses where id = qz.course_id;
+  select * into pr from public.profiles where id = auth.uid();
+
+  select jsonb_agg(jsonb_build_object(
+           'id', q.id,
+           'kind', q.kind,
+           'prompt', q.prompt,
+           'image_path', coalesce(q.image_path, ''),
+           'marks', q.marks,
+           'unit', q.unit,
+           'decimals', q.decimals,
+           'vars', case when coalesce(trim(q.formula), '') <> ''
+                        then public.gen_vars(a.seed, q.id, q.params) else '{}'::jsonb end,
+           'options', case
+              when q.kind in ('mcq', 'multiselect') and qz.shuffle_options then
+                (select coalesce(jsonb_agg(o order by md5(a.seed::text || q.id::text || (o->>'id'))), '[]'::jsonb)
+                   from jsonb_array_elements(q.options) o)
+              when q.kind in ('mcq', 'multiselect', 'truefalse') then q.options
+              else '[]'::jsonb end,
+           'value', r.value)
+         order by o.ord)
+    into qs
+    from unnest(a.question_order) with ordinality as o(qid, ord)
+    join public.questions q on q.id = o.qid
+    left join public.responses r on r.attempt_id = a.id and r.question_id = q.id;
+
+  return jsonb_build_object(
+    'attempt', jsonb_build_object('id', a.id, 'status', a.status, 'started_at', a.started_at,
+                                  'deadline_at', a.deadline_at, 'submitted_at', a.submitted_at,
+                                  'server_now', now(), 'exits', a.exits, 'current_index', a.current_index),
+    'quiz', jsonb_build_object('id', qz.id, 'title', qz.title, 'instructions', qz.instructions,
+                               'reference', qz.reference, 'course_id', c.id, 'course_code', c.code,
+                               'course_color', c.color, 'lockdown', qz.lockdown,
+                               'max_exits', qz.max_exits, 'no_backtrack', qz.no_backtrack, 'question_time_limit', qz.question_time_limit),
+    'student', jsonb_build_object('name', pr.full_name, 'index_no', pr.index_no),
+    'questions', coalesce(qs, '[]'::jsonb));
+end;
+$$;
+
+create or replace function public.get_attempt_review(p_attempt uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare a public.attempts; qz public.quizzes; qs jsonb; v_show boolean;
+begin
+  select * into a from public.attempts where id = p_attempt and student_id = auth.uid();
+  if not found then raise exception 'Attempt not found.'; end if;
+  select * into qz from public.quizzes where id = a.quiz_id;
+  if a.status = 'in_progress' then raise exception 'This attempt is still in progress.'; end if;
+  if not (qz.results_released or qz.is_practice) then
+    raise exception 'Results for this quiz have not been released yet.';
+  end if;
+  v_show := qz.show_answers or qz.is_practice;
+
+  select jsonb_agg(jsonb_build_object(
+           'id', q.id, 'kind', q.kind, 'prompt', q.prompt,
+           'image_path', coalesce(q.image_path, ''),
+           'marks', q.marks, 'unit', q.unit,
+           'vars', case when coalesce(trim(q.formula), '') <> ''
+                        then public.gen_vars(a.seed, q.id, q.params) else '{}'::jsonb end,
+           'options', case when q.kind in ('mcq','multiselect','truefalse') then q.options else '[]'::jsonb end,
+           'value', r.value, 'is_correct', r.is_correct, 'marks_awarded', r.marks_awarded,
+           'feedback', r.feedback,
+           'correct', case when not v_show then null
+                           when q.kind in ('mcq','multiselect','truefalse') then q.answer->'correct'
+                           when q.kind = 'short' then q.answer->'accepted'
+                           when q.kind = 'numeric' then
+                             (select to_jsonb(public.expected_value(q, a.seed)))
+                           else null end,
+           'explanation', case when v_show then q.explanation else '' end)
+         order by o.ord)
+    into qs
+    from unnest(a.question_order) with ordinality as o(qid, ord)
+    join public.questions q on q.id = o.qid
+    left join public.responses r on r.attempt_id = a.id and r.question_id = q.id;
+
+  return jsonb_build_object('title', qz.title, 'score', a.score, 'max_score', a.max_score,
+                            'status', a.status, 'questions', coalesce(qs, '[]'::jsonb));
+end;
+$$;
+
+create or replace function public.staff_attempt_review(p_attempt uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  a public.attempts;
+  qz public.quizzes;
+  pr public.profiles;
+  qs jsonb;
+begin
+  select * into a from public.attempts where id = p_attempt;
+  if not found then raise exception 'Attempt not found.'; end if;
+  select * into qz from public.quizzes where id = a.quiz_id;
+  perform public.require_staff(qz.course_id);
+  select * into pr from public.profiles where id = a.student_id;
+
+  select jsonb_agg(jsonb_build_object(
+           'response_id', r.id,
+           'id', q.id,
+           'kind', q.kind,
+           'prompt', q.prompt,
+           'image_path', coalesce(q.image_path, ''),
+           'marks', q.marks,
+           'unit', q.unit,
+           'vars', case when coalesce(trim(q.formula), '') <> ''
+                        then public.gen_vars(a.seed, q.id, q.params) else '{}'::jsonb end,
+           'options', case when q.kind in ('mcq','multiselect','truefalse') then q.options else '[]'::jsonb end,
+           'value', r.value,
+           'is_correct', r.is_correct,
+           'marks_awarded', r.marks_awarded,
+           'feedback', r.feedback,
+           'correct', case
+                        when q.kind in ('mcq','multiselect','truefalse') then q.answer->'correct'
+                        when q.kind = 'short' then q.answer->'accepted'
+                        when q.kind = 'numeric' then (select to_jsonb(public.expected_value(q, a.seed)))
+                        else null
+                      end,
+           'explanation', q.explanation)
+         order by o.ord)
+    into qs
+    from unnest(a.question_order) with ordinality as o(qid, ord)
+    join public.questions q on q.id = o.qid
+    left join public.responses r on r.attempt_id = a.id and r.question_id = q.id;
+
+  return jsonb_build_object(
+    'attempt_id', a.id,
+    'quiz_id', qz.id,
+    'title', qz.title,
+    'status', a.status,
+    'score', a.score,
+    'max_score', a.max_score,
+    'started_at', a.started_at,
+    'submitted_at', a.submitted_at,
+    'student', jsonb_build_object(
+      'id', pr.id,
+      'full_name', coalesce(pr.full_name, 'Student'),
+      'index_no', coalesce(pr.index_no, '')
+    ),
+    'questions', coalesce(qs, '[]'::jsonb)
+  );
+end;
+$$;
+
+drop function if exists public.quiz_live_status(uuid);
+create or replace function public.quiz_live_status(p_quiz uuid)
+returns table (
+  index_no text,
+  full_name text,
+  programme text,
+  stream text,
+  student_id uuid,
+  attempt_id uuid,
+  status text,
+  started_at timestamptz,
+  deadline_at timestamptz,
+  submitted_at timestamptz,
+  answered_count int,
+  total_questions int,
+  last_saved_at timestamptz,
+  exits int,
+  devices int,
+  exit_log jsonb,
+  server_now timestamptz
+)
+language plpgsql stable security definer set search_path = public as $$
+#variable_conflict use_column
+declare v_course uuid; v_qcount int;
+begin
+  select course_id into v_course from public.quizzes where id = p_quiz;
+  if v_course is null then raise exception 'Quiz not found.'; end if;
+  perform public.require_staff(v_course);
+  select count(*)::int into v_qcount from public.questions where quiz_id = p_quiz;
+
+  return query
+    select r.index_no,
+           r.full_name,
+           r.programme,
+           r.stream,
+           p.id,
+           b.id,
+           coalesce(b.status, case when p.id is null then 'not_activated' else 'not_started' end),
+           b.started_at,
+           b.deadline_at,
+           b.submitted_at,
+           coalesce((
+             select count(*)::int from public.responses rr
+             where rr.attempt_id = b.id
+               and rr.value is not null
+               and (
+                 (jsonb_typeof(rr.value) = 'array' and jsonb_array_length(rr.value) > 0)
+                 or (jsonb_typeof(rr.value) <> 'array' and trim(coalesce(rr.value #>> '{}', '')) <> '')
+               )
+           ), 0),
+           coalesce(array_length(b.question_order, 1), v_qcount),
+           (select max(rr.updated_at) from public.responses rr where rr.attempt_id = b.id),
+           coalesce(b.exits, 0),
+           coalesce(cardinality(b.devices), 0),
+           coalesce(b.exit_log, '[]'::jsonb),
+           now()
+      from public.enrollments e
+      join public.roster r on r.index_no = e.index_no
+      left join public.profiles p on p.index_no = r.index_no
+      left join lateral (
+        select a.* from public.attempts a
+         where a.quiz_id = p_quiz and a.student_id = p.id
+         order by (a.status = 'in_progress') desc, a.started_at desc
+         limit 1
+      ) b on true
+     where e.course_id = v_course
+       and (b.id is not null or public.quiz_open_to(p_quiz, r.index_no, r.stream))
+     order by (
+       case
+         when b.status = 'in_progress' then 0
+         when b.status in ('needs_marking', 'marked') then 1
+         when p.id is not null then 2
+         else 3
+       end
+     ), b.started_at desc nulls last, r.full_name, r.index_no;
+end;
+$$;
+
+create or replace function public.quiz_item_analysis(p_quiz uuid)
+returns table (question_id uuid, qposition int, kind text, prompt text, topic text, marks numeric, answered int,
+               avg_pct numeric, discrimination numeric, by_stream jsonb, options jsonb, correct text)
+language plpgsql security definer set search_path = public as $$
+#variable_conflict use_column
+begin
+  perform public.require_lecturer();
+  perform public.finalize_expired(p_quiz);
+  return query
+  with firsts as (
+    select distinct on (a.student_id) a.id, a.student_id, a.score, a.max_score
+      from public.attempts a where a.quiz_id = p_quiz and a.status <> 'in_progress'
+     order by a.student_id, a.attempt_no),
+  ranked as (
+    select f.*, r.stream,
+           percent_rank() over (order by f.score / nullif(f.max_score, 0)) as pr
+      from firsts f
+      join public.profiles p on p.id = f.student_id
+      left join public.roster r on r.index_no = p.index_no),
+  resp as (
+    select rr.question_id as qid, rk.stream, rk.pr, rr.value,
+           rr.marks_awarded / nullif(q.marks, 0) * 100 as pct
+      from public.responses rr
+      join ranked rk on rk.id = rr.attempt_id
+      join public.questions q on q.id = rr.question_id)
+  select q.id, q.position, q.kind, q.prompt, q.topic, q.marks,
+         (select count(*)::int from resp x where x.qid = q.id and x.pct is not null),
+         (select round(avg(x.pct), 1) from resp x where x.qid = q.id),
+         (select round((avg(x.pct) filter (where x.pr >= 0.73) - avg(x.pct) filter (where x.pr <= 0.27)) / 100, 2)
+            from resp x where x.qid = q.id),
+         (select coalesce(jsonb_object_agg(coalesce(nullif(t.stream, ''), 'Not set'), t.p), '{}'::jsonb)
+            from (select x.stream, round(avg(x.pct)) as p from resp x where x.qid = q.id and x.pct is not null group by x.stream) t),
+         case
+           when q.kind in ('mcq', 'truefalse') then
+             (select coalesce(jsonb_object_agg(t.v, t.n), '{}'::jsonb)
+                from (select coalesce(x.value #>> '{}', '') as v, count(*) as n from resp x where x.qid = q.id group by 1) t)
+           when q.kind = 'multiselect' then
+             (select coalesce(jsonb_object_agg(t.v, t.n), '{}'::jsonb)
+                from (
+                  select pick as v, count(*) as n
+                  from resp x,
+                       lateral (
+                         select el as pick from jsonb_array_elements_text(
+                           case when jsonb_typeof(x.value) = 'array' and jsonb_array_length(x.value) > 0 then x.value
+                                else '[""]'::jsonb end
+                         ) el
+                       ) picks
+                  where x.qid = q.id
+                  group by 1
+                ) t)
+         end,
+         case
+           when q.kind = 'multiselect' then
+             (select string_agg(el, ',' order by el) from jsonb_array_elements_text(coalesce(q.answer->'correct', '[]'::jsonb)) el)
+           else q.answer ->> 'correct'
+         end
+    from public.questions q
+   where q.quiz_id = p_quiz
+   order by q.position, q.created_at;
+end;
+$$;
+
+-- 8. Material Read / Download Tracking
+create table if not exists public.material_views (
+  material_id    uuid not null references public.materials(id) on delete cascade,
+  student_id     uuid not null references public.profiles(id) on delete cascade,
+  course_id      uuid not null references public.courses(id) on delete cascade,
+  view_count     int not null default 1,
+  first_viewed_at timestamptz not null default now(),
+  last_viewed_at  timestamptz not null default now(),
+  primary key (material_id, student_id)
+);
+
+create index if not exists material_views_course_idx on public.material_views(course_id, student_id);
+
+alter table public.material_views enable row level security;
+
+drop policy if exists material_views_own on public.material_views;
+create policy material_views_own on public.material_views
+  for all to authenticated
+  using (student_id = auth.uid())
+  with check (student_id = auth.uid());
+
+drop policy if exists material_views_staff_read on public.material_views;
+create policy material_views_staff_read on public.material_views
+  for select to authenticated
+  using (public.is_lecturer() or public.is_ta(course_id));
+
+create or replace function public.record_material_view(p_material uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_course uuid;
+begin
+  if auth.uid() is null then return; end if;
+  select course_id into v_course from public.materials where id = p_material;
+  if v_course is null then return; end if;
+  if not public.is_enrolled(v_course) then return; end if;
+
+  insert into public.material_views (material_id, student_id, course_id, view_count, first_viewed_at, last_viewed_at)
+  values (p_material, auth.uid(), v_course, 1, now(), now())
+  on conflict (material_id, student_id)
+  do update set view_count = public.material_views.view_count + 1,
+                last_viewed_at = now();
+end;
+$$;
+
+create or replace function public.material_engagement(p_course uuid)
+returns table (material_id uuid, unique_students int, total_opens int, last_opened_at timestamptz)
+language plpgsql stable security definer set search_path = public as $$
+#variable_conflict use_column
+begin
+  perform public.require_staff(p_course);
+  return query
+    select mv.material_id,
+           count(distinct mv.student_id)::int,
+           coalesce(sum(mv.view_count), 0)::int,
+           max(mv.last_viewed_at)
+      from public.material_views mv
+     where mv.course_id = p_course
+     group by mv.material_id;
+end;
+$$;
+
+create or replace function public.student_material_engagement(p_course uuid, p_student uuid)
+returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_total int := 0; v_viewed int := 0; v_opens int := 0; v_items jsonb;
+begin
+  perform public.require_staff(p_course);
+  select count(*)::int into v_total from public.materials where course_id = p_course;
+  select count(*)::int, coalesce(sum(view_count), 0)::int
+    into v_viewed, v_opens
+    from public.material_views
+   where course_id = p_course and student_id = p_student;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'material_id', m.id,
+           'title', m.title,
+           'kind', m.kind,
+           'view_count', mv.view_count,
+           'last_viewed_at', mv.last_viewed_at)
+         order by mv.last_viewed_at desc), '[]'::jsonb)
+    into v_items
+    from public.material_views mv
+    join public.materials m on m.id = mv.material_id
+   where mv.course_id = p_course and mv.student_id = p_student;
+
+  return jsonb_build_object(
+    'total_materials', v_total,
+    'viewed_count', v_viewed,
+    'total_opens', v_opens,
+    'items', coalesce(v_items, '[]'::jsonb)
+  );
+end;
+$$;
+
+-- 9. Grants
+do $$
+declare f text;
+begin
+  foreach f in array array[
+    'regrade_quiz(uuid, boolean)',
+    'short_answer_groups(uuid)',
+    'accept_short_answer(uuid, uuid, text)',
+    'start_attempt(uuid, text)',
+    'my_quizzes(uuid)',
+    'get_attempt(uuid, text)',
+    'get_attempt_review(uuid)',
+    'staff_attempt_review(uuid)',
+    'quiz_live_status(uuid)',
+    'quiz_item_analysis(uuid)',
+    'record_material_view(uuid)',
+    'material_engagement(uuid)',
+    'student_material_engagement(uuid, uuid)'
+  ]
+  loop
+    execute format('revoke execute on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated', f);
+  end loop;
+end $$;

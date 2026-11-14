@@ -8,6 +8,7 @@ import { downloadExcel, downloadText } from './sheets.js';
 
 export const KIND_LABELS = {
   mcq: 'Multiple choice',
+  multiselect: 'Multi-select',
   truefalse: 'True / false',
   short: 'Short answer',
   numeric: 'Calculation',
@@ -61,7 +62,9 @@ function parseSingleBlock(block, defaultMarks, defaultTopic) {
                   line.match(/^(?:type|format|kind)\s*[:=-]\s*([a-zA-Z\s\/\-_]+)$/i);
     if (mType) {
       const t = mType[1].trim().toLowerCase().replace(/[\s\/\-_]/g, '');
-      if (['mcq', 'multiplechoice', 'choice', 'multi'].includes(t)) {
+      if (['multiselect', 'msq', 'selectall', 'checkbox', 'multipleanswer', 'multiresponse'].includes(t)) {
+        explicitKind = 'multiselect';
+      } else if (['mcq', 'multiplechoice', 'choice', 'multi'].includes(t)) {
         explicitKind = 'mcq';
       } else if (['tf', 'truefalse', 'trueorfalse'].includes(t)) {
         explicitKind = 'truefalse';
@@ -140,7 +143,11 @@ function parseSingleBlock(block, defaultMarks, defaultTopic) {
   // Deduce question kind if not explicitly tagged
   let kind = explicitKind;
   if (!kind) {
-    if (options.length >= 2) {
+    const starredCount = options.filter((o) => o.starred).length;
+    const multiAnsTokens = explicitAnswer ? explicitAnswer.split(/[,;&+]+/).map((s) => s.trim()).filter(Boolean) : [];
+    if (options.length >= 2 && (starredCount > 1 || multiAnsTokens.length > 1)) {
+      kind = 'multiselect';
+    } else if (options.length >= 2) {
       kind = 'mcq';
     } else if (explicitAnswer && ['true', 'false', 't', 'f'].includes(explicitAnswer.toLowerCase())) {
       kind = 'truefalse';
@@ -168,7 +175,30 @@ function parseSingleBlock(block, defaultMarks, defaultTopic) {
     q.errors.push('Missing question prompt text');
   }
 
-  if (kind === 'mcq') {
+  if (kind === 'multiselect') {
+    if (options.length < 2) {
+      q.valid = false;
+      q.errors.push('Multi-select requires at least 2 options (A, B...)');
+      q.options = [];
+      q.answer = { correct: [], partial: true };
+    } else {
+      q.options = options.map((o, idx) => ({ id: LETTERS[idx], text: o.text }));
+      const picks = new Set();
+      if (explicitAnswer) {
+        for (const tok of explicitAnswer.split(/[,;&+]+/)) {
+          const clean = tok.toLowerCase().replace(/[()]/g, '').trim();
+          const found = options.findIndex((o) => o.letter === clean || o.text.toLowerCase() === clean);
+          if (found >= 0) picks.add(LETTERS[found]);
+        }
+      }
+      options.forEach((o, idx) => { if (o.starred) picks.add(LETTERS[idx]); });
+      if (!picks.size) {
+        picks.add('a');
+        q.warning = 'No correct options marked (defaulted to A)';
+      }
+      q.answer = { correct: [...picks], partial: true };
+    }
+  } else if (kind === 'mcq') {
     if (options.length < 2) {
       q.valid = false;
       q.errors.push('MCQ requires at least 2 options (A, B...)');
@@ -299,7 +329,9 @@ export function parseQuestionsFromRows(rows, defaultMarks = 1, defaultTopic = ''
     }
 
     let kind = null;
-    if (['mcq', 'multiplechoice', 'choice', 'multi'].includes(rawType)) {
+    if (['multiselect', 'msq', 'selectall', 'checkbox', 'multipleanswer', 'multiresponse'].includes(rawType)) {
+      kind = 'multiselect';
+    } else if (['mcq', 'multiplechoice', 'choice', 'multi'].includes(rawType)) {
       kind = 'mcq';
     } else if (['tf', 'truefalse', 'trueorfalse'].includes(rawType)) {
       kind = 'truefalse';
@@ -312,7 +344,8 @@ export function parseQuestionsFromRows(rows, defaultMarks = 1, defaultTopic = ''
     }
 
     if (!kind) {
-      if (options.length >= 2) kind = 'mcq';
+      if (options.length >= 2 && rawAns && rawAns.split(/[,;&+]+/).map((s) => s.trim()).filter(Boolean).length > 1) kind = 'multiselect';
+      else if (options.length >= 2) kind = 'mcq';
       else if (['true', 'false', 't', 'f'].includes(rawAns.toLowerCase())) kind = 'truefalse';
       else if (rawAns && /^-?[0-9]+(?:\.[0-9]+)?$/.test(rawAns.trim())) kind = 'numeric';
       else if (rawAns) kind = 'short';
@@ -329,7 +362,25 @@ export function parseQuestionsFromRows(rows, defaultMarks = 1, defaultTopic = ''
       errors: [],
     };
 
-    if (kind === 'mcq') {
+    if (kind === 'multiselect') {
+      if (options.length < 2) {
+        q.valid = false;
+        q.errors.push('Multi-select requires at least 2 options');
+      } else {
+        q.options = options.map((o, idx) => ({ id: LETTERS[idx], text: o.text }));
+        const picks = new Set();
+        for (const tok of rawAns.split(/[,;&+]+/)) {
+          const clean = tok.toLowerCase().replace(/[()]/g, '').trim();
+          const found = options.findIndex((o) => o.letter === clean || o.text.toLowerCase() === clean);
+          if (found >= 0) picks.add(LETTERS[found]);
+        }
+        if (!picks.size) {
+          picks.add('a');
+          if (rawAns) q.warning = `Could not match answers "${rawAns}", defaulted to A`;
+        }
+        q.answer = { correct: [...picks], partial: true };
+      }
+    } else if (kind === 'mcq') {
       if (options.length < 2) {
         q.valid = false;
         q.errors.push('MCQ requires at least 2 options');

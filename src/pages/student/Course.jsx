@@ -123,6 +123,7 @@ function Materials({ data, onQuizzes, graded }) {
   const nextQuiz = graded.find((q) => !q.best && (!q.closes_at || new Date(q.closes_at) > new Date()));
 
   function open(m) {
+    supabase.rpc('record_material_view', { p_material: m.id }).then(() => {}, () => {});
     if (m.url) window.open(m.url, '_blank', 'noopener');
     else if (m.storage_path) act(() => openStoredFile('materials', m.storage_path));
   }
@@ -240,16 +241,38 @@ function Quizzes({ quizzes }) {
   const navigate = useNavigate();
   const [act, busy] = useAction();
   const [starting, setStarting] = useState(null);
+  const [hallPin, setHallPin] = useState('');
+  const [pinError, setPinError] = useState('');
+  const [pinBusy, setPinBusy] = useState(false);
   const [flashcardQuiz, setFlashcardQuiz] = useState(null);
 
-  async function begin(q) {
+  async function begin(q, pinValue) {
+    setPinError('');
+    if (q.requires_pin && !q.in_progress) {
+      const cleanPin = String(pinValue || '').trim().toUpperCase();
+      if (!cleanPin) {
+        setPinError('Enter the Hall Access PIN given by your invigilator.');
+        return;
+      }
+      setPinBusy(true);
+      try {
+        const id = await rpc('start_attempt', { p_quiz: q.id, p_pin: cleanPin });
+        if (id) navigate(`/quiz/${id}`);
+      } catch (e) {
+        setPinError(e.message || 'Invalid Hall Access PIN.');
+      } finally {
+        setPinBusy(false);
+      }
+      return;
+    }
     const id = await act(() => rpc('start_attempt', { p_quiz: q.id }));
     if (id) navigate(`/quiz/${id}`);
   }
 
   if (!quizzes.length) return <div className="card"><Empty icon="quiz" title="No quizzes yet">Quizzes will appear here when your lecturer publishes them.</Empty></div>;
 
-  const revisableCount = quizzes.filter((q) => q.is_practice || (q.released && q.best)).length;
+  const revisableQuizzes = quizzes.filter((q) => q.is_practice || (q.released && q.best));
+  const revisableCount = revisableQuizzes.length;
 
   return (
     <div className="stack" style={{ maxWidth: 900 }}>
@@ -268,7 +291,7 @@ function Quizzes({ quizzes }) {
             type="button"
             className="btn btn-sm btn-primary"
             onClick={() => {
-              const target = quizzes.find((q) => q.is_practice || (q.released && q.best));
+              const target = revisableQuizzes[0];
               if (target) setFlashcardQuiz(target);
             }}
           >
@@ -287,6 +310,7 @@ function Quizzes({ quizzes }) {
                   <h2>{q.title}</h2>
                   {q.is_practice && <span className="badge badge-blue">Practice · not graded</span>}
                   {q.lockdown && <span className="badge badge-red">Strict mode</span>}
+                  {q.requires_pin && <span className="badge badge-amber">Hall PIN</span>}
                 </div>
                 <span className="small muted">
                   {q.question_count} questions{q.total_marks !== null && q.total_marks !== undefined ? ` · ${fmtNumber(q.total_marks)} marks` : ''} · {q.duration_minutes} minutes ·{' '}
@@ -302,7 +326,7 @@ function Quizzes({ quizzes }) {
                   <button type="button" className="btn btn-primary" onClick={() => begin(q)} disabled={busy}>Resume quiz</button>
                 )}
                 {st === 'open' && (
-                  <button type="button" className="btn btn-dark" onClick={() => setStarting(q)}>
+                  <button type="button" className="btn btn-dark" onClick={() => { setHallPin(''); setPinError(''); setStarting(q); }}>
                     {q.attempts_used ? 'Try again' : 'Start quiz'}
                   </button>
                 )}
@@ -336,8 +360,8 @@ function Quizzes({ quizzes }) {
           footer={
             <>
               <button type="button" className="btn" onClick={() => setStarting(null)}>Not yet</button>
-              <button type="button" className="btn btn-dark" disabled={busy} onClick={() => begin(starting)}>
-                {busy ? 'Starting…' : 'Start now'}
+              <button type="button" className="btn btn-dark" disabled={busy || pinBusy} onClick={() => begin(starting, hallPin)}>
+                {(busy || pinBusy) ? 'Starting…' : 'Start now'}
               </button>
             </>
           }
@@ -363,7 +387,33 @@ function Quizzes({ quizzes }) {
             </div>
           )}
           {cleanText(starting.instructions) && <p className="small pre">{cleanText(starting.instructions)}</p>}
+          {starting.requires_pin && (
+            <div className="card-soft stack-sm" style={{ padding: 12, marginTop: 10, border: '1.5px solid var(--teal)' }}>
+              <label className="field" style={{ margin: 0 }}>
+                <span className="strong small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <Icon name="lock" size={14} /> Hall Access PIN required
+                </span>
+                <input
+                  className="input mono"
+                  style={{ fontSize: 18, letterSpacing: '0.16em', textTransform: 'uppercase' }}
+                  placeholder="Enter PIN from exam hall board"
+                  value={hallPin}
+                  autoFocus
+                  onChange={(e) => { setHallPin(e.target.value.toUpperCase()); setPinError(''); }}
+                  onKeyDown={(e) => e.key === 'Enter' && begin(starting, hallPin)}
+                />
+              </label>
+              {pinError && <span className="tiny" style={{ color: 'var(--red-ink)' }}>{pinError}</span>}
+            </div>
+          )}
         </Modal>
+      )}
+      {flashcardQuiz && (
+        <FlashcardDeckModal
+          quiz={flashcardQuiz}
+          quizzes={revisableQuizzes}
+          onClose={() => setFlashcardQuiz(null)}
+        />
       )}
     </div>
   );

@@ -256,3 +256,124 @@ export function buildCAReportHtml({ course, rows, caConfig, dec, getGradeLetter,
   const sub = `${course.code} — ${course.title}${course.semester ? ` · ${course.semester}` : ''}${groupLabelText ? ` · Filter: ${groupLabelText}` : ''}`;
   return baseHtml('Continuous Assessment & Final Examination Sign-Off Sheet', sub, body);
 }
+
+export function buildStudentSummaryHtml({
+  course,
+  student,
+  attRow,
+  quizzes = [],
+  attempts = [],
+  assignments = [],
+  submissions = [],
+  caSummary = null,
+  materialStats = null,
+}) {
+  const attPct = attRow?.applicable ? Math.round((attRow.attended / attRow.applicable) * 100) : null;
+  const attCls = attPct === null ? 'neutral' : attPct >= 75 ? 'ok' : attPct >= 50 ? 'warn' : 'bad';
+  const grp = [student.programme, student.stream].filter(Boolean).join(' · ') || '—';
+
+  const kpis = `
+    <div class="kpis">
+      <div class="kpi"><div class="l">Index No.</div><div class="v mono" style="font-size:13px">${esc(student.index_no)}</div></div>
+      <div class="kpi"><div class="l">Programme / Stream</div><div class="v" style="font-size:12px">${esc(grp)}</div></div>
+      <div class="kpi"><div class="l">Attendance</div><div class="v" style="color:${attPct !== null && attPct >= 75 ? '#166534' : attPct !== null && attPct < 50 ? '#991b1b' : '#0f172a'}">${attPct !== null ? `${attPct}% (${attRow.attended}/${attRow.applicable})` : '—'}</div></div>
+      <div class="kpi"><div class="l">${caSummary ? 'Total CA / 40' : 'Account'}</div><div class="v">${caSummary ? `${caSummary.totalCa.toFixed(caSummary.dec)} / 40` : (student.activated ? 'Activated' : 'Not Activated')}</div></div>
+    </div>`;
+
+  const caBlock = caSummary ? `
+    <h3 style="margin:12px 0 6px;font-size:12px;text-transform:uppercase;color:#334155">Continuous Assessment &amp; Exam Standing</h3>
+    <table>
+      <thead>
+        <tr>
+          <th class="num">CA 1</th>
+          <th class="num">CA 2</th>
+          <th class="num">Total CA / 40</th>
+          <th class="num">Exam / 60</th>
+          <th class="num">Final Total / 100</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="num mono">${caSummary.ca1.toFixed(caSummary.dec)}</td>
+          <td class="num mono">${caSummary.ca2.toFixed(caSummary.dec)}</td>
+          <td class="num mono"><strong>${caSummary.totalCa.toFixed(caSummary.dec)}</strong></td>
+          <td class="num mono">${caSummary.exam !== null ? caSummary.exam.toFixed(caSummary.dec) : '—'}</td>
+          <td class="num mono"><strong>${caSummary.total100 !== null ? caSummary.total100.toFixed(caSummary.dec) : '—'}</strong></td>
+        </tr>
+      </tbody>
+    </table>` : '';
+
+  const matBlock = materialStats ? `
+    <div style="margin:8px 0 12px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;font-size:11px">
+      <strong>Course Materials Engagement:</strong>
+      Opened <strong>${materialStats.viewed_count}</strong> of <strong>${materialStats.total_materials}</strong> posted materials
+      (${materialStats.total_opens} total file opens).
+    </div>` : '';
+
+  const quizRows = quizzes.map((q) => {
+    const mine = attempts.filter((a) => a.quiz_id === q.id);
+    const best = mine.reduce((b, x) => (!b || (x.score ?? -1) > (b.score ?? -1) ? x : b), null);
+    const p = best && best.score !== null && best.max_score ? Math.round((best.score / best.max_score) * 100) : null;
+    const statusText = best ? (best.status === 'marked' ? 'Marked' : best.status === 'needs_marking' ? 'Needs marking' : 'In progress') : 'Not attempted';
+    const cls = p === null ? 'neutral' : p >= 70 ? 'ok' : p >= 50 ? 'warn' : 'bad';
+    return `<tr>
+      <td><strong>${esc(q.title)}</strong>${q.is_practice ? ' <span class="badge neutral">Practice</span>' : ''}</td>
+      <td class="num mono">${mine.length}</td>
+      <td class="num mono">${best && best.score !== null ? `${best.score} / ${best.max_score}` : '—'}</td>
+      <td class="num mono">${p !== null ? `${p}%` : '—'}</td>
+      <td class="num mono">${best ? best.exits || 0 : '—'}</td>
+      <td><span class="badge ${cls}">${esc(statusText)}</span></td>
+    </tr>`;
+  }).join('');
+
+  const assignRows = assignments.map((a) => {
+    const sub = submissions.find((s) => s.assignment_id === a.id);
+    const cls = !sub ? 'bad' : sub.marks !== null ? 'ok' : 'warn';
+    const st = !sub ? 'Missing' : sub.marks !== null ? 'Marked' : sub.is_late ? 'Submitted late' : 'Submitted';
+    return `<tr>
+      <td><strong>${esc(a.title)}</strong></td>
+      <td class="num mono">${sub && sub.marks !== null ? `${sub.marks} / ${a.max_marks}` : `— / ${a.max_marks}`}</td>
+      <td><span class="badge ${cls}">${esc(st)}</span></td>
+      <td>${esc(sub?.feedback || '—')}</td>
+    </tr>`;
+  }).join('');
+
+  const body = `
+    ${kpis}
+    ${caBlock}
+    ${matBlock}
+    <h3 style="margin:12px 0 6px;font-size:12px;text-transform:uppercase;color:#334155">Quizzes (${quizzes.length})</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Quiz Title</th>
+          <th class="num" style="width:70px">Attempts</th>
+          <th class="num" style="width:90px">Best Score</th>
+          <th class="num" style="width:55px">%</th>
+          <th class="num" style="width:55px">Exits</th>
+          <th style="width:100px">Status</th>
+        </tr>
+      </thead>
+      <tbody>${quizRows || '<tr><td colspan="6" style="text-align:center;color:#64748b">No quizzes in this course yet.</td></tr>'}</tbody>
+    </table>
+    <h3 style="margin:12px 0 6px;font-size:12px;text-transform:uppercase;color:#334155">Assignments (${assignments.length})</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Assignment</th>
+          <th class="num" style="width:90px">Marks</th>
+          <th style="width:105px">Status</th>
+          <th>Feedback</th>
+        </tr>
+      </thead>
+      <tbody>${assignRows || '<tr><td colspan="4" style="text-align:center;color:#64748b">No assignments in this course yet.</td></tr>'}</tbody>
+    </table>
+    <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:#475569">
+      <span>Attendance standing: <span class="badge ${attCls}">${attPct !== null ? `${attPct}%` : 'No sessions'}</span></span>
+      <span>Signed (Lecturer / Coordinator): _______________________________</span>
+    </div>
+  `;
+
+  const sub = `${student.full_name} (${student.index_no}) · ${course.code} — ${course.title}${course.semester ? ` · ${course.semester}` : ''}`;
+  return baseHtml('Individual Student Academic Record', sub, body);
+}

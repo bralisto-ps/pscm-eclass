@@ -14,6 +14,7 @@ import { useAuth } from '../../lib/auth.jsx';
 import LiveQuizMonitor from '../../components/LiveQuizMonitor.jsx';
 import StudentScriptModal from '../../components/StudentScriptModal.jsx';
 import { deleteQuizProctorPhoto, loadQuizProctorPhotos, purgeQuizProctorPhotos } from '../../lib/proctorPhotos.js';
+import { ALL_NEW_FEATURES_SQL } from '../../lib/allFeaturesSql.js';
 
 const BINS = [
   { label: '0–39%', lo: 0, hi: 39.999, color: 'var(--amber)' },
@@ -36,6 +37,9 @@ export default function QuizResults() {
   const { quizId } = useParams();
   const { isTA } = useAuth();
   const [tab, setTab] = useState('gradebook');
+  const [regrading, setRegrading] = useState(false);
+  const [showFeaturesSql, setShowFeaturesSql] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
   const { data, error, loading, reload, setData } = useLoad(async () => {
     const quiz = await run(supabase.from('quizzes').select('*, courses(id, code, title)').eq('id', quizId).single());
     const [rows, queue] = await Promise.all([
@@ -53,6 +57,7 @@ export default function QuizResults() {
   const photoMap = data?.photos || new Map();
   const photoMeta = data?.photoMeta || new Map();
   const [act, busy] = useAction();
+  const toast = useToast();
 
   if (loading) return <Loading label="Collecting results…" />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
@@ -60,6 +65,28 @@ export default function QuizResults() {
   const { quiz, rows, queue } = data;
   const pending = queue.filter((r) => r.marks_awarded === null).length;
   const activeCount = rows.filter((r) => r.status === 'in_progress').length;
+
+  async function doRegrade() {
+    try {
+      const res = await rpc('regrade_quiz', { p_quiz: quiz.id, p_preserve_manual: true });
+      setRegrading(false);
+      toast(`Regraded ${res?.attempts_updated ?? 0} attempt(s) using the current answer key.`);
+      reload();
+    } catch (e) {
+      setRegrading(false);
+      if (/regrade_quiz|Could not find|does not exist|schema cache/i.test(e.message || '')) {
+        setShowFeaturesSql(true);
+      } else {
+        toast(e.message || 'Could not regrade quiz.', 'error');
+      }
+    }
+  }
+
+  function copyFeaturesSql() {
+    navigator.clipboard?.writeText?.(ALL_NEW_FEATURES_SQL);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 3000);
+  }
 
   async function toggleRelease() {
     const next = !quiz.results_released;
@@ -77,6 +104,9 @@ export default function QuizResults() {
           <Link to={`/teach/course/${quiz.courses.id}?tab=quizzes`} className="btn"><Icon name="chevronLeft" /> Quizzes</Link>
         ) : (
           <>
+            <button type="button" className="btn" onClick={() => setRegrading(true)} disabled={busy} title="Re-score all submitted objective & short-answer attempts using current keys/marks">
+              <Icon name="refresh" size={16} /> Regrade quiz
+            </button>
             <Link to={`/teach/quiz/${quiz.id}`} className="btn"><Icon name="edit" /> Edit quiz</Link>
             <button type="button" className={`btn ${quiz.results_released ? '' : 'btn-primary'}`} onClick={toggleRelease} disabled={busy}>
               {quiz.results_released ? 'Hide results' : 'Release results'}
@@ -91,16 +121,44 @@ export default function QuizResults() {
         <Tabs tabs={[
           { id: 'gradebook', label: 'Gradebook' },
           { id: 'live', label: 'Live monitor', count: activeCount },
+          { id: 'short', label: 'Short answers' },
           { id: 'marking', label: 'Written answers', count: pending },
           ...(isTA ? [] : [{ id: 'analysis', label: 'Question analysis' }, { id: 'integrity', label: 'Integrity checks' }]),
         ]} value={tab}
           onChange={(t) => { setTab(t); if (t === 'gradebook') reload(); }} />
         {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} ta={isTA} photos={photoMap} photoMeta={photoMeta} />}
         {tab === 'live' && <LiveQuizMonitor quiz={quiz} isTA={isTA} onMutate={reload} />}
+        {tab === 'short' && <ShortAnswerClusterTab quiz={quiz} onUpdated={reload} onShowSql={() => setShowFeaturesSql(true)} />}
         {tab === 'marking' && <Marking queue={queue} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
         {tab === 'analysis' && !isTA && <ItemAnalysis quiz={quiz} />}
         {tab === 'integrity' && !isTA && <Integrity quiz={quiz} rows={rows} photos={photoMap} />}
       </div>
+      {regrading && (
+        <Confirm
+          title="Regrade all submitted attempts?"
+          confirmLabel="Regrade now"
+          busy={busy}
+          message={`This re-scores every submitted attempt in "${quiz.title}" across Multiple Choice, Multi-Select, True/False, Calculation, and Short Answer using the latest answer key and marks. Any manual mark overrides and essay marks are preserved.`}
+          onClose={() => setRegrading(false)}
+          onConfirm={() => act(doRegrade)}
+        />
+      )}
+      {showFeaturesSql && (
+        <Modal title="Enable New Feature RPCs in Supabase" onClose={() => setShowFeaturesSql(false)} wide>
+          <p className="small muted">
+            Run this one-time SQL script in your <strong>Supabase Dashboard → SQL Editor</strong> to enable Regrade, Short-Answer Clustering, Multi-Select, Question Diagrams, Hall Access PIN, and Material Counters.
+          </p>
+          <pre className="mono small" style={{ maxHeight: 260, overflowY: 'auto', padding: 12, background: 'var(--surface-2)', borderRadius: 8, fontSize: 11 }}>
+            {ALL_NEW_FEATURES_SQL}
+          </pre>
+          <div className="between" style={{ alignItems: 'center', marginTop: 12 }}>
+            <span className="tiny muted">100% idempotent — safe to run once on your live project.</span>
+            <button type="button" className="btn btn-primary" onClick={copyFeaturesSql}>
+              {copiedSql ? '✓ Copied SQL' : 'Copy SQL to Clipboard'}
+            </button>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }
@@ -756,5 +814,154 @@ function MarkCard({ r, onMarked }) {
         <button type="button" className="btn btn-primary" onClick={save} disabled={busy}>Save</button>
       </div>
     </article>
+  );
+}
+
+
+function ShortAnswerClusterTab({ quiz, onUpdated, onShowSql }) {
+  const toast = useToast();
+  const [onlyUnaccepted, setOnlyUnaccepted] = useState(false);
+  const [busyKey, setBusyKey] = useState('');
+  const { data: rows, error, loading, reload } = useLoad(
+    () => rpcAll('short_answer_groups', { p_quiz: quiz.id }),
+    [quiz.id],
+  );
+
+  const groupedByQuestion = useMemo(() => {
+    const map = new Map();
+    for (const r of rows || []) {
+      if (onlyUnaccepted && r.already_accepted && r.all_full_marks) continue;
+      const g = map.get(r.question_id) || {
+        question_id: r.question_id,
+        qposition: r.qposition,
+        prompt: r.prompt,
+        max_marks: r.max_marks,
+        accepted: Array.isArray(r.accepted) ? r.accepted : [],
+        clusters: [],
+      };
+      g.clusters.push(r);
+      map.set(r.question_id, g);
+    }
+    return [...map.values()];
+  }, [rows, onlyUnaccepted]);
+
+  async function acceptCluster(cluster) {
+    const key = `${cluster.question_id}:${cluster.norm_answer}`;
+    setBusyKey(key);
+    try {
+      const res = await rpc('accept_short_answer', {
+        p_quiz: quiz.id,
+        p_question: cluster.question_id,
+        p_answer: cluster.sample_answer,
+      });
+      toast(`Accepted "${cluster.sample_answer}" — full marks awarded to ${res?.updated_count ?? cluster.student_count} student(s).`);
+      await reload();
+      onUpdated?.();
+    } catch (e) {
+      toast(e.message || 'Could not accept short answer.', 'error');
+    } finally {
+      setBusyKey('');
+    }
+  }
+
+  if (loading) return <Loading label="Grouping student short answers…" />;
+  if (error) {
+    const missing = /short_answer_groups|Could not find|does not exist|schema cache/i.test(error);
+    return (
+      <div className="stack">
+        <ErrorNote error={error} onRetry={reload} />
+        {missing && (
+          <div className="card row-wrap between">
+            <span className="small muted">Install the Features SQL script in Supabase to activate Short-Answer Clustering.</span>
+            <button type="button" className="btn btn-primary btn-sm" onClick={onShowSql}>View Setup SQL</button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (!rows || rows.length === 0) {
+    return (
+      <div className="card">
+        <Empty icon="check" title="No submitted short-answer responses yet">
+          Grouped short-answer spellings will appear here as soon as students submit answers to short-answer questions.
+        </Empty>
+      </div>
+    );
+  }
+
+  return (
+    <div className="stack" style={{ maxWidth: 960 }}>
+      <div className="between" style={{ flexWrap: 'wrap', gap: 10 }}>
+        <p className="small muted" style={{ margin: 0 }}>
+          Identical or similarly spelled student responses are grouped automatically. Accept a valid spelling variation once to award full marks to everyone who wrote it.
+        </p>
+        <label className="check small">
+          <input type="checkbox" checked={onlyUnaccepted} onChange={(e) => setOnlyUnaccepted(e.target.checked)} />
+          Show unaccepted variations only
+        </label>
+      </div>
+
+      {groupedByQuestion.length === 0 ? (
+        <div className="card"><Empty icon="check" title="All variations reviewed">Switch off the filter to see accepted answers too.</Empty></div>
+      ) : groupedByQuestion.map((q) => (
+        <section key={q.question_id} className="card stack-sm">
+          <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <span className="eyebrow">Question · {fmtNumber(q.max_marks)} marks</span>
+            <div className="row-wrap" style={{ gap: 6 }}>
+              <span className="tiny muted">Accepted keys:</span>
+              {(q.accepted || []).map((acc, idx) => (
+                <span key={idx} className="badge badge-teal">{acc}</span>
+              ))}
+            </div>
+          </div>
+          <p className="pre" style={{ margin: '2px 0 8px' }}>{q.prompt}</p>
+          <div className="stack-sm">
+            {q.clusters.map((c) => {
+              const key = `${c.question_id}:${c.norm_answer}`;
+              const isBusy = busyKey === key;
+              const isDone = c.already_accepted && c.all_full_marks;
+              return (
+                <div
+                  key={key}
+                  className="between"
+                  style={{
+                    flexWrap: 'wrap',
+                    gap: 10,
+                    padding: '10px 12px',
+                    borderRadius: 8,
+                    background: isDone ? 'var(--teal-50)' : 'var(--surface-2)',
+                    border: `1px solid ${isDone ? 'var(--teal)' : 'var(--line-2)'}`,
+                  }}
+                >
+                  <div className="stack-sm" style={{ gap: 2, flex: 1, minWidth: 220 }}>
+                    <div className="row-wrap" style={{ gap: 8 }}>
+                      <span className="badge badge-blue">{c.student_count} student{c.student_count === 1 ? '' : 's'}</span>
+                      <strong className="mono" style={{ fontSize: 14 }}>"{c.sample_answer}"</strong>
+                    </div>
+                    <span className="tiny muted">
+                      Average awarded: {fmtNumber(c.avg_marks)} / {fmtNumber(q.max_marks)}
+                      {c.already_accepted ? ' · matches accepted key' : ''}
+                    </span>
+                  </div>
+                  {isDone ? (
+                    <span className="badge badge-teal">✓ Accepted for all</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      disabled={isBusy || busyKey !== ''}
+                      onClick={() => acceptCluster(c)}
+                    >
+                      {isBusy ? 'Awarding…' : `Accept for all (${c.student_count})`}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ))}
+    </div>
   );
 }

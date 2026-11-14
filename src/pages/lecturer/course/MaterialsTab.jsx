@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { run, supabase, safeFileName } from '../../../lib/supabase.js';
+import { rpc, run, supabase, safeFileName } from '../../../lib/supabase.js';
 import { openStoredFile, removeFiles, uploadFile, STORAGE_LIMIT_LABEL } from '../../../lib/files.js';
 import { fmtBytes, hostOf, relative } from '../../../lib/format.js';
 import Icon from '../../../components/Icon.jsx';
@@ -24,11 +24,16 @@ function kindFromUrl(url) {
 
 export default function MaterialsTab({ course }) {
   const { data, error, loading, reload } = useLoad(async () => {
-    const [modules, materials] = await Promise.all([
+    const [modules, materials, stats] = await Promise.all([
       run(supabase.from('modules').select('*').eq('course_id', course.id).order('week_no', { nullsFirst: false }).order('position')),
       run(supabase.from('materials').select('*').eq('course_id', course.id).order('position').order('created_at')),
+      rpc('material_engagement', { p_course: course.id }).catch(() => null),
     ]);
-    return { modules, materials };
+    const statMap = new Map();
+    if (Array.isArray(stats)) {
+      stats.forEach((s) => statMap.set(s.material_id, s));
+    }
+    return { modules, materials, statMap, statsSupported: Array.isArray(stats) };
   }, [course.id]);
   const [editingWeek, setEditingWeek] = useState(null); // {} for new
   const [adding, setAdding] = useState(null); // module id or 'general'
@@ -90,6 +95,8 @@ export default function MaterialsTab({ course }) {
           onEdit={() => setEditingWeek(m)}
           onDeleteWeek={() => setRemoving({ type: 'module', item: m })}
           onDelete={(item) => setRemoving({ type: 'material', item })}
+          statMap={data.statMap}
+          statsSupported={data.statsSupported}
           act={act}
         />
       ))}
@@ -123,7 +130,7 @@ export default function MaterialsTab({ course }) {
   );
 }
 
-function WeekCard({ title, summary, items, onAdd, onEdit, onDeleteWeek, onDelete, act, muted }) {
+function WeekCard({ title, summary, items, onAdd, onEdit, onDeleteWeek, onDelete, statMap, statsSupported, act, muted }) {
   return (
     <section className="card-flush" style={muted ? { background: 'var(--surface-2)' } : undefined}>
       <div className="card-head">
@@ -138,12 +145,19 @@ function WeekCard({ title, summary, items, onAdd, onEdit, onDeleteWeek, onDelete
         </div>
       </div>
       {items.length === 0 && <p className="small muted" style={{ padding: '14px 18px' }}>Nothing here yet.</p>}
-      {items.map((m) => (
+      {items.map((m) => {
+        const st = statMap?.get(m.id);
+        return (
         <div key={m.id} className="list-row">
           <KindTag kind={m.kind} />
           <span className="list-main">
             <span className="title">{m.title}</span>
-            <span className="tiny muted">{m.url ? hostOf(m.url) : fmtBytes(m.size_bytes)} · added {relative(m.created_at)}</span>
+            <span className="tiny muted">
+              {m.url ? hostOf(m.url) : fmtBytes(m.size_bytes)} · added {relative(m.created_at)}
+              {statsSupported && (
+                <> · <strong style={{ color: st?.unique_students ? 'var(--teal-dark)' : 'var(--text-2)' }}>{st?.unique_students || 0} student{(st?.unique_students || 0) === 1 ? '' : 's'} opened</strong>{st?.total_opens ? ` (${st.total_opens} opens)` : ''}</>
+              )}
+            </span>
           </span>
           <button type="button" className="icon-btn plain" aria-label={`Open ${m.title}`}
             onClick={() => (m.url ? window.open(m.url, '_blank', 'noopener') : act(() => openStoredFile('materials', m.storage_path)))}>
@@ -153,7 +167,8 @@ function WeekCard({ title, summary, items, onAdd, onEdit, onDeleteWeek, onDelete
             <Icon name="trash" />
           </button>
         </div>
-      ))}
+        );
+      })}
     </section>
   );
 }

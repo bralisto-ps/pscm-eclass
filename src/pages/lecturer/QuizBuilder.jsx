@@ -9,6 +9,8 @@ import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, u
 import { quizStatus } from './course/QuizzesTab.jsx';
 import SpecialAccess from './SpecialAccess.jsx';
 import { FORMAT_LABELS, parseQuizMeta, serializeQuizMeta, STRATIFIED_SQL_SNIPPET } from '../../lib/quizMeta.js';
+import { uploadQuestionImage, removeQuestionImage } from '../../lib/questionMedia.js';
+import QuestionDiagram from '../../components/QuestionDiagram.jsx';
 import {
   parseQuestionsFromText,
   parseQuestionsFromRows,
@@ -21,6 +23,7 @@ import {
 
 const KINDS = [
   { id: 'mcq', label: 'Multiple choice' },
+  { id: 'multiselect', label: 'Multi-select' },
   { id: 'truefalse', label: 'True / false' },
   { id: 'numeric', label: 'Calculation' },
   { id: 'short', label: 'Short answer' },
@@ -30,8 +33,9 @@ const kindName = (k) => KINDS.find((x) => x.id === k)?.label || k;
 const LETTERS = 'abcdefgh';
 
 function blank(kind, position) {
-  const base = { kind, prompt: '', marks: 1, explanation: '', topic: '', position, options: [], answer: {}, params: {}, formula: null, unit: '', decimals: 2, tolerance: 0, tolerance_type: 'abs' };
+  const base = { kind, prompt: '', image_path: '', marks: 1, explanation: '', topic: '', position, options: [], answer: {}, params: {}, formula: null, unit: '', decimals: 2, tolerance: 0, tolerance_type: 'abs' };
   if (kind === 'mcq') return { ...base, options: [{ id: 'a', text: '' }, { id: 'b', text: '' }, { id: 'c', text: '' }, { id: 'd', text: '' }], answer: { correct: 'a' } };
+  if (kind === 'multiselect') return { ...base, options: [{ id: 'a', text: '' }, { id: 'b', text: '' }, { id: 'c', text: '' }, { id: 'd', text: '' }], answer: { correct: ['a'], partial: true } };
   if (kind === 'truefalse') return { ...base, options: [{ id: 'true', text: 'True' }, { id: 'false', text: 'False' }], answer: { correct: 'true' } };
   if (kind === 'numeric') return { ...base, answer: { value: '' }, decimals: 2, tolerance: 0.01 };
   if (kind === 'short') return { ...base, answer: { accepted: [] } };
@@ -85,7 +89,11 @@ export default function QuizBuilder() {
   }
 
   async function remove() {
-    await act(() => run(supabase.from('questions').delete().eq('id', removing.id)), 'Question deleted.');
+    const imgPath = removing?.image_path;
+    await act(async () => {
+      await run(supabase.from('questions').delete().eq('id', removing.id));
+      if (imgPath) await removeQuestionImage(imgPath);
+    }, 'Question deleted.');
     setRemoving(null);
     reload();
   }
@@ -126,7 +134,7 @@ export default function QuizBuilder() {
 
             {questions.map((q, i) =>
               editing === q.id ? (
-                <QuestionEditor key={q.id} number={i + 1} initial={q} quizId={quiz.id}
+                <QuestionEditor key={q.id} number={i + 1} initial={q} quizId={quiz.id} courseId={quiz.courses.id}
                   onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); reload(); }} />
               ) : (
                 <div key={q.id} className="q-edit">
@@ -145,6 +153,7 @@ export default function QuizBuilder() {
                   <button type="button" className="q-edit-body" onClick={() => setEditing(q.id)}
                     style={{ border: 0, background: 'none', textAlign: 'left', cursor: 'pointer', width: '100%', font: 'inherit', color: 'inherit' }}>
                     <span className="pre">{q.prompt}</span>
+                    {q.image_path && <QuestionDiagram imagePath={q.image_path} maxHeight={120} compact />}
                     <Summary q={q} />
                   </button>
                 </div>
@@ -152,7 +161,7 @@ export default function QuizBuilder() {
             )}
 
             {editing === 'new' && draft && (
-              <QuestionEditor number={questions.length + 1} initial={draft} quizId={quiz.id} isNew
+              <QuestionEditor number={questions.length + 1} initial={draft} quizId={quiz.id} courseId={quiz.courses.id} isNew
                 onCancel={() => { setEditing(null); setDraft(null); }}
                 onSaved={(again) => { setDraft(null); reload(); if (again) startNew(again); else setEditing(null); }} />
             )}
@@ -194,6 +203,19 @@ export default function QuizBuilder() {
 }
 
 function Summary({ q }) {
+  if (q.kind === 'multiselect') {
+    const corr = new Set(Array.isArray(q.answer?.correct) ? q.answer.correct : []);
+    return (
+      <span className="stack-sm" style={{ gap: 4, display: 'flex' }}>
+        {(q.options || []).map((o, i) => (
+          <span key={o.id} className="small" style={{ color: corr.has(o.id) ? 'var(--teal-dark)' : 'var(--text-2)', fontWeight: corr.has(o.id) ? 600 : 400 }}>
+            {LETTERS[i].toUpperCase()}. {o.text} {corr.has(o.id) ? '☑' : '☐'}
+          </span>
+        ))}
+        <span className="tiny muted">{q.answer?.partial === false ? 'All-or-nothing scoring' : 'Partial credit enabled'}</span>
+      </span>
+    );
+  }
   if (q.kind === 'mcq' || q.kind === 'truefalse') {
     return (
       <span className="stack-sm" style={{ gap: 4, display: 'flex' }}>
@@ -221,14 +243,17 @@ function Summary({ q }) {
 }
 
 // ---------------- question editor ----------------
-function QuestionEditor({ number, initial, quizId, isNew, onCancel, onSaved }) {
+function QuestionEditor({ number, initial, quizId, courseId, isNew, onCancel, onSaved }) {
   const toast = useToast();
+  const diagramInputRef = useRef(null);
   const [q, setQ] = useState(() => ({
     ...initial,
+    image_path: initial.image_path || '',
     options: initial.options?.map((o) => ({ ...o })) || [],
     answer: { ...(initial.answer || {}) },
     params: { ...(initial.params || {}) },
   }));
+  const [imgUploading, setImgUploading] = useState(false);
   const [mode, setMode] = useState(initial.kind === 'numeric' && initial.formula ? 'unique' : 'fixed');
   const [vars, setVars] = useState(() => Object.entries(initial.params || {}).map(([name, s]) => ({ name, min: s.min, max: s.max, step: s.step })));
   const [acceptedText, setAcceptedText] = useState((initial.answer?.accepted || []).join('\n'));
@@ -249,8 +274,20 @@ function QuestionEditor({ number, initial, quizId, isNew, onCancel, onSaved }) {
       position: q.position, options: [], answer: {}, params: {}, formula: null, unit: q.unit || '',
       decimals: Number(q.decimals) || 0, tolerance: Number(q.tolerance) || 0, tolerance_type: q.tolerance_type || 'abs',
     };
+    if (q.image_path || initial.image_path) {
+      row.image_path = q.image_path || '';
+    }
     if (!row.prompt) throw new Error('Write the question text.');
-    if (q.kind === 'mcq') {
+    if (q.kind === 'multiselect') {
+      const opts = q.options.filter((o) => o.text.trim());
+      if (opts.length < 2) throw new Error('Give at least two answer options.');
+      const oldCorrect = new Set(Array.isArray(q.answer.correct) ? q.answer.correct : []);
+      const nextOpts = opts.map((o, i) => ({ id: LETTERS[i], oldId: o.id, text: o.text.trim() }));
+      const nextCorrect = nextOpts.filter((o) => oldCorrect.has(o.oldId)).map((o) => o.id);
+      if (!nextCorrect.length) throw new Error('Tick at least one correct option.');
+      row.options = nextOpts.map(({ id, text }) => ({ id, text }));
+      row.answer = { correct: nextCorrect, partial: q.answer.partial !== false };
+    } else if (q.kind === 'mcq') {
       const opts = q.options.filter((o) => o.text.trim());
       if (opts.length < 2) throw new Error('Give at least two answer options.');
       const correctOld = q.answer.correct;
@@ -301,6 +338,35 @@ function QuestionEditor({ number, initial, quizId, isNew, onCancel, onSaved }) {
     }
   }
 
+  async function handleDiagramPick(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError('');
+    setImgUploading(true);
+    try {
+      const prevPath = q.image_path;
+      const newPath = await uploadQuestionImage(courseId, quizId, file);
+      set('image_path', newPath);
+      if (prevPath && prevPath !== initial.image_path) {
+        await removeQuestionImage(prevPath);
+      }
+      toast('Diagram uploaded. Remember to save this question.');
+    } catch (err) {
+      setError(err.message || 'Could not upload diagram.');
+    } finally {
+      setImgUploading(false);
+      if (diagramInputRef.current) diagramInputRef.current.value = '';
+    }
+  }
+
+  async function removeDiagram() {
+    const curr = q.image_path;
+    set('image_path', '');
+    if (curr && curr !== initial.image_path) {
+      await removeQuestionImage(curr);
+    }
+  }
+
   async function save(again) {
     setError('');
     let row;
@@ -318,6 +384,9 @@ function QuestionEditor({ number, initial, quizId, isNew, onCancel, onSaved }) {
       }
       if (isNew) await run(supabase.from('questions').insert(row));
       else await run(supabase.from('questions').update(row).eq('id', initial.id));
+      if (initial.image_path && initial.image_path !== (q.image_path || '')) {
+        await removeQuestionImage(initial.image_path);
+      }
       toast('Question saved.');
       onSaved(again ? q.kind : null);
     } catch (e) {
@@ -349,6 +418,80 @@ function QuestionEditor({ number, initial, quizId, isNew, onCancel, onSaved }) {
               ? 'A distributor sells {D} units a year. Each order costs GH₵ {S} and holding one unit for a year costs GH₵ {H}. What is the EOQ?'
               : 'Type the question'} />
         </Field>
+
+        <div className="card-soft stack-sm" style={{ padding: '10px 12px' }}>
+          <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <span className="small strong" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <Icon name="image" size={15} /> Diagram / Figure <span className="tiny muted">(optional, max 5 MB)</span>
+            </span>
+            <div className="row" style={{ gap: 6 }}>
+              <input
+                ref={diagramInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                style={{ display: 'none' }}
+                onChange={handleDiagramPick}
+              />
+              <button type="button" className="btn btn-sm" disabled={imgUploading || busy} onClick={() => diagramInputRef.current?.click()}>
+                <Icon name="upload" size={14} /> {imgUploading ? 'Uploading…' : q.image_path ? 'Replace image' : 'Attach diagram'}
+              </button>
+              {q.image_path && (
+                <button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--red-ink)' }} disabled={busy} onClick={removeDiagram}>
+                  Remove
+                </button>
+              )}
+            </div>
+          </div>
+          {q.image_path && <QuestionDiagram imagePath={q.image_path} maxHeight={180} compact />}
+        </div>
+
+        {q.kind === 'multiselect' && (
+          <div className="stack-sm">
+            <span className="field-label">Options — tick ALL correct answers</span>
+            {q.options.map((o, i) => {
+              const correctSet = new Set(Array.isArray(q.answer.correct) ? q.answer.correct : []);
+              const checked = correctSet.has(o.id);
+              return (
+                <div key={o.id} className="opt-row">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => {
+                      const next = new Set(correctSet);
+                      if (e.target.checked) next.add(o.id);
+                      else next.delete(o.id);
+                      set('answer', { ...q.answer, correct: [...next] });
+                    }}
+                    aria-label={`Option ${LETTERS[i].toUpperCase()} is correct`}
+                    style={{ width: 20, height: 20, accentColor: 'var(--teal)' }}
+                  />
+                  <span className="mono strong" style={{ width: 18 }}>{LETTERS[i].toUpperCase()}</span>
+                  <input className="input" value={o.text} placeholder={`Option ${LETTERS[i].toUpperCase()}`}
+                    onChange={(e) => set('options', q.options.map((x) => (x.id === o.id ? { ...x, text: e.target.value } : x)))} />
+                  <button type="button" className="icon-btn plain" aria-label="Remove option" disabled={q.options.length <= 2}
+                    onClick={() => set('options', q.options.filter((x) => x.id !== o.id))}><Icon name="x" /></button>
+                </div>
+              );
+            })}
+            {q.options.length < 8 && (
+              <div>
+                <button type="button" className="btn btn-sm btn-ghost" onClick={() => {
+                  const used = new Set(q.options.map((x) => x.id));
+                  const id = [...'abcdefghijklmnop'].find((c) => !used.has(c));
+                  set('options', [...q.options, { id, text: '' }]);
+                }}><Icon name="plus" size={16} /> Add option</button>
+              </div>
+            )}
+            <label className="check" style={{ marginTop: 4 }}>
+              <input
+                type="checkbox"
+                checked={q.answer.partial !== false}
+                onChange={(e) => set('answer', { ...q.answer, partial: e.target.checked })}
+              />
+              <span className="small">Award partial credit <span className="muted">((right picks − wrong picks) ÷ total correct)</span></span>
+            </label>
+          </div>
+        )}
 
         {q.kind === 'mcq' && (
           <div className="stack-sm">
@@ -496,6 +639,7 @@ function Settings({ quiz, count, questions = [], windows, streams, classes, onSa
     no_backtrack: quiz.no_backtrack,
     pool_size: quiz.pool_size ?? '',
     question_time_limit: quiz.question_time_limit ?? '',
+    access_pin: quiz.access_pin ?? '',
   }));
 
   const [customTimesOn, setCustomTimesOn] = useState(initialMeta.custom_times_enabled);
@@ -508,7 +652,7 @@ function Settings({ quiz, count, questions = [], windows, streams, classes, onSa
 
   // Live count of questions available in this quiz by format
   const formatCounts = useMemo(() => {
-    const counts = { mcq: 0, truefalse: 0, short: 0, numeric: 0, essay: 0 };
+    const counts = { mcq: 0, multiselect: 0, truefalse: 0, short: 0, numeric: 0, essay: 0 };
     (questions || []).forEach((q) => {
       if (counts[q.kind] !== undefined) counts[q.kind]++;
     });
@@ -595,6 +739,12 @@ function Settings({ quiz, count, questions = [], windows, streams, classes, onSa
       pool_size: poolSizeVal,
       question_time_limit: f.question_time_limit === '' || Number(f.question_time_limit) <= 0 ? null : Math.floor(Number(f.question_time_limit)),
     };
+    const cleanPin = String(f.access_pin || '').trim().toUpperCase();
+    if (cleanPin || quiz.access_pin) {
+      row.access_pin = cleanPin;
+    } else {
+      delete row.access_pin;
+    }
 
     if (row.opens_at && row.closes_at && new Date(row.closes_at) <= new Date(row.opens_at)) {
       throw new Error('The closing time must be after the opening time.');
@@ -800,6 +950,48 @@ function Settings({ quiz, count, questions = [], windows, streams, classes, onSa
           </label>
         )}
         <label className="check"><input type="checkbox" checked={f.no_backtrack} onChange={set('no_backtrack')} /> No going back — each question locks once the student moves on</label>
+        <div className="card-soft stack-sm" style={{ padding: 10, border: '1px solid var(--line-2)' }}>
+          <div className="between" style={{ alignItems: 'center' }}>
+            <span className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <Icon name="lock" size={14} /> <strong>Hall Access PIN</strong> <span className="tiny muted">(optional)</span>
+            </span>
+            <div className="row" style={{ gap: 4 }}>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                style={{ fontSize: 11, padding: '2px 6px', minHeight: 24 }}
+                onClick={() => {
+                  const pin = String(Math.floor(1000 + Math.random() * 9000));
+                  setF({ ...f, access_pin: pin });
+                  setDirty(true);
+                }}
+              >
+                Generate PIN
+              </button>
+              {f.access_pin && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  style={{ fontSize: 11, padding: '2px 6px', minHeight: 24 }}
+                  onClick={() => { setF({ ...f, access_pin: '' }); setDirty(true); }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+          <input
+            className="input mono"
+            style={{ minHeight: 34, fontSize: 14, letterSpacing: '0.12em', textTransform: 'uppercase' }}
+            placeholder="Leave blank for no PIN (e.g. 4821)"
+            maxLength={16}
+            value={f.access_pin}
+            onChange={(e) => { setF({ ...f, access_pin: e.target.value.toUpperCase() }); setDirty(true); }}
+          />
+          <span className="tiny muted">
+            Students must enter this PIN (announced on the board in the exam hall) before starting an attempt.
+          </span>
+        </div>
         <label className="check">
           <input
             type="checkbox"

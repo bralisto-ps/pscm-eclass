@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { rpc } from '../../lib/supabase.js';
 import { fillVars, fmtNumber, pct } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
+import QuestionDiagram from '../../components/QuestionDiagram.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import { ErrorNote, Loading, useLoad } from '../../components/ui.jsx';
 import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
@@ -97,6 +98,27 @@ export default function ReviewQuiz() {
                   <p className="pre" style={{ fontSize: 16 }}>
                     {fillVars(q.prompt, q.vars)}
                   </p>
+                  {q.image_path && <QuestionDiagram imagePath={q.image_path} maxHeight={260} />}
+                  {q.kind === 'multiselect' && (
+                    <div className="stack-sm">
+                      {(q.options || []).map((o, k) => {
+                        const pickedSet = new Set(Array.isArray(q.value) ? q.value : []);
+                        const rightSet = new Set(Array.isArray(correctIds) ? correctIds : []);
+                        const isMine = pickedSet.has(o.id);
+                        const isRight = rightSet.has(o.id);
+                        const cls = isRight ? 'correct' : isMine ? 'wrong' : '';
+                        return (
+                          <div key={o.id} className={`option ${cls}`} style={{ cursor: 'default' }}>
+                            <span className="letter" style={{ borderRadius: 6 }}>{isMine ? '☑' : LETTERS[k]}</span>
+                            <span style={{ flex: 1 }}>{o.text}</span>
+                            {isMine && isRight && <span className="tiny strong">Your answer ✓</span>}
+                            {isMine && !isRight && <span className="tiny strong">Wrong pick</span>}
+                            {!isMine && isRight && <span className="tiny strong">Correct option</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   {(q.kind === 'mcq' || q.kind === 'truefalse') && (
                     <div className="stack-sm">
                       {q.options.map((o, k) => {
@@ -119,7 +141,7 @@ export default function ReviewQuiz() {
                       })}
                     </div>
                   )}
-                  {q.kind !== 'mcq' && q.kind !== 'truefalse' && (
+                  {q.kind !== 'mcq' && q.kind !== 'multiselect' && q.kind !== 'truefalse' && (
                     <div className="stack-sm">
                       <span className="eyebrow">Your answer</span>
                       <p className={q.kind === 'essay' ? 'pre' : 'mono'}>

@@ -1,11 +1,14 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { rpc, rpcAll, run, supabase } from '../lib/supabase.js';
 import { fmtDateTime, fmtNumber, pct, relative } from '../lib/format.js';
 import { computeStudentCA, parseCourseMeta } from '../lib/courseMeta.js';
 import Icon from './Icon.jsx';
+import PrintReportModal from './PrintReportModal.jsx';
+import { buildStudentSummaryHtml } from '../lib/printReport.js';
 import { ErrorNote, Loading, useLoad } from './ui.jsx';
 
 export default function StudentDrawer({ course, student, ta, onClose, onOutreach, onResetPassword }) {
+  const [printHtml, setPrintHtml] = useState('');
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose?.();
     document.addEventListener('keydown', onKey);
@@ -30,7 +33,7 @@ export default function StudentDrawer({ course, student, ta, onClose, onOutreach
     const quizIds = quizzes.map((q) => q.id);
     const assignIds = assignments.map((a) => a.id);
 
-    const [attemptsRes, subsRes, msgsRes, caPack] = await Promise.all([
+    const [attemptsRes, subsRes, msgsRes, caPack, materialStats] = await Promise.all([
       studentId && quizIds.length
         ? supabase
             .from('attempts')
@@ -62,6 +65,9 @@ export default function StudentDrawer({ course, student, ta, onClose, onOutreach
             rpcAll('course_ca', { p_course: course.id }),
           ]).catch(() => null)
         : Promise.resolve(null),
+      studentId
+        ? rpc('student_material_engagement', { p_course: course.id, p_student: studentId }).catch(() => null)
+        : Promise.resolve(null),
     ]);
 
     const attRow = (attStudents || []).find((r) => r.index_no === student.index_no) || null;
@@ -91,6 +97,7 @@ export default function StudentDrawer({ course, student, ta, onClose, onOutreach
       submissions: subsRes?.data || [],
       messages: msgsRes?.data || [],
       caSummary,
+      materialStats,
     };
   }, [course.id, student.index_no, ta]);
 
@@ -164,6 +171,25 @@ export default function StudentDrawer({ course, student, ta, onClose, onOutreach
             >
               <Icon name="chat" size={15} /> Send Advisory / Message
             </button>
+            {data && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setPrintHtml(buildStudentSummaryHtml({
+                  course,
+                  student,
+                  attRow: data.attRow,
+                  quizzes: data.quizzes,
+                  attempts: data.attempts,
+                  assignments: data.assignments,
+                  submissions: data.submissions,
+                  caSummary: data.caSummary,
+                  materialStats: data.materialStats,
+                }))}
+              >
+                <Icon name="printer" size={15} /> Print / PDF Summary
+              </button>
+            )}
             {student.activated && (
               <button
                 type="button"
@@ -207,6 +233,30 @@ export default function StudentDrawer({ course, student, ta, onClose, onOutreach
                       <span className="v" style={{ fontSize: 18 }}>{data.caSummary.total100 !== null ? data.caSummary.total100.toFixed(data.caSummary.dec) : '—'}</span>
                     </div>
                   </div>
+                </section>
+              )}
+
+              {/* Materials Engagement */}
+              {data.materialStats && (
+                <section className="card stack-sm">
+                  <div className="between">
+                    <h3 style={{ margin: 0, fontSize: 15 }}>Materials Read / Opened</h3>
+                    <span className="badge badge-teal">
+                      {data.materialStats.viewed_count} / {data.materialStats.total_materials} ({data.materialStats.total_opens} opens)
+                    </span>
+                  </div>
+                  {data.materialStats.items?.length > 0 ? (
+                    <div className="stack-sm" style={{ gap: 4 }}>
+                      {data.materialStats.items.slice(0, 6).map((item) => (
+                        <div key={item.material_id} className="between small" style={{ padding: '4px 0', borderTop: '1px solid var(--line-2)' }}>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{item.title}</span>
+                          <span className="tiny muted nowrap">{item.view_count}× · {relative(item.last_viewed_at)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="small muted">Has not opened any posted materials yet.</span>
+                  )}
                 </section>
               )}
 
@@ -348,6 +398,13 @@ export default function StudentDrawer({ course, student, ta, onClose, onOutreach
           )}
         </div>
       </aside>
+      {printHtml && (
+        <PrintReportModal
+          title={`Student Academic Summary · ${student.full_name}`}
+          html={printHtml}
+          onClose={() => setPrintHtml('')}
+        />
+      )}
     </div>
   );
 }

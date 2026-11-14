@@ -1,12 +1,41 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { fillVars, fmtNumber } from '../lib/format.js';
 import { rpc } from '../lib/supabase.js';
 import Icon from './Icon.jsx';
+import QuestionDiagram from './QuestionDiagram.jsx';
 import { Modal, Loading, ErrorNote, useLoad } from './ui.jsx';
 
 const LETTERS = 'ABCDEFGHIJ';
 
-export default function FlashcardDeckModal({ quiz, attemptId, questions: initialQuestions, onClose }) {
+async function loadQuestionsForQuiz(q) {
+  if (!q) return [];
+  if (q.best?.attempt_id) {
+    const rev = await rpc('get_attempt_review', { p_attempt: q.best.attempt_id });
+    return (rev.questions || []).map((item) => ({ ...item, quiz_title: rev.title || q.title }));
+  }
+  if (q.is_practice) {
+    try {
+      const aid = await rpc('start_attempt', { p_quiz: q.id });
+      await rpc('submit_attempt', { p_attempt: aid });
+      const rev = await rpc('get_attempt_review', { p_attempt: aid });
+      return (rev.questions || []).map((item) => ({ ...item, quiz_title: rev.title || q.title }));
+    } catch (e) {
+      console.warn('Practice attempt review init failed:', e);
+    }
+  }
+  return [];
+}
+
+export default function FlashcardDeckModal({ quiz, quizzes, attemptId, questions: initialQuestions, onClose }) {
+  const eligibleQuizzes = useMemo(() => {
+    if (Array.isArray(quizzes) && quizzes.length > 0) return quizzes;
+    return quiz?.id ? [quiz] : [];
+  }, [quizzes, quiz]);
+
+  const [selectedSource, setSelectedSource] = useState(() => (
+    eligibleQuizzes.length > 1 ? '__ALL__' : (quiz?.id || eligibleQuizzes[0]?.id || '__SINGLE__')
+  ));
+
   const { data: loadedData, error, loading } = useLoad(async () => {
     if (initialQuestions && initialQuestions.length > 0) {
       return { title: quiz?.title || 'Quiz Revision', questions: initialQuestions };
@@ -15,24 +44,28 @@ export default function FlashcardDeckModal({ quiz, attemptId, questions: initial
       const rev = await rpc('get_attempt_review', { p_attempt: attemptId });
       return { title: rev.title || quiz?.title || 'Quiz Revision', questions: rev.questions || [] };
     }
-    if (quiz?.id) {
-      if (quiz.best?.attempt_id) {
-        const rev = await rpc('get_attempt_review', { p_attempt: quiz.best.attempt_id });
-        return { title: rev.title || quiz.title, questions: rev.questions || [] };
-      }
-      if (quiz.is_practice) {
-        try {
-          const aid = await rpc('start_attempt', { p_quiz: quiz.id });
-          await rpc('submit_attempt', { p_attempt: aid });
-          const rev = await rpc('get_attempt_review', { p_attempt: aid });
-          return { title: rev.title || quiz.title, questions: rev.questions || [] };
-        } catch (e) {
-          console.warn('Practice attempt review init failed:', e);
+    if (selectedSource === '__ALL__' && eligibleQuizzes.length > 0) {
+      const chunks = await Promise.all(eligibleQuizzes.map((q) => loadQuestionsForQuiz(q).catch(() => [])));
+      const merged = [];
+      const seen = new Set();
+      for (const list of chunks) {
+        for (const item of list) {
+          const key = `${item.id || item.prompt}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            merged.push(item);
+          }
         }
       }
+      return { title: `All Course Decks (${eligibleQuizzes.length} quizzes)`, questions: merged };
+    }
+    const targetQuiz = eligibleQuizzes.find((q) => q.id === selectedSource) || quiz;
+    if (targetQuiz?.id) {
+      const qs = await loadQuestionsForQuiz(targetQuiz);
+      return { title: targetQuiz.title, questions: qs };
     }
     return { title: quiz?.title || 'Quiz Revision', questions: [] };
-  }, [quiz?.id, attemptId]);
+  }, [selectedSource, attemptId, quiz?.id]);
 
   if (loading) {
     return (
@@ -54,9 +87,20 @@ export default function FlashcardDeckModal({ quiz, attemptId, questions: initial
   }
 
   const questions = loadedData?.questions || [];
+
   if (questions.length === 0) {
     return (
       <Modal title="Flashcard Revision" onClose={onClose}>
+        {eligibleQuizzes.length > 1 && (
+          <div style={{ marginBottom: 12 }}>
+            <select className="select" value={selectedSource} onChange={(e) => setSelectedSource(e.target.value)}>
+              <option value="__ALL__">All eligible quizzes combined ({eligibleQuizzes.length})</option>
+              {eligibleQuizzes.map((q) => (
+                <option key={q.id} value={q.id}>{q.title}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="card-soft stack-sm" style={{ padding: 24, textAlign: 'center' }}>
           <Icon name="layers" size={32} style={{ color: 'var(--teal)', margin: '0 auto' }} />
           <h3>No questions available for this deck yet</h3>
@@ -71,28 +115,62 @@ export default function FlashcardDeckModal({ quiz, attemptId, questions: initial
     );
   }
 
-  return <DeckCore title={loadedData.title} initialList={questions} onClose={onClose} />;
+  return (
+    <DeckCore
+      key={`${selectedSource}:${questions.length}`}
+      title={loadedData.title}
+      initialList={questions}
+      eligibleQuizzes={eligibleQuizzes}
+      selectedSource={selectedSource}
+      onSelectSource={setSelectedSource}
+      onClose={onClose}
+    />
+  );
 }
 
-function DeckCore({ title, initialList, onClose }) {
-  const [deck, setDeck] = useState(() => initialList.map((q, idx) => ({ ...q, originalIndex: idx })));
+function DeckCore({ title, initialList, eligibleQuizzes = [], selectedSource, onSelectSource, onClose }) {
+  const [missedOnlyMode, setMissedOnlyMode] = useState(false);
+
+  const missedFromScores = useMemo(
+    () => initialList.filter((q) => (
+      q.marks_awarded !== null &&
+      q.marks_awarded !== undefined &&
+      q.marks !== null &&
+      Number(q.marks_awarded) < Number(q.marks)
+    )),
+    [initialList],
+  );
+
+  const activeSourceList = missedOnlyMode && missedFromScores.length > 0 ? missedFromScores : initialList;
+
+  const [deck, setDeck] = useState(() => activeSourceList.map((q, idx) => ({ ...q, originalIndex: idx })));
   const [currentIdx, setCurrentIdx] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [masteredIds, setMasteredIds] = useState(() => new Set());
   const [reviewIds, setReviewIds] = useState(() => new Set());
   const [selectedGuess, setSelectedGuess] = useState(null);
+  const [selectedMultiGuess, setSelectedMultiGuess] = useState(() => new Set());
   const [isCompleted, setIsCompleted] = useState(false);
+
+  useEffect(() => {
+    setDeck(activeSourceList.map((q, idx) => ({ ...q, originalIndex: idx })));
+    setCurrentIdx(0);
+    setMasteredIds(new Set());
+    setReviewIds(new Set());
+    setIsCompleted(false);
+  }, [activeSourceList]);
 
   const card = deck[currentIdx];
 
   useEffect(() => {
     setIsFlipped(false);
     setSelectedGuess(null);
+    setSelectedMultiGuess(new Set());
   }, [currentIdx, deck]);
 
   useEffect(() => {
     function onKeyDown(e) {
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
       if (e.key === ' ' || e.key === 'Enter') {
         e.preventDefault();
         setIsFlipped((f) => !f);
@@ -150,7 +228,7 @@ function DeckCore({ title, initialList, onClose }) {
   }
 
   function restartAll() {
-    setDeck(initialList.map((q, idx) => ({ ...q, originalIndex: idx })));
+    setDeck(activeSourceList.map((q, idx) => ({ ...q, originalIndex: idx })));
     setCurrentIdx(0);
     setMasteredIds(new Set());
     setReviewIds(new Set());
@@ -158,7 +236,7 @@ function DeckCore({ title, initialList, onClose }) {
   }
 
   function restartMissedOnly() {
-    const missed = initialList.filter((q, idx) => reviewIds.has(q.id || idx));
+    const missed = activeSourceList.filter((q, idx) => reviewIds.has(q.id || idx));
     if (missed.length === 0) return restartAll();
     setDeck(missed.map((q, idx) => ({ ...q, originalIndex: idx })));
     setCurrentIdx(0);
@@ -169,9 +247,9 @@ function DeckCore({ title, initialList, onClose }) {
   const totalCards = deck.length;
 
   if (isCompleted) {
-    const masteredCount = initialList.filter((q, idx) => masteredIds.has(q.id || idx)).length;
-    const reviewCount = initialList.length - masteredCount;
-    const finalPct = Math.round((masteredCount / initialList.length) * 100);
+    const masteredCount = activeSourceList.filter((q, idx) => masteredIds.has(q.id || idx)).length;
+    const reviewCount = activeSourceList.length - masteredCount;
+    const finalPct = activeSourceList.length ? Math.round((masteredCount / activeSourceList.length) * 100) : 100;
 
     return (
       <Modal title={`Revision Complete · ${title}`} onClose={onClose} wide>
@@ -216,7 +294,7 @@ function DeckCore({ title, initialList, onClose }) {
           <div className="row" style={{ justifyContent: 'center', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>
             {reviewCount > 0 && (
               <button type="button" className="btn btn-primary" onClick={restartMissedOnly}>
-                <Icon name="refresh" size={16} /> Review Missed Cards ({reviewCount})
+                <Icon name="refresh" size={16} /> Review Need-Work Cards ({reviewCount})
               </button>
             )}
             <button type="button" className="btn" onClick={restartAll}>
@@ -276,7 +354,46 @@ function DeckCore({ title, initialList, onClose }) {
         </div>
       }
     >
-      <div className="stack-sm" style={{ marginBottom: 4 }}>
+      <div className="stack-sm" style={{ marginBottom: 6 }}>
+        {(eligibleQuizzes.length > 1 || missedFromScores.length > 0) && (
+          <div className="between" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+            {eligibleQuizzes.length > 1 ? (
+              <select
+                className="select"
+                aria-label="Choose quiz deck"
+                style={{ maxWidth: 340, minHeight: 34, fontSize: 13 }}
+                value={selectedSource}
+                onChange={(e) => onSelectSource?.(e.target.value)}
+              >
+                <option value="__ALL__">All eligible quizzes combined ({eligibleQuizzes.length})</option>
+                {eligibleQuizzes.map((q) => (
+                  <option key={q.id} value={q.id}>{q.title}</option>
+                ))}
+              </select>
+            ) : <span />}
+            {missedFromScores.length > 0 && (
+              <div className="row" style={{ gap: 6 }}>
+                <button
+                  type="button"
+                  className="chip"
+                  aria-pressed={!missedOnlyMode}
+                  onClick={() => setMissedOnlyMode(false)}
+                >
+                  All questions ({initialList.length})
+                </button>
+                <button
+                  type="button"
+                  className="chip"
+                  aria-pressed={missedOnlyMode}
+                  onClick={() => setMissedOnlyMode(true)}
+                >
+                  Questions I missed ({missedFromScores.length})
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="between small">
           <span className="mono strong">
             Card {currentIdx + 1} of {totalCards}
@@ -318,11 +435,14 @@ function DeckCore({ title, initialList, onClose }) {
         <div className="flashcard-inner">
           <div className="flashcard-face flashcard-front">
             <div className="between" style={{ width: '100%', marginBottom: 12 }}>
-              <div className="row" style={{ gap: 8 }}>
+              <div className="row-wrap" style={{ gap: 6 }}>
                 <span className="badge badge-teal">Question {currentIdx + 1}</span>
                 <span className="badge" style={{ textTransform: 'capitalize' }}>
-                  {card.kind === 'mcq' ? 'Multiple Choice' : card.kind === 'truefalse' ? 'True / False' : card.kind === 'numeric' ? 'Numerical' : card.kind}
+                  {card.kind === 'mcq' ? 'Multiple Choice' : card.kind === 'multiselect' ? 'Multi-Select' : card.kind === 'truefalse' ? 'True / False' : card.kind === 'numeric' ? 'Numerical' : card.kind}
                 </span>
+                {card.quiz_title && eligibleQuizzes.length > 1 && (
+                  <span className="tiny muted">{card.quiz_title}</span>
+                )}
               </div>
               {card.marks && <span className="small muted mono">{fmtNumber(card.marks)} mark{card.marks > 1 ? 's' : ''}</span>}
             </div>
@@ -330,9 +450,10 @@ function DeckCore({ title, initialList, onClose }) {
             <div className="flashcard-prompt">
               {promptText}
             </div>
+            {card.image_path && <QuestionDiagram imagePath={card.image_path} maxHeight={200} compact />}
 
             {(card.kind === 'mcq' || card.kind === 'truefalse') && Array.isArray(card.options) && (
-              <div className="stack-sm" style={{ width: '100%', marginTop: 16 }} onClick={(e) => e.stopPropagation()}>
+              <div className="stack-sm" style={{ width: '100%', marginTop: 14 }} onClick={(e) => e.stopPropagation()}>
                 <span className="tiny muted uppercase" style={{ letterSpacing: '0.05em' }}>Options (Pick your answer, then flip):</span>
                 {card.options.map((opt, k) => {
                   const isGuessed = selectedGuess === opt.id;
@@ -349,6 +470,37 @@ function DeckCore({ title, initialList, onClose }) {
                     >
                       <span className="letter" style={{ width: 24, height: 24, fontSize: 12 }}>
                         {card.kind === 'truefalse' ? (opt.id === 'true' ? 'T' : 'F') : LETTERS[k]}
+                      </span>
+                      <span style={{ flex: 1, textAlign: 'left' }}>{opt.text}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {card.kind === 'multiselect' && Array.isArray(card.options) && (
+              <div className="stack-sm" style={{ width: '100%', marginTop: 14 }} onClick={(e) => e.stopPropagation()}>
+                <span className="tiny muted uppercase" style={{ letterSpacing: '0.05em' }}>Select all that apply, then flip:</span>
+                {card.options.map((opt, k) => {
+                  const isGuessed = selectedMultiGuess.has(opt.id);
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className={`option ${isGuessed ? 'selected' : ''}`}
+                      style={{ padding: '8px 12px', minHeight: 40, fontSize: 14 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedMultiGuess((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(opt.id)) next.delete(opt.id);
+                          else next.add(opt.id);
+                          return next;
+                        });
+                      }}
+                    >
+                      <span className="letter" style={{ width: 24, height: 24, fontSize: 12, borderRadius: 6 }}>
+                        {isGuessed ? '☑' : LETTERS[k]}
                       </span>
                       <span style={{ flex: 1, textAlign: 'left' }}>{opt.text}</span>
                     </button>
@@ -378,6 +530,17 @@ function DeckCore({ title, initialList, onClose }) {
                     const corr = card.options?.find((o) => o.id === card.correct);
                     if (!corr) return String(card.correct ?? 'See explanation');
                     return `${corr.text}`;
+                  })()}
+                </div>
+              )}
+              {card.kind === 'multiselect' && (
+                <div className="stack-sm" style={{ gap: 4 }}>
+                  {(() => {
+                    const rightSet = new Set(Array.isArray(card.correct) ? card.correct : []);
+                    const hits = (card.options || []).filter((o) => rightSet.has(o.id));
+                    return hits.length
+                      ? hits.map((o) => <div key={o.id} className="strong" style={{ fontSize: 15 }}>☑ {o.text}</div>)
+                      : <div className="small muted">See explanation below</div>;
                   })()}
                 </div>
               )}

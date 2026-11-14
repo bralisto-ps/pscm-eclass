@@ -5,7 +5,7 @@ import { downloadWorkbook } from '../../lib/sheets.js';
 import Icon from '../../components/Icon.jsx';
 import { Empty, ErrorNote, Loading, Modal, useLoad } from '../../components/ui.jsx';
 
-const KIND = { mcq: 'Multiple choice', truefalse: 'True / false', numeric: 'Calculation', short: 'Short answer', essay: 'Written' };
+const KIND = { mcq: 'Multiple choice', multiselect: 'Multi-select', truefalse: 'True / false', numeric: 'Calculation', short: 'Short answer', essay: 'Written' };
 
 function verdict(r) {
   if (r.answered < 5) return { label: 'Too few answers', cls: '' };
@@ -70,7 +70,7 @@ export function ItemAnalysis({ quiz }) {
               <div className="stack-sm" style={{ gap: 4 }}>
                 {Object.entries(opts).sort((a, b) => a[0].localeCompare(b[0])).map(([k, n]) => {
                   const p = optTotal ? Math.round((Number(n) / optTotal) * 100) : 0;
-                  const right = k === r.correct;
+                  const right = r.kind === 'multiselect' ? String(r.correct || '').split(',').includes(k) : k === r.correct;
                   return (
                     <div key={k} className="row small" style={{ gap: 10 }}>
                       <span className="mono" style={{ width: 54 }}>{k === '' ? 'blank' : k === 'true' ? 'True' : k === 'false' ? 'False' : k.toUpperCase()}</span>

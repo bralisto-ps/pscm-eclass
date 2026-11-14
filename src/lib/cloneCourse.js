@@ -127,7 +127,7 @@ export async function cloneCourse({
       ? await run(
           supabase
             .from('questions')
-            .select(`id, quiz_id, ${QUESTION_FIELDS.join(', ')}`)
+            .select('*')
             .in('quiz_id', quizIds)
             .order('position')
             .order('created_at')
@@ -164,6 +164,7 @@ export async function cloneCourse({
         .map((x) => {
           const row = { quiz_id: insertedQuiz.id };
           for (const k of QUESTION_FIELDS) row[k] = x[k];
+          if (x.image_path) row.image_path = x.image_path;
           return row;
         });
 

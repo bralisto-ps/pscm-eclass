@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { rpc, run, supabase } from '../../lib/supabase.js';
 import { fillVars, fmtNumber, initials } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
+import QuestionDiagram from '../../components/QuestionDiagram.jsx';
 import { ErrorNote, Loading, Modal, Swatch, useLoad, useToast } from '../../components/ui.jsx';
 import { uploadProctorSnapshot } from '../../lib/proctorPhotos.js';
 import { deviceLabel } from '../../lib/device.js';
@@ -11,6 +12,7 @@ import { cleanText, FORMAT_LABELS, getQuestionTimeLimit, parseQuizMeta } from '.
 const LETTERS = 'ABCDEFGHIJ';
 
 function isAnswered(v) {
+  if (Array.isArray(v)) return v.length > 0;
   return v !== null && v !== undefined && String(v).trim() !== '';
 }
 
@@ -1073,6 +1075,7 @@ function Runner({ initial }) {
                   }}
                 >
                   <div style={{ wordBreak: 'break-word' }}>{fillVars(q.prompt, q.vars)}</div>
+                  {q.image_path && <QuestionDiagram imagePath={q.image_path} maxHeight={280} />}
                 </div>
 
                 <div
@@ -1157,7 +1160,7 @@ function Runner({ initial }) {
                 >
                   <div style={{ marginBottom: 14 }}>
                     <span className="eyebrow" style={{ color: 'var(--teal-dark, #0d9488)', fontWeight: 700, fontSize: 13 }}>
-                      {q.kind === 'mcq' ? 'Select One Option:' : 'Your Answer:'}
+                      {q.kind === 'mcq' ? 'Select One Option:' : q.kind === 'multiselect' ? 'Select All That Apply:' : 'Your Answer:'}
                     </span>
                   </div>
                   <AnswerInput q={q} value={answers[q.id]} onChange={setAnswer} onBlur={() => saveNow(q.id)} />
@@ -1193,6 +1196,7 @@ function Runner({ initial }) {
                 }}
               >
                 <div style={{ wordBreak: 'break-word' }}>{fillVars(q.prompt, q.vars)}</div>
+                {q.image_path && <QuestionDiagram imagePath={q.image_path} maxHeight={300} />}
                 {antiCaptureMode && (
                   <div
                     style={{
@@ -1249,7 +1253,7 @@ function Runner({ initial }) {
               >
                 <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <span className="eyebrow" style={{ color: 'var(--teal-dark, #0d9488)', fontWeight: 700, fontSize: 13 }}>
-                    {q.kind === 'mcq' ? 'Select One Option:' : 'Your Answer:'}
+                    {q.kind === 'mcq' ? 'Select One Option:' : q.kind === 'multiselect' ? 'Select All That Apply:' : 'Your Answer:'}
                   </span>
                   {antiCaptureMode && (
                     <span className="tiny muted">
@@ -1381,10 +1385,40 @@ function Runner({ initial }) {
 }
 
 function kindLabel(kind) {
-  return { mcq: 'Multiple choice', truefalse: 'True or false', numeric: 'Calculation', short: 'Short answer', essay: 'Written answer' }[kind] || 'Question';
+  return { mcq: 'Multiple choice', multiselect: 'Select all that apply', truefalse: 'True or false', numeric: 'Calculation', short: 'Short answer', essay: 'Written answer' }[kind] || 'Question';
 }
 
 function AnswerInput({ q, value, onChange, onBlur }) {
+  if (q.kind === 'multiselect') {
+    const picked = new Set(Array.isArray(value) ? value : []);
+    return (
+      <div className="stack-sm" role="group" aria-label="Select all correct answers">
+        {(q.options || []).map((o, i) => {
+          const selected = picked.has(o.id);
+          return (
+            <button
+              key={o.id}
+              type="button"
+              role="checkbox"
+              aria-checked={selected}
+              className={`option ${selected ? 'selected' : ''}`}
+              onClick={() => {
+                const next = new Set(picked);
+                if (next.has(o.id)) next.delete(o.id);
+                else next.add(o.id);
+                onChange(q.id, [...next], true);
+              }}
+            >
+              <span className="letter" style={{ borderRadius: 6 }}>
+                {selected ? '☑' : LETTERS[i]}
+              </span>
+              <span>{o.text}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
   if (q.kind === 'mcq' || q.kind === 'truefalse') {
     return (
       <div className="stack-sm" role="radiogroup" aria-label="Choose one answer">

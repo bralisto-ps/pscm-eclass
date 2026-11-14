@@ -3,11 +3,13 @@ import { rpc, run, supabase } from '../lib/supabase.js';
 import { fillVars, fmtFull, fmtNumber, pct } from '../lib/format.js';
 import { LIVE_EXAM_AND_PHOTOS_SQL } from '../lib/liveExamSql.js';
 import Icon from './Icon.jsx';
+import QuestionDiagram from './QuestionDiagram.jsx';
 import { Empty, ErrorNote, Loading, Modal, useAction, useLoad, useToast } from './ui.jsx';
 
 const LETTERS = 'ABCDEFGHIJ';
 const KIND_LABEL = {
   mcq: 'Multiple choice',
+  multiselect: 'Multi-select',
   truefalse: 'True / false',
   numeric: 'Calculation',
   short: 'Short answer',
@@ -38,7 +40,7 @@ async function loadDirectFallback(attemptId, quizTitle, student) {
       if (!q) return null;
       const r = rByQ.get(qid);
       let correct = null;
-      if (q.kind === 'mcq' || q.kind === 'truefalse') correct = q.answer?.correct ?? null;
+      if (q.kind === 'mcq' || q.kind === 'multiselect' || q.kind === 'truefalse') correct = q.answer?.correct ?? null;
       else if (q.kind === 'short') correct = q.answer?.accepted ?? [];
       else if (q.kind === 'numeric' && !q.formula) correct = q.answer?.value ?? null;
 
@@ -47,11 +49,12 @@ async function loadDirectFallback(attemptId, quizTitle, student) {
         id: q.id,
         kind: q.kind,
         prompt: q.prompt,
+        image_path: q.image_path || '',
         marks: q.marks,
         unit: q.unit,
         has_formula: Boolean(q.formula && q.formula.trim()),
         vars: {},
-        options: q.kind === 'mcq' || q.kind === 'truefalse' ? q.options || [] : [],
+        options: q.kind === 'mcq' || q.kind === 'multiselect' || q.kind === 'truefalse' ? q.options || [] : [],
         value: r?.value ?? null,
         is_correct: r?.is_correct ?? null,
         marks_awarded: r?.marks_awarded ?? null,
@@ -294,6 +297,35 @@ export default function StudentScriptModal({ attemptId, student, quiz, isTA, onC
                     <p className="pre" style={{ fontSize: 15, margin: '4px 0 6px' }}>
                       {fillVars(q.prompt, q.vars)}
                     </p>
+                    {q.image_path && <QuestionDiagram imagePath={q.image_path} maxHeight={200} compact />}
+                    {q.kind === 'multiselect' && (
+                      <div className="stack-sm">
+                        {(!Array.isArray(q.value) || q.value.length === 0) && (
+                          <div className="notice notice-warn small" style={{ padding: '6px 10px' }}>
+                            Student did not select any option.
+                          </div>
+                        )}
+                        {(q.options || []).map((o, k) => {
+                          const pickedSet = new Set(Array.isArray(q.value) ? q.value : []);
+                          const rightSet = new Set(Array.isArray(correctVal) ? correctVal : []);
+                          const isMine = pickedSet.has(o.id);
+                          const isRight = rightSet.has(o.id);
+                          return (
+                            <div
+                              key={o.id}
+                              className={`option ${isRight ? 'correct' : isMine ? 'wrong' : ''}`}
+                              style={{ cursor: 'default', padding: '10px 12px' }}
+                            >
+                              <span className="letter" style={{ borderRadius: 6 }}>{isMine ? '☑' : LETTERS[k]}</span>
+                              <span style={{ flex: 1 }}>{o.text}</span>
+                              {isMine && isRight && <span className="tiny strong">Student chose ✓</span>}
+                              {isMine && !isRight && <span className="tiny strong">Wrong pick</span>}
+                              {!isMine && isRight && <span className="tiny strong">Missed key</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
 
                     {(q.kind === 'mcq' || q.kind === 'truefalse') && (
                       <div className="stack-sm">
@@ -324,7 +356,7 @@ export default function StudentScriptModal({ attemptId, student, quiz, isTA, onC
                       </div>
                     )}
 
-                    {q.kind !== 'mcq' && q.kind !== 'truefalse' && (
+                    {q.kind !== 'mcq' && q.kind !== 'multiselect' && q.kind !== 'truefalse' && (
                       <div className="stack-sm" style={{ background: 'var(--surface-2)', padding: '10px 12px', borderRadius: 8 }}>
                         <div>
                           <span className="eyebrow">Student's answer</span>
