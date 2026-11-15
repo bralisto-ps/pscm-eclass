@@ -15,6 +15,8 @@ import LiveQuizMonitor from '../../components/LiveQuizMonitor.jsx';
 import StudentScriptModal from '../../components/StudentScriptModal.jsx';
 import { deleteQuizProctorPhoto, loadQuizProctorPhotos, purgeQuizProctorPhotos } from '../../lib/proctorPhotos.js';
 import { ALL_NEW_FEATURES_SQL } from '../../lib/allFeaturesSql.js';
+import { parseQuizMeta, serializeQuizMeta } from '../../lib/quizMeta.js';
+import RubricGrader, { RubricEditor } from '../../components/RubricGrader.jsx';
 
 const BINS = [
   { label: '0–39%', lo: 0, hi: 39.999, color: 'var(--amber)' },
@@ -129,9 +131,9 @@ export default function QuizResults() {
         {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} ta={isTA} photos={photoMap} photoMeta={photoMeta} />}
         {tab === 'live' && <LiveQuizMonitor quiz={quiz} isTA={isTA} onMutate={reload} />}
         {tab === 'short' && <ShortAnswerClusterTab quiz={quiz} onUpdated={reload} onShowSql={() => setShowFeaturesSql(true)} />}
-        {tab === 'marking' && <Marking queue={queue} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
+        {tab === 'marking' && <Marking quiz={quiz} isTA={isTA} queue={queue} onQuizUpdated={(nextQ) => setData((d) => ({ ...d, quiz: nextQ }))} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
         {tab === 'analysis' && !isTA && <ItemAnalysis quiz={quiz} />}
-        {tab === 'integrity' && !isTA && <Integrity quiz={quiz} rows={rows} photos={photoMap} />}
+        {tab === 'integrity' && !isTA && <Integrity quiz={quiz} rows={rows} photos={photoMap} onShowSql={() => setShowFeaturesSql(true)} />}
       </div>
       {regrading && (
         <Confirm
@@ -340,10 +342,26 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoM
       <GroupFilters rows={allRows} value={group} onChange={setGroup} />
       <div className="two-col" style={{ gridTemplateColumns: '440px minmax(0,1fr)' }}>
         <div className="grid-2">
-          <div className="kpi"><span className="l">Submitted</span><span className="v">{done.length}</span><span className="tiny muted">of {rows.length} students</span></div>
-          <div className="kpi"><span className="l">Average</span><span className="v">{avg === null ? '—' : `${avg}%`}</span><span className="tiny muted">of submitted work</span></div>
-          <div className="kpi"><span className="l">Needs marking</span><span className="v" style={{ color: 'var(--amber-ink)' }}>{rows.filter((r) => r.status === 'needs_marking').length}</span><span className="tiny muted">written answers pending</span></div>
-          <div className="kpi"><span className="l">Flagged</span><span className="v" style={{ color: suspicious.length ? 'var(--red-ink)' : undefined }}>{suspicious.length}</span><span className="tiny muted">left the quiz or used 2+ devices</span></div>
+          <div className="kpi">
+            <div className="kpi-head"><span className="l">Submitted</span><span className="kpi-icon"><Icon name="check" size={16} /></span></div>
+            <span className="v">{done.length}</span>
+            <span className="tiny muted">of {rows.length} students</span>
+          </div>
+          <div className="kpi">
+            <div className="kpi-head"><span className="l">Average</span><span className="kpi-icon blue"><Icon name="chart" size={16} /></span></div>
+            <span className="v">{avg === null ? '—' : `${avg}%`}</span>
+            <span className="tiny muted">of submitted work</span>
+          </div>
+          <div className="kpi">
+            <div className="kpi-head"><span className="l">Needs marking</span><span className="kpi-icon amber"><Icon name="edit" size={16} /></span></div>
+            <span className="v" style={{ color: 'var(--amber-ink)' }}>{rows.filter((r) => r.status === 'needs_marking').length}</span>
+            <span className="tiny muted">written answers pending</span>
+          </div>
+          <div className="kpi">
+            <div className="kpi-head"><span className="l">Flagged</span><span className="kpi-icon red"><Icon name="alert" size={16} /></span></div>
+            <span className="v" style={{ color: suspicious.length ? 'var(--red-ink)' : undefined }}>{suspicious.length}</span>
+            <span className="tiny muted">left the quiz or used 2+ devices</span>
+          </div>
         </div>
         <section className="card stack-sm" aria-label="Score distribution">
           <div className="between"><h2>Score distribution</h2><span className="tiny muted">students per score band</span></div>
@@ -599,7 +617,12 @@ function normalizeWrittenAnswer(text) {
   return raw.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim() || raw.toLowerCase();
 }
 
-function Marking({ queue, onMarked }) {
+function Marking({ quiz, isTA, queue, onMarked, onQuizUpdated }) {
+  const toast = useToast();
+  const [editingRubric, setEditingRubric] = useState(false);
+  const [savingRubric, setSavingRubric] = useState(false);
+  const quizMeta = useMemo(() => parseQuizMeta(quiz), [quiz]);
+
   const questions = useMemo(() => {
     const m = new Map();
     queue.forEach((r) => {
@@ -632,6 +655,7 @@ function Marking({ queue, onMarked }) {
   if (!questions.length) return <div className="card"><Empty icon="edit" title="No written answers">This quiz has no written-answer questions, or nobody has submitted yet.</Empty></div>;
 
   const savedClusters = items.length - groups.length;
+  const activeRubric = (current && quizMeta.question_rubrics?.[current.id]) || [];
 
   return (
     <div className="two-col" style={{ gridTemplateColumns: 'minmax(0,1fr) 340px' }}>
@@ -657,14 +681,14 @@ function Marking({ queue, onMarked }) {
           <>
             {groups.slice(0, 50).map((g) => (
               g.items.length === 1
-                ? <MarkCard key={g.items[0].response_id} r={g.items[0]} onMarked={onMarked} />
-                : <MarkGroupCard key={g.key + '-' + g.items.map((x) => x.response_id).join(',')} group={g} onMarked={onMarked} />
+                ? <MarkCard key={g.items[0].response_id} r={g.items[0]} rubric={activeRubric} onMarked={onMarked} />
+                : <MarkGroupCard key={g.key + '-' + g.items.map((x) => x.response_id).join(',')} group={g} rubric={activeRubric} onMarked={onMarked} />
             ))}
             {groups.length > 50 && <p className="small muted">Showing 50 groups at a time — marked groups disappear from this list as you go.</p>}
           </>
         ) : (
           <>
-            {items.slice(0, 50).map((r) => <MarkCard key={r.response_id} r={r} onMarked={onMarked} />)}
+            {items.slice(0, 50).map((r) => <MarkCard key={r.response_id} r={r} rubric={activeRubric} onMarked={onMarked} />)}
             {items.length > 50 && <p className="small muted">Showing 50 at a time — marked answers disappear from this list as you go.</p>}
           </>
         )}
@@ -685,16 +709,63 @@ function Marking({ queue, onMarked }) {
           </div>
         )}
         <div className="card stack-sm">
-          <span className="eyebrow">Question · {fmtNumber(current.max)} marks</span>
+          <div className="between">
+            <span className="eyebrow">Question · {fmtNumber(current.max)} marks</span>
+            {!isTA && (
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => setEditingRubric(!editingRubric)}>
+                {editingRubric ? 'Close rubric' : activeRubric.length ? `Edit rubric (${activeRubric.length})` : '+ Custom rubric'}
+              </button>
+            )}
+          </div>
           <p className="pre small">{current.prompt}</p>
           {current.guide && (<><span className="eyebrow" style={{ marginTop: 8 }}>Your marking guide</span><p className="pre small" style={{ color: 'var(--text-2)' }}>{current.guide}</p></>)}
+          {editingRubric && !isTA && (
+            <QuestionRubricBox
+              key={current.id}
+              initial={activeRubric}
+              maxMarks={Number(current.max)}
+              busy={savingRubric}
+              onSave={async (criteria) => {
+                setSavingRubric(true);
+                try {
+                  const nextMap = { ...(quizMeta.question_rubrics || {}) };
+                  if (criteria.length) nextMap[current.id] = criteria;
+                  else delete nextMap[current.id];
+                  const nextInstructions = serializeQuizMeta(quizMeta.cleanInstructions, { ...quizMeta, question_rubrics: nextMap });
+                  await run(supabase.from('quizzes').update({ instructions: nextInstructions }).eq('id', quiz.id));
+                  onQuizUpdated?.({ ...quiz, instructions: nextInstructions });
+                  setEditingRubric(false);
+                  toast('Question rubric saved.');
+                } catch (e) {
+                  toast(e.message || 'Could not save rubric.', 'error');
+                } finally {
+                  setSavingRubric(false);
+                }
+              }}
+            />
+          )}
         </div>
       </aside>
     </div>
   );
 }
 
-function MarkGroupCard({ group, onMarked }) {
+
+function QuestionRubricBox({ initial, maxMarks, busy, onSave }) {
+  const [criteria, setCriteria] = useState(initial || []);
+  return (
+    <div className="stack-sm" style={{ marginTop: 8 }}>
+      <RubricEditor criteria={criteria} maxMarks={maxMarks} onChange={setCriteria} compact />
+      <div className="row" style={{ justifyContent: 'flex-end', gap: 6 }}>
+        <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => onSave(criteria)}>
+          {busy ? 'Saving…' : 'Save rubric'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MarkGroupCard({ group, rubric = [], onMarked }) {
   const toast = useToast();
   const max = Number(group.max_marks);
   const firstAwarded = group.items.every((x) => x.marks_awarded === group.items[0].marks_awarded) ? group.items[0].marks_awarded : null;
@@ -723,7 +794,7 @@ function MarkGroupCard({ group, onMarked }) {
   }
 
   return (
-    <article className="card stack-sm" style={{ borderLeft: '4px solid var(--teal)' }}>
+    <article className="card stack-sm" style={{ borderColor: 'var(--teal)' }}>
       <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
         <div className="row-wrap" style={{ gap: 8 }}>
           <span className="badge badge-teal">{group.items.length} matching answers</span>
@@ -749,6 +820,16 @@ function MarkGroupCard({ group, onMarked }) {
       <p className="pre" style={{ background: 'var(--surface-2)', padding: '12px 14px', borderRadius: 8 }}>
         {group.sampleAnswer || <span className="muted">No answer submitted</span>}
       </p>
+      <RubricGrader
+        criteria={rubric}
+        maxMarks={max}
+        currentFeedback={feedback}
+        compact
+        onApply={(total, mergedFb) => {
+          if (total !== null) setMarks(total);
+          setFeedback(mergedFb);
+        }}
+      />
       <div className="row-wrap" style={{ alignItems: 'flex-end' }}>
         <label className="field" style={{ width: 120 }}>
           <span>Marks / {fmtNumber(max)}</span>
@@ -767,7 +848,7 @@ function MarkGroupCard({ group, onMarked }) {
   );
 }
 
-function MarkCard({ r, onMarked }) {
+function MarkCard({ r, rubric = [], onMarked }) {
   const toast = useToast();
   const max = Number(r.max_marks);
   const [marks, setMarks] = useState(r.marks_awarded ?? '');
@@ -801,6 +882,16 @@ function MarkCard({ r, onMarked }) {
         </div>
       </div>
       <p className="pre" style={{ background: 'var(--surface-2)', padding: '12px 14px', borderRadius: 8 }}>{r.answer || <span className="muted">No answer</span>}</p>
+      <RubricGrader
+        criteria={rubric}
+        maxMarks={max}
+        currentFeedback={feedback}
+        compact
+        onApply={(total, mergedFb) => {
+          if (total !== null) setMarks(total);
+          setFeedback(mergedFb);
+        }}
+      />
       <div className="row-wrap" style={{ alignItems: 'flex-end' }}>
         <label className="field" style={{ width: 120 }}>
           <span>Marks / {fmtNumber(max)}</span>

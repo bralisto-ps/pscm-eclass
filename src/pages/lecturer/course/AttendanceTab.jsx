@@ -8,7 +8,7 @@ import { ALL_GROUPS, GroupFilters, matchesGroup } from '../../../components/Grou
 import { SortSelect, SortTh } from '../../../components/SortBar.jsx';
 import { byNameIndex, compareNumber, compareText } from '../../../lib/sort.js';
 import PrintReportModal from '../../../components/PrintReportModal.jsx';
-import { buildAttendanceReportHtml } from '../../../lib/printReport.js';
+import { buildAttendanceReportHtml, buildExamEligibilityHtml } from '../../../lib/printReport.js';
 
 // Same rule as the database: chosen classes win over chosen streams; nothing chosen = everyone.
 export function sessionFor(session, student) {
@@ -42,7 +42,7 @@ export default function AttendanceTab({ course }) {
   const [below75, setBelow75] = useState(false);
   const [q, setQ] = useState('');
   const [sort, setSort] = useState('name_asc');
-  const [printing, setPrinting] = useState(false);
+  const [printing, setPrinting] = useState(null); // null | 'register' | 'exam'
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -169,7 +169,8 @@ export default function AttendanceTab({ course }) {
             />
           </div>
           <div className="row-wrap" style={{ gap: 8 }}>
-            <button type="button" className="btn btn-sm" onClick={() => setPrinting(true)} disabled={!data.students.length}><Icon name="file" size={16} /> Print / PDF Register</button>
+            <button type="button" className="btn btn-sm" onClick={() => setPrinting('register')} disabled={!data.students.length}><Icon name="file" size={16} /> Print Register</button>
+            <button type="button" className="btn btn-sm btn-primary" onClick={() => setPrinting('exam')} disabled={!data.students.length}><Icon name="printer" size={16} /> Exam Hall Sign-In Sheet</button>
             <button type="button" className="btn btn-sm" onClick={exportXlsx} disabled={!data.students.length}><Icon name="download" size={16} /> Export to Excel</button>
           </div>
         </div>
@@ -216,8 +217,8 @@ export default function AttendanceTab({ course }) {
       {viewing && <RegisterModal session={viewing} course={course} students={data.students} onClose={() => setViewing(null)} onChanged={reload} />}
       {printing && (
         <PrintReportModal
-          title={`Attendance Register · ${course.code}`}
-          html={buildAttendanceReportHtml({
+          title={printing === 'exam' ? `Exam Eligibility & Hall Sign-In · ${course.code}` : `Attendance Register · ${course.code}`}
+          html={(printing === 'exam' ? buildExamEligibilityHtml : buildAttendanceReportHtml)({
             course,
             sessions: data.sessions,
             students: rows,
@@ -228,7 +229,7 @@ export default function AttendanceTab({ course }) {
               low ? 'Below 50%' : '',
             ].filter(Boolean).join(' · '),
           })}
-          onClose={() => setPrinting(false)}
+          onClose={() => setPrinting(null)}
         />
       )}
     </div>

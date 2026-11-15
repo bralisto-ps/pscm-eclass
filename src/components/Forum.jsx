@@ -6,6 +6,14 @@ import { Confirm, Empty, ErrorNote, Loading, useAction, useLoad } from './ui.jsx
 
 // Course Q&A board. Students post (anonymous to classmates by default) and upvote;
 // the lecturer answers, hides or deletes.
+
+function splitSlideTag(body) {
+  const text = String(body || '');
+  const m = text.match(/^\[([^\]\n]+?\s·\sSlide\s\d+)\]\s*\n?([\s\S]*)$/);
+  if (!m) return { slideTag: null, cleanBody: text };
+  return { slideTag: m[1].trim(), cleanBody: m[2].trim() };
+}
+
 export default function Forum({ course, lecturer, canDelete = true }) {
   const { data, error, loading, reload, setData } = useLoad(() => rpc('forum_list', { p_course: course.id }), [course.id]);
   const [sort, setSort] = useState('top');
@@ -95,7 +103,21 @@ export default function Forum({ course, lecturer, canDelete = true }) {
                 {p.hidden && <span className="badge">Hidden</span>}
                 {p.answer ? <span className="badge badge-teal">Answered</span> : <span className="badge badge-amber">Waiting</span>}
               </div>
-              <p className="pre" style={{ overflowWrap: 'anywhere' }}>{p.body}</p>
+              {(() => {
+                const { slideTag, cleanBody } = splitSlideTag(p.body);
+                return (
+                  <>
+                    {slideTag && (
+                      <div className="row-wrap" style={{ gap: 6, marginBottom: 2 }}>
+                        <span className="badge badge-blue" style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                          <Icon name="book" size={12} /> {slideTag}
+                        </span>
+                      </div>
+                    )}
+                    <p className="pre" style={{ overflowWrap: 'anywhere' }}>{cleanBody || p.body}</p>
+                  </>
+                );
+              })()}
               {p.answer && answering !== p.id && (
                 <div style={{ background: 'var(--teal-50)', borderRadius: 8, padding: '10px 14px' }}>
                   <div className="eyebrow" style={{ color: 'var(--teal-dark)' }}>Lecturer's answer</div>

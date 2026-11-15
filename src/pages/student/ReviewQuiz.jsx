@@ -109,7 +109,7 @@ export default function ReviewQuiz() {
                         const cls = isRight ? 'correct' : isMine ? 'wrong' : '';
                         return (
                           <div key={o.id} className={`option ${cls}`} style={{ cursor: 'default' }}>
-                            <span className="letter" style={{ borderRadius: 6 }}>{isMine ? '☑' : LETTERS[k]}</span>
+                            <span className="letter" style={{ borderRadius: 6 }}>{isMine ? <Icon name="check" size={14} /> : LETTERS[k]}</span>
                             <span style={{ flex: 1 }}>{o.text}</span>
                             {isMine && isRight && <span className="tiny strong">Your answer ✓</span>}
                             {isMine && !isRight && <span className="tiny strong">Wrong pick</span>}

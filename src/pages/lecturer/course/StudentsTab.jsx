@@ -8,6 +8,93 @@ import { ALL_GROUPS, GroupFilters, matchesGroup } from '../../../components/Grou
 import { SortSelect, SortTh } from '../../../components/SortBar.jsx';
 import StudentDrawer from '../../../components/StudentDrawer.jsx';
 import { byNameIndex, compareBool, compareDate, compareText } from '../../../lib/sort.js';
+import { computeStudentCA, parseCourseMeta } from '../../../lib/courseMeta.js';
+
+
+async function buildUnifiedRiskMap(course, students = []) {
+  const [riskRes, attRes, caRes, compRes] = await Promise.allSettled([
+    rpcAll('course_at_risk', { p_course: course.id }),
+    rpcAll('course_attendance', { p_course: course.id }),
+    rpcAll('course_ca', { p_course: course.id }),
+    run(supabase.from('ca_components').select('*').eq('course_id', course.id).order('position')),
+  ]);
+
+  const baseRisk = riskRes.status === 'fulfilled' ? riskRes.value : [];
+  const attRows = attRes.status === 'fulfilled' ? attRes.value : [];
+  const caRows = caRes.status === 'fulfilled' ? caRes.value : [];
+  const comps = compRes.status === 'fulfilled' ? compRes.value : [];
+
+  const meta = parseCourseMeta(course);
+  const caTotal = Number(course.ca_total ?? 40);
+  const hasAnyCA = comps.length > 0 && caRows.some((r) => Number(r.total || 0) > 0);
+
+  const baseMap = new Map(baseRisk.map((r) => [r.index_no, r]));
+  const attMap = new Map(attRows.map((r) => [r.index_no, r]));
+  const caMap = new Map(caRows.map((r) => [r.index_no, r]));
+
+  const unified = new Map();
+  const list = students.length ? students : baseRisk;
+
+  for (const s of list) {
+    const idx = s.index_no;
+    const base = baseMap.get(idx);
+    const attRow = attMap.get(idx);
+    const caRow = caMap.get(idx);
+
+    const attPct = attRow && attRow.applicable > 0
+      ? Math.round((attRow.attended / attRow.applicable) * 100)
+      : (base?.attendance_pct ?? null);
+
+    let totalCa = null;
+    if (caRow && hasAnyCA) {
+      const computed = computeStudentCA(caRow, comps, meta.ca_config, caTotal);
+      totalCa = computed.totalCa;
+    }
+
+    const missed = base?.missed ?? 0;
+    const quizAvg = base?.avg_pct ?? null;
+    const reasons = [];
+
+    if (attPct !== null && attPct < 75) {
+      reasons.push(attPct < 50 ? `Attendance ${attPct}% (Critical)` : `Attendance ${attPct}% (<75%)`);
+    }
+    if (totalCa !== null && totalCa < 20) {
+      reasons.push(`Low CA: ${totalCa.toFixed(1)}/40`);
+    }
+    if (missed >= 1) {
+      reasons.push(`Missed ${missed} quiz${missed === 1 ? '' : 'zes'}`);
+    }
+    if (quizAvg !== null && Number(quizAvg) < 40) {
+      reasons.push(`Quiz avg ${Math.round(Number(quizAvg))}%`);
+    }
+    for (const rText of base?.reasons || []) {
+      if (/activate/i.test(rText)) reasons.push('Never activated');
+      else if (/signed in/i.test(rText)) reasons.push('Inactive 14+ days');
+    }
+
+    const uniqueReasons = [...new Set(reasons)];
+    if (uniqueReasons.length > 0) {
+      const critical = (attPct !== null && attPct < 50) || missed >= 2 || uniqueReasons.length >= 2 || (totalCa !== null && totalCa < 14);
+      unified.set(idx, {
+        index_no: idx,
+        full_name: s.full_name || base?.full_name,
+        programme: s.programme || base?.programme,
+        stream: s.stream || base?.stream,
+        attPct,
+        totalCa,
+        missed,
+        quizAvg,
+        reasons: uniqueReasons,
+        level: critical ? 'critical' : 'warning',
+        hasAttRisk: attPct !== null && attPct < 75,
+        hasCaRisk: (totalCa !== null && totalCa < 20) || (quizAvg !== null && Number(quizAvg) < 40),
+        hasMissedRisk: missed >= 1,
+        hasInactiveRisk: uniqueReasons.some((x) => /activate|inactive/i.test(x)),
+      });
+    }
+  }
+  return unified;
+}
 
 export default function StudentsTab({ course, ta }) {
   const { data: loaded, error, loading, reload } = useLoad(async () => {
@@ -40,11 +127,13 @@ export default function StudentsTab({ course, ta }) {
   const [sort, setSort] = useState('name_asc');
   const [act, busy] = useAction();
   useEffect(() => {
-    if (filter !== 'risk' || risk) return;
-    rpcAll('course_at_risk', { p_course: course.id })
-      .then((rows) => setRisk(new Map(rows.map((r) => [r.index_no, r]))))
-      .catch((e) => setRiskErr(e.message));
-  }, [filter, risk, course.id]);
+    if (!data) return;
+    let alive = true;
+    buildUnifiedRiskMap(course, data)
+      .then((m) => { if (alive) setRisk(m); })
+      .catch((e) => { if (alive) setRiskErr(e.message); });
+    return () => { alive = false; };
+  }, [course, data]);
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -157,7 +246,7 @@ export default function StudentsTab({ course, ta }) {
               <button type="button" className="chip" aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>All ({data.length})</button>
               <button type="button" className="chip" aria-pressed={filter === 'active'} onClick={() => setFilter('active')}>Activated ({activated})</button>
               <button type="button" className="chip" aria-pressed={filter === 'inactive'} onClick={() => setFilter('inactive')}>Not activated ({data.length - activated})</button>
-              <button type="button" className="chip" aria-pressed={filter === 'risk'} onClick={() => setFilter('risk')}>At risk{risk ? ` · ${risk.size}` : ''}</button>
+              <button type="button" className="chip" aria-pressed={filter === 'risk'} onClick={() => setFilter('risk')}>At-Risk Radar{risk ? ` · ${risk.size}` : ''}</button>
             </div>
             <GroupFilters rows={data} value={group} onChange={setGroup} />
             <label className="row small" style={{ gap: 6 }}>
@@ -196,7 +285,7 @@ export default function StudentsTab({ course, ta }) {
             />
           </div>
           <div className="row-wrap">
-            <button type="button" className="btn btn-sm" style={{ borderColor: "#fca5a5", color: "#991b1b", background: "#fef2f2" }} onClick={() => setOutreach(true)} title="Send academic advisory to at-risk students"><Icon name="chat" size={16} /> At-Risk Outreach</button>
+            <button type="button" className="btn btn-sm" style={{ borderColor: 'var(--red-ink)', color: 'var(--red-ink)', background: 'var(--red-50)' }} onClick={() => setOutreach(true)} title="Open At-Risk Radar & Personalized Bulk Advisory"><Icon name="alert" size={16} /> At-Risk Radar{risk?.size ? ` (${risk.size})` : ''}</button>
             {data.length > 0 && <button type="button" className="btn btn-sm" onClick={exportList}><Icon name="download" size={16} /> {rows.length !== data.length ? `Export (${rows.length})` : 'Export'}</button>}
             <button type="button" className="btn btn-sm" onClick={() => setAdding(true)}><Icon name="plus" size={16} /> Add student</button>
             <button type="button" className="btn btn-sm btn-primary" onClick={() => setImporting(true)}><Icon name="upload" size={16} /> Upload class list</button>
@@ -220,8 +309,17 @@ export default function StudentsTab({ course, ta }) {
         )}
 
         {filter === 'risk' && (
-          <div className="notice notice-warn" style={{ margin: '12px 18px' }}>
-            {riskErr || (risk ? 'Students who never activated, have not signed in for 2 weeks, missed 2+ closed quizzes, average under 40% on quizzes, or attend under 50% (once there are 3+ sessions). A good list to follow up before mid-semester.' : 'Checking…')}
+          <div className="notice notice-warn row-wrap between" style={{ margin: '12px 18px', gap: 12 }}>
+            <span className="small" style={{ flex: '1 1 320px' }}>
+              {riskErr || (risk
+                ? `Unified Radar combines Attendance < 75% (${[...risk.values()].filter((x) => x.hasAttRisk).length}), Low CA < 20/40 (${[...risk.values()].filter((x) => x.hasCaRisk).length}), Missed Quizzes (${[...risk.values()].filter((x) => x.hasMissedRisk).length}), and Inactive accounts.`
+                : 'Scanning attendance, CA scores, and quiz history…')}
+            </span>
+            {risk && risk.size > 0 && (
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => setOutreach(true)}>
+                <Icon name="chat" size={15} /> Bulk Personalized Advisory
+              </button>
+            )}
           </div>
         )}
 
@@ -262,7 +360,11 @@ export default function StudentsTab({ course, ta }) {
                     <td className="small">{r.programme || <span className="muted">—</span>}</td>
                     <td className="small">{r.stream || <span className="muted">—</span>}</td>
                     <td>{filter === 'risk' && risk?.get(r.index_no) ? (
-                      <div className="row-wrap" style={{ gap: 4 }}>{risk.get(r.index_no).reasons.map((x) => <span key={x} className="badge badge-amber">{x}</span>)}</div>
+                      <div className="row-wrap" style={{ gap: 4 }}>
+                        {risk.get(r.index_no).reasons.map((x) => (
+                          <span key={x} className={`badge ${/Critical|Low CA|Missed/i.test(x) ? 'badge-red' : 'badge-amber'}`}>{x}</span>
+                        ))}
+                      </div>
                     ) : r.activated ? <span className="badge badge-teal">Activated</span> : <span className="badge">Not yet</span>}</td>
                     <td className="small muted hide-sm">{r.last_sign_in ? relative(r.last_sign_in) : '—'}</td>
                     <td>
@@ -859,15 +961,32 @@ function EditModal({ student, programmes, streams, onClose, onSaved }) {
 }
 
 
+function formatPersonalizedText(tpl, student, riskInfo, courseCode) {
+  const fullName = student?.full_name || 'Student';
+  const firstName = fullName.split(/\s+/)[0] || 'Student';
+  const attStr = riskInfo?.attPct !== null && riskInfo?.attPct !== undefined ? `${riskInfo.attPct}%` : 'N/A';
+  const caStr = riskInfo?.totalCa !== null && riskInfo?.totalCa !== undefined ? `${riskInfo.totalCa.toFixed(1)}/40` : 'N/A';
+  const reasonsStr = (riskInfo?.reasons || ['Academic follow-up']).join(', ');
+  return String(tpl || '')
+    .replaceAll('{name}', fullName)
+    .replaceAll('{first_name}', firstName)
+    .replaceAll('{index_no}', student?.index_no || '')
+    .replaceAll('{course}', courseCode || '')
+    .replaceAll('{att}', attStr)
+    .replaceAll('{ca}', caStr)
+    .replaceAll('{reasons}', reasonsStr);
+}
+
 function AtRiskOutreachModal({ course, students, riskMap, preSelectedStudent, onClose }) {
   const toast = useToast();
   const [act, busy] = useAction();
-  const [template, setTemplate] = useState('attendance');
+  const [template, setTemplate] = useState('unified');
   const [riskData, setRiskData] = useState(() => riskMap || new Map());
   const [loadingRisk, setLoadingRisk] = useState(!riskMap);
   const [filterType, setFilterType] = useState(preSelectedStudent ? 'single' : 'all');
   const [selected, setSelected] = useState(() => {
     if (preSelectedStudent) return new Set([preSelectedStudent.index_no]);
+    if (riskMap) return new Set(riskMap.keys());
     return new Set();
   });
 
@@ -878,65 +997,80 @@ function AtRiskOutreachModal({ course, students, riskMap, preSelectedStudent, on
   useEffect(() => {
     if (riskMap) {
       setRiskData(riskMap);
+      setLoadingRisk(false);
       if (!preSelectedStudent) setSelected(new Set(riskMap.keys()));
       return;
     }
-    rpcAll('course_at_risk', { p_course: course.id })
-      .then((rows) => {
-        const m = new Map(rows.map((r) => [r.index_no, r]));
+    buildUnifiedRiskMap(course, students)
+      .then((m) => {
         setRiskData(m);
         if (!preSelectedStudent) setSelected(new Set(m.keys()));
       })
-      .catch((err) => console.warn('Could not load at-risk students:', err))
+      .catch((err) => console.warn('Could not load unified at-risk radar:', err))
       .finally(() => setLoadingRisk(false));
-  }, [course.id, riskMap, preSelectedStudent]);
+  }, [course, students, riskMap, preSelectedStudent]);
 
   useEffect(() => {
-    if (template === 'attendance') {
-      setSubject(`Academic Notice: Course Attendance Warning & Examination Eligibility (${course.code})`);
+    if (template === 'unified') {
+      setSubject(`Academic Support Notice · {course} ({index_no})`);
       setMessage([
-        'Dear Student,',
+        'Dear {name},',
         '',
-        `Our attendance records indicate that your current attendance in ${course.code} is below the mandatory 75% institutional threshold required to qualify for the final semester examination.`,
+        'Our mid-semester review in {course} flagged the following items requiring your immediate attention: {reasons}.',
         '',
-        'Under university academic regulations, regular attendance is a prerequisite for writing the end-of-semester examination. Please treat this notice as an urgent advisory and attend all upcoming lectures. If you have legitimate grounds for past absences or need academic assistance, please reply directly to this message or visit during office hours.',
+        'Current recorded standing — Attendance: {att} | Continuous Assessment: {ca}.',
+        '',
+        'Remember that at least 75% lecture attendance is required for exam eligibility, and Continuous Assessment contributes 40% toward your final grade. Please reply directly to this message or meet during office hours this week so we can help you get back on track.',
         '',
         'Best regards,',
-        'Course Instructor'
+        'Course Lecturer',
+      ].join('\n'));
+    } else if (template === 'attendance') {
+      setSubject(`Attendance Warning & Exam Eligibility ({course})`);
+      setMessage([
+        'Dear {name},',
+        '',
+        'Your current lecture attendance in {course} stands at {att}, which is below the mandatory 75% threshold required to qualify for the final semester examination.',
+        '',
+        'Please attend all remaining lectures consistently. If you have valid documentation for prior absences, reply directly to this message.',
+        '',
+        'Best regards,',
+        'Course Lecturer',
       ].join('\n'));
     } else if (template === 'grades') {
-      setSubject(`Academic Advisory: Continuous Assessment Standing (${course.code})`);
+      setSubject(`Continuous Assessment Advisory · {course}`);
       setMessage([
-        'Dear Student,',
+        'Dear {name},',
         '',
-        `This is an academic advisory regarding your Continuous Assessment (CA) performance in ${course.code}. Your current cumulative score is below the 50% pass mark.`,
+        'Your current Continuous Assessment standing in {course} is {ca} ({reasons}).',
         '',
-        'With Continuous Assessment accounting for 40% of your total grade and the Final Examination accounting for 60%, it is critical that you take active measures to improve your performance. I strongly encourage you to review past quizzes, utilize the flashcard revision tool, and visit during office hours for guidance.',
+        'With CA accounting for 40% of your final course grade, please review all posted lecture slides, retake practice quizzes, and reach out during office hours for academic guidance.',
         '',
         'Best regards,',
-        'Course Instructor'
+        'Course Lecturer',
       ].join('\n'));
     } else if (template === 'office_hours') {
-      setSubject(`Academic Consultation & Office Hours Invitation (${course.code})`);
+      setSubject(`Office Hours Consultation Invitation · {course}`);
       setMessage([
-        'Dear Student,',
+        'Dear {name},',
         '',
-        `I am reaching out to check in on your academic progress in ${course.code}. If you are encountering challenges with any lecture topics, assignments, or quizzes, please reply to this message or attend this week\'s scheduled office hours so we can support you.`,
+        'I am checking in on your progress in {course}. If you need support with any quantitative topics, quizzes, or assignments, please reply to schedule an office-hours consultation this week.',
         '',
         'Best regards,',
-        'Course Instructor'
+        'Course Lecturer',
       ].join('\n'));
     }
-  }, [template, course.code]);
+  }, [template]);
 
   const flaggedList = useMemo(() => {
     return students.filter((s) => {
       if (preSelectedStudent && preSelectedStudent.index_no === s.index_no) return true;
       const r = riskData.get(s.index_no);
       if (!r) return false;
-      if (filterType === 'attendance') return (r.attendance_pct !== null && r.attendance_pct < 75) || (r.reasons && r.reasons.some((x) => x.toLowerCase().includes('attend')));
-      if (filterType === 'grades') return (r.avg_pct !== null && r.avg_pct < 50) || (r.reasons && r.reasons.some((x) => x.toLowerCase().includes('quiz') || x.toLowerCase().includes('40%')));
-      if (filterType === 'inactive') return !s.activated || (r.reasons && r.reasons.some((x) => x.toLowerCase().includes('sign in') || x.toLowerCase().includes('activate')));
+      if (filterType === 'attendance') return r.hasAttRisk;
+      if (filterType === 'grades') return r.hasCaRisk;
+      if (filterType === 'missed') return r.hasMissedRisk;
+      if (filterType === 'inactive') return r.hasInactiveRisk || !s.activated;
       return true;
     });
   }, [students, riskData, filterType, preSelectedStudent]);
@@ -950,9 +1084,17 @@ function AtRiskOutreachModal({ course, students, riskMap, preSelectedStudent, on
   };
 
   const toggleAll = () => {
-    if (selected.size === flaggedList.length) setSelected(new Set());
-    else setSelected(new Set(flaggedList.map((s) => s.index_no)));
+    if (flaggedList.length > 0 && flaggedList.every((s) => selected.has(s.index_no))) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(flaggedList.map((s) => s.index_no)));
+    }
   };
+
+  const studentLookup = useMemo(() => new Map(students.map((s) => [s.index_no, s])), [students]);
+  const previewIdx = [...selected][0] || flaggedList[0]?.index_no;
+  const previewStudent = previewIdx ? studentLookup.get(previewIdx) : null;
+  const previewRisk = previewIdx ? riskData.get(previewIdx) : null;
 
   async function dispatchAdvisories() {
     if (!subject.trim()) throw new Error('Please enter a subject line.');
@@ -977,17 +1119,21 @@ function AtRiskOutreachModal({ course, students, riskMap, preSelectedStudent, on
     }
 
     await act(async () => {
-      const inserts = activeStudents.map((p) => ({
-        course_id: course.id,
-        student_id: p.id,
-        subject: subject.trim(),
-        message: message.trim(),
-      }));
+      const inserts = activeStudents.map((p) => {
+        const st = studentLookup.get(p.index_no) || p;
+        const rInfo = riskData.get(p.index_no);
+        return {
+          course_id: course.id,
+          student_id: p.id,
+          subject: formatPersonalizedText(subject.trim(), st, rInfo, course.code),
+          message: formatPersonalizedText(message.trim(), st, rInfo, course.code),
+        };
+      });
 
       for (let i = 0; i < inserts.length; i += 100) {
         await run(supabase.from('course_messages').insert(inserts.slice(i, i + 100)));
       }
-    }, `Dispatched academic advisory to ${activeStudents.length} active student${activeStudents.length === 1 ? '' : 's'}.`);
+    }, `Dispatched personalized advisory to ${activeStudents.length} active student${activeStudents.length === 1 ? '' : 's'}.`);
 
     if (unactivated.length === 0) {
       onClose();
@@ -1000,12 +1146,23 @@ function AtRiskOutreachModal({ course, students, riskMap, preSelectedStudent, on
     toast('Copied unactivated index numbers to clipboard.');
   }
 
+  const counts = useMemo(() => {
+    const vals = [...riskData.values()];
+    return {
+      all: vals.length,
+      att: vals.filter((x) => x.hasAttRisk).length,
+      ca: vals.filter((x) => x.hasCaRisk).length,
+      missed: vals.filter((x) => x.hasMissedRisk).length,
+      inactive: vals.filter((x) => x.hasInactiveRisk).length,
+    };
+  }, [riskData]);
+
   return (
     <Modal
       title={
         <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-          <Icon name="chat" size={18} style={{ color: 'var(--red-ink)' }} />
-          <span>At-Risk Student Outreach · {course.code}</span>
+          <Icon name="alert" size={18} style={{ color: 'var(--red-ink)' }} />
+          <span>Unified At-Risk Radar &amp; Bulk Advisory · {course.code}</span>
         </div>
       }
       onClose={onClose}
@@ -1018,30 +1175,29 @@ function AtRiskOutreachModal({ course, students, riskMap, preSelectedStudent, on
           <div className="row" style={{ gap: 10 }}>
             <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
             <button type="button" className="btn btn-primary" onClick={dispatchAdvisories} disabled={busy || selected.size === 0}>
-              {busy ? 'Sending…' : `Send Advisory Notices (${selected.size})`}
+              {busy ? 'Sending…' : `Send Personalized Advisory (${selected.size})`}
             </button>
           </div>
         </div>
       }
     >
       <div className="stack">
-        <div className="notice notice-warn small">
-          <strong>Automated Academic Advisory:</strong> Identifies students with attendance under 75% (the mandatory university exam threshold), CA scores below 50%, or inactive accounts, and delivers private advisory notices directly into their student portal.
-        </div>
-
         {!preSelectedStudent && (
           <div className="chips" role="group" aria-label="Filter flagged students">
             <button type="button" className="chip" aria-pressed={filterType === 'all'} onClick={() => setFilterType('all')}>
-              All Flagged ({riskData.size})
+              All Flagged ({counts.all})
             </button>
             <button type="button" className="chip" aria-pressed={filterType === 'attendance'} onClick={() => setFilterType('attendance')}>
-              Attendance &lt; 75%
+              Attendance &lt; 75% ({counts.att})
             </button>
             <button type="button" className="chip" aria-pressed={filterType === 'grades'} onClick={() => setFilterType('grades')}>
-              CA Score &lt; 50%
+              Low CA / Quiz ({counts.ca})
+            </button>
+            <button type="button" className="chip" aria-pressed={filterType === 'missed'} onClick={() => setFilterType('missed')}>
+              Missed Quizzes ({counts.missed})
             </button>
             <button type="button" className="chip" aria-pressed={filterType === 'inactive'} onClick={() => setFilterType('inactive')}>
-              Inactive / Unactivated
+              Inactive ({counts.inactive})
             </button>
           </div>
         )}
@@ -1053,22 +1209,23 @@ function AtRiskOutreachModal({ course, students, riskMap, preSelectedStudent, on
                 <th style={{ width: 36 }}>
                   <input
                     type="checkbox"
-                    checked={flaggedList.length > 0 && selected.size === flaggedList.length}
+                    checked={flaggedList.length > 0 && flaggedList.every((s) => selected.has(s.index_no))}
                     onChange={toggleAll}
                     style={{ width: 16, height: 16, accentColor: 'var(--teal)' }}
                   />
                 </th>
                 <th>Index no.</th>
                 <th>Name</th>
-                <th>Programme/Stream</th>
+                <th className="num">Att %</th>
+                <th className="num">CA /40</th>
                 <th>Risk Indicators</th>
               </tr>
             </thead>
             <tbody>
               {flaggedList.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="muted small" style={{ textAlign: 'center', padding: 18 }}>
-                    {loadingRisk ? 'Loading student records…' : 'No students match this risk filter.'}
+                  <td colSpan={6} className="muted small" style={{ textAlign: 'center', padding: 18 }}>
+                    {loadingRisk ? 'Scanning attendance, CA scores, and quizzes…' : 'No students match this risk filter.'}
                   </td>
                 </tr>
               ) : (
@@ -1087,11 +1244,12 @@ function AtRiskOutreachModal({ course, students, riskMap, preSelectedStudent, on
                       </td>
                       <td className="mono small">{s.index_no}</td>
                       <td className="small strong">{s.full_name}</td>
-                      <td className="small muted">{[s.programme, s.stream].filter(Boolean).join(' · ') || '—'}</td>
+                      <td className="num mono small">{r?.attPct !== null && r?.attPct !== undefined ? `${r.attPct}%` : '—'}</td>
+                      <td className="num mono small">{r?.totalCa !== null && r?.totalCa !== undefined ? r.totalCa.toFixed(1) : '—'}</td>
                       <td>
                         <div className="row-wrap" style={{ gap: 4 }}>
                           {reasons.map((re, k) => (
-                            <span key={k} className="badge badge-amber" style={{ fontSize: 11, padding: '2px 6px' }}>
+                            <span key={k} className={`badge ${/Critical|Low CA|Missed/i.test(re) ? 'badge-red' : 'badge-amber'}`} style={{ fontSize: 11, padding: '2px 6px' }}>
                               {re}
                             </span>
                           ))}
@@ -1106,28 +1264,22 @@ function AtRiskOutreachModal({ course, students, riskMap, preSelectedStudent, on
         </div>
 
         <div className="stack-sm">
-          <span className="field-label">Choose Advisory Template:</span>
+          <div className="between" style={{ flexWrap: 'wrap', gap: 6 }}>
+            <span className="field-label">Advisory Template</span>
+            <span className="tiny muted">Supports {'{name}'}, {'{index_no}'}, {'{att}'}, {'{ca}'}, {'{reasons}'}</span>
+          </div>
           <div className="row-wrap" style={{ gap: 8 }}>
-            <button
-              type="button"
-              className={`btn btn-sm ${template === 'attendance' ? 'btn-primary' : ''}`}
-              onClick={() => setTemplate('attendance')}
-            >
-              1. Attendance &lt; 75% Warning
+            <button type="button" className={`btn btn-sm ${template === 'unified' ? 'btn-primary' : ''}`} onClick={() => setTemplate('unified')}>
+              1. Unified Radar Summary
             </button>
-            <button
-              type="button"
-              className={`btn btn-sm ${template === 'grades' ? 'btn-primary' : ''}`}
-              onClick={() => setTemplate('grades')}
-            >
-              2. CA &lt; 50% Advisory
+            <button type="button" className={`btn btn-sm ${template === 'attendance' ? 'btn-primary' : ''}`} onClick={() => setTemplate('attendance')}>
+              2. Attendance &lt; 75% Warning
             </button>
-            <button
-              type="button"
-              className={`btn btn-sm ${template === 'office_hours' ? 'btn-primary' : ''}`}
-              onClick={() => setTemplate('office_hours')}
-            >
-              3. Office Hours Consultation
+            <button type="button" className={`btn btn-sm ${template === 'grades' ? 'btn-primary' : ''}`} onClick={() => setTemplate('grades')}>
+              3. Low CA Advisory
+            </button>
+            <button type="button" className={`btn btn-sm ${template === 'office_hours' ? 'btn-primary' : ''}`} onClick={() => setTemplate('office_hours')}>
+              4. Office Hours Invite
             </button>
           </div>
         </div>
@@ -1135,10 +1287,19 @@ function AtRiskOutreachModal({ course, students, riskMap, preSelectedStudent, on
         <Field label="Message Subject *">
           <input className="input" value={subject} onChange={(e) => setSubject(e.target.value)} required />
         </Field>
-
-        <Field label="Message Body (Delivered to Student Portal) *">
-          <textarea className="input textarea" rows={6} value={message} onChange={(e) => setMessage(e.target.value)} required />
+        <Field label="Personalized Message Template *">
+          <textarea className="input textarea" rows={5} value={message} onChange={(e) => setMessage(e.target.value)} required />
         </Field>
+
+        {previewStudent && (
+          <div className="stack-sm" style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--surface-2)', border: '1px solid var(--line-2)' }}>
+            <span className="eyebrow">Live Preview for {previewStudent.full_name} ({previewStudent.index_no})</span>
+            <div className="tiny strong">{formatPersonalizedText(subject, previewStudent, previewRisk, course.code)}</div>
+            <p className="pre tiny muted" style={{ margin: 0 }}>
+              {formatPersonalizedText(message, previewStudent, previewRisk, course.code)}
+            </p>
+          </div>
+        )}
 
         {unactivatedList.length > 0 && (
           <div className="notice notice-warn small stack-sm">

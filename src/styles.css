@@ -330,8 +330,11 @@ button.list-row { width: 100%; border-left: 0; border-right: 0; border-bottom: 0
 .kpi-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .kpi-icon {
   width: 30px; height: 30px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
+  flex-shrink: 0; background: var(--teal-50); color: var(--teal-dark);
 }
+.kpi-icon.amber { background: var(--amber-50); color: var(--amber-ink); }
+.kpi-icon.blue { background: var(--blue-50); color: var(--blue-ink); }
+.kpi-icon.red { background: var(--red-50); color: var(--red-ink); }
 .kpi .v {
   font-family: var(--mono); font-size: 26px; font-weight: 600; line-height: 1.1;
   letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--text);

@@ -113,7 +113,7 @@ export default function QuizBuilder() {
             fontWeight: 600,
           }}
         >
-          <Icon name="sparkles" size={16} /> Generate with AI ✨
+          <Icon name="sparkles" size={16} /> Generate Questions
         </button>
         <Link to={`/teach/course/${quiz.courses.id}?tab=quizzes`} className="btn"><Icon name="chevronLeft" /> Quizzes</Link>
         <Link to={`/teach/quiz/${quiz.id}/results`} className="btn btn-dark"><Icon name="chart" /> Results</Link>
@@ -1305,7 +1305,7 @@ export function UniversalImportModal({ quizId, start, onClose, onDone }) {
               borderRadius: 10,
               padding: '24px 16px',
               textAlign: 'center',
-              background: '#f8fafc',
+              background: 'var(--surface-2)',
               cursor: 'pointer',
               transition: 'border 0.2s',
             }}
@@ -1359,7 +1359,7 @@ export function UniversalImportModal({ quizId, start, onClose, onDone }) {
               style={{ fontSize: 11 }}
               onClick={() => setText(SAMPLE_PASTE_TEXT)}
             >
-              ✨ Insert Sample Questions
+              Insert Sample Questions
             </button>
           </div>
 
@@ -1434,7 +1434,7 @@ export function UniversalImportModal({ quizId, start, onClose, onDone }) {
                 key={idx}
                 style={{
                   padding: '6px 8px',
-                  borderBottom: idx < parsed.length - 1 ? '1px solid #f1f5f9' : 'none',
+                  borderBottom: idx < parsed.length - 1 ? '1px solid var(--line-2)' : 'none',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
@@ -1477,7 +1477,7 @@ export function UniversalImportModal({ quizId, start, onClose, onDone }) {
                   </span>
                   {!q.valid && (
                     <span className="badge badge-red" title={q.errors.join(', ')} style={{ fontSize: 10 }}>
-                      ⚠️ Error
+                      Error
                     </span>
                   )}
                 </div>

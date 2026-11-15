@@ -5,11 +5,14 @@ import { useAuth } from '../../lib/auth.jsx';
 import { openStoredFile } from '../../lib/files.js';
 import { fmtFull, fmtNumber, pct, relative } from '../../lib/format.js';
 import { downloadWorkbook } from '../../lib/sheets.js';
+import { findStudentSyndicate, normalizeIndexNo, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
+import { ALL_NEW_FEATURES_SQL } from '../../lib/allFeaturesSql.js';
 import { ALL_GROUPS, GroupFilters, GroupSummaryTable, groupLabel, groupSummary, matchesGroup } from '../../components/Groups.jsx';
 import { SortSelect, SortTh } from '../../components/SortBar.jsx';
 import { byNameIndex, compareDate, compareNumber, compareText } from '../../lib/sort.js';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
+import RubricGrader from '../../components/RubricGrader.jsx';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { AssignmentForm } from './course/AssignmentsTab.jsx';
 
@@ -31,40 +34,65 @@ export default function AssignmentMarking() {
     const [students, subs] = await Promise.all([rpcAll('course_students', { p_course: a.course_id }), allSubmissions(assignmentId)]);
     const byIndex = new Map(subs.map((s) => [s.profiles?.index_no, s]));
     const rows = students.map((st) => ({ ...st, sub: byIndex.get(st.index_no) || null }));
-    // students who submitted but were later removed from the course
     subs.filter((s) => !students.some((st) => st.index_no === s.profiles?.index_no))
       .forEach((s) => rows.push({ index_no: s.profiles?.index_no, full_name: s.profiles?.full_name, activated: true, sub: s }));
     return { a, rows };
   }, [assignmentId]);
+
   const [filter, setFilter] = useState('tomark');
   const [q, setQ] = useState('');
   const [group, setGroup] = useState(ALL_GROUPS);
   const [sort, setSort] = useState('name_asc');
-  const [marking, setMarking] = useState(null); // index in `shown`
+  const [marking, setMarking] = useState(null);
   const [editing, setEditing] = useState(false);
+  const [showSql, setShowSql] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
   const [act, busy] = useAction();
 
-  const shown = useMemo(() => {
+  const assignMeta = useMemo(() => parseAssignmentMeta(data?.a), [data?.a]);
+
+  // Attach syndicate group & fallback teammate upload reference when syndicate mode is active
+  const enrichedRows = useMemo(() => {
     if (!data) return [];
+    const byNorm = new Map(data.rows.map((r) => [normalizeIndexNo(r.index_no), r]));
+    return data.rows.map((r) => {
+      const syn = findStudentSyndicate(assignMeta, r.index_no);
+      let synLeaderSub = null;
+      if (syn && !r.sub) {
+        for (const mIdx of syn.members) {
+          const mate = byNorm.get(mIdx);
+          if (mate?.sub) {
+            synLeaderSub = mate.sub;
+            break;
+          }
+        }
+      }
+      return { ...r, _syn: syn, _synLeaderSub: synLeaderSub };
+    });
+  }, [data, assignMeta]);
+
+  const shown = useMemo(() => {
     const term = q.trim().toLowerCase();
-    const filtered = data.rows.filter((r) => {
+    const filtered = enrichedRows.filter((r) => {
       if (!matchesGroup(r, group)) return false;
-      if (filter === 'tomark' && !(r.sub && r.sub.marks === null)) return false;
+      const effectiveSub = r.sub || r._synLeaderSub;
+      if (filter === 'tomark' && !(effectiveSub && (r.sub ? r.sub.marks === null : true))) return false;
       if (filter === 'marked' && !(r.sub && r.sub.marks !== null)) return false;
-      if (filter === 'missing' && r.sub) return false;
-      if (filter === 'late' && !r.sub?.is_late) return false;
+      if (filter === 'missing' && effectiveSub) return false;
+      if (filter === 'late' && !effectiveSub?.is_late) return false;
       if (term) {
-        const hay = [r.full_name, r.index_no, r.programme, r.stream].filter(Boolean).join(' ').toLowerCase();
+        const hay = [r.full_name, r.index_no, r.programme, r.stream, r._syn?.name].filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(term)) return false;
       }
       return true;
     });
     return [...filtered].sort((a, b) => {
       switch (sort) {
+        case 'syn_asc': return compareText(a._syn?.name || 'zzz', b._syn?.name || 'zzz', 'asc') || byNameIndex(a, b);
         case 'marks_desc': return compareNumber(a.sub?.marks, b.sub?.marks, 'desc') || byNameIndex(a, b);
         case 'marks_asc': return compareNumber(a.sub?.marks, b.sub?.marks, 'asc') || byNameIndex(a, b);
-        case 'sub_desc': return compareDate(a.sub?.submitted_at, b.sub?.submitted_at, 'desc') || byNameIndex(a, b);
-        case 'sub_asc': return compareDate(a.sub?.submitted_at, b.sub?.submitted_at, 'asc') || byNameIndex(a, b);
+        case 'sub_desc': return compareDate((a.sub || a._synLeaderSub)?.submitted_at, (b.sub || b._synLeaderSub)?.submitted_at, 'desc') || byNameIndex(a, b);
+        case 'sub_asc': return compareDate((a.sub || a._synLeaderSub)?.submitted_at, (b.sub || b._synLeaderSub)?.submitted_at, 'asc') || byNameIndex(a, b);
         case 'name_desc': return compareText(a.full_name, b.full_name, 'desc') || compareText(a.index_no, b.index_no, 'asc');
         case 'index_asc': return compareText(a.index_no, b.index_no, 'asc') || byNameIndex(a, b);
         case 'index_desc': return compareText(a.index_no, b.index_no, 'desc') || byNameIndex(a, b);
@@ -75,17 +103,17 @@ export default function AssignmentMarking() {
         default: return byNameIndex(a, b);
       }
     });
-  }, [data, filter, q, group, sort]);
+  }, [enrichedRows, filter, q, group, sort]);
 
   if (loading) return <Loading />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
 
   const { a } = data;
-  const rows = data.rows.filter((r) => matchesGroup(r, group));
+  const rows = enrichedRows.filter((r) => matchesGroup(r, group));
   const summary = groupSummary(data.rows, (r) => !!r.sub && r.sub.marks !== null, (r) => pct(r.sub.marks, a.max_marks));
-  const submitted = rows.filter((r) => r.sub);
-  const marked = submitted.filter((r) => r.sub.marks !== null);
-  const late = submitted.filter((r) => r.sub.is_late);
+  const submitted = rows.filter((r) => r.sub || r._synLeaderSub);
+  const marked = rows.filter((r) => r.sub && r.sub.marks !== null);
+  const late = submitted.filter((r) => (r.sub || r._synLeaderSub)?.is_late);
   const avg = marked.length ? Math.round(marked.reduce((s, r) => s + pct(r.sub.marks, a.max_marks), 0) / marked.length) : null;
 
   async function toggleRelease() {
@@ -96,25 +124,33 @@ export default function AssignmentMarking() {
   }
 
   function exportXlsx() {
-    const header = ['Index number', 'Name', 'Programme', 'Stream', 'Submitted', 'Late', 'File', 'Marks', 'Out of', 'Percent', 'Feedback'];
+    const header = ['Index number', 'Name', 'Programme', 'Stream', ...(assignMeta.syndicate.enabled ? ['Syndicate Group'] : []), 'Submitted', 'Late', 'File', 'Marks', 'Out of', 'Percent', 'Feedback'];
     const line = (r) => [
-      r.index_no, r.full_name, r.programme || '', r.stream || '', r.sub ? fmtFull(r.sub.submitted_at) : 'Not submitted', r.sub?.is_late ? 'Yes' : '',
+      r.index_no, r.full_name, r.programme || '', r.stream || '',
+      ...(assignMeta.syndicate.enabled ? [r._syn?.name || ''] : []),
+      r.sub ? fmtFull(r.sub.submitted_at) : 'Not submitted', r.sub?.is_late ? 'Yes' : '',
       r.sub?.file_name || '', r.sub?.marks !== null && r.sub?.marks !== undefined ? Number(r.sub.marks) : '', Number(a.max_marks),
       r.sub?.marks !== null && r.sub?.marks !== undefined ? pct(r.sub.marks, a.max_marks) : '', r.sub?.feedback || '',
     ];
-    const widths = [16, 30, 18, 12, 22, 8, 30, 10, 10, 10, 50];
+    const widths = [16, 30, 18, 12, ...(assignMeta.syndicate.enabled ? [16] : []), 22, 8, 30, 10, 10, 10, 50];
     const sheets = [
-      { name: 'All students', rows: [header, ...data.rows.map(line)], widths },
+      { name: 'All students', rows: [header, ...enrichedRows.map(line)], widths },
       { name: 'Summary', rows: [['Programme', 'Stream', 'Students', 'Marked', 'Average %'],
         ...summary.map((g) => [groupLabel(g.programme), groupLabel(g.stream), g.students, g.submitted, g.average ?? ''])], widths: [22, 14, 10, 10, 10] },
     ];
     const streams = [...new Set(data.rows.map((r) => r.stream || ''))];
-    if (streams.length > 1) streams.sort().forEach((st) => sheets.push({ name: groupLabel(st), rows: [header, ...data.rows.filter((r) => (r.stream || '') === st).map(line)], widths }));
+    if (streams.length > 1) streams.sort().forEach((st) => sheets.push({ name: groupLabel(st), rows: [header, ...enrichedRows.filter((r) => (r.stream || '') === st).map(line)], widths }));
     downloadWorkbook(`${a.courses.code} - ${a.title}.xlsx`, sheets);
   }
 
   function updateSub(id, patch) {
     setData((d) => ({ ...d, rows: d.rows.map((r) => (r.sub?.id === id ? { ...r, sub: { ...r.sub, ...patch } } : r)) }));
+  }
+
+  function copySql() {
+    navigator.clipboard?.writeText?.(ALL_NEW_FEATURES_SQL);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 3000);
   }
 
   return (
@@ -128,19 +164,50 @@ export default function AssignmentMarking() {
           </button>
         )}
       </Topbar>
+
       <div className="page stack">
         <div className="grid-4">
-          <div className="kpi"><span className="l">Submitted</span><span className="v">{submitted.length}</span><span className="tiny muted">of {rows.length} students</span></div>
-          <div className="kpi"><span className="l">Marked</span><span className="v">{marked.length}</span><span className="tiny muted">{submitted.length - marked.length} still to mark</span></div>
-          <div className="kpi"><span className="l">Late</span><span className="v" style={{ color: late.length ? 'var(--amber-ink)' : undefined }}>{late.length}</span></div>
-          <div className="kpi"><span className="l">Average mark</span><span className="v">{avg === null ? '—' : `${avg}%`}</span></div>
+          <div className="kpi">
+            <div className="kpi-head"><span className="l">Submitted</span><span className="kpi-icon"><Icon name="upload" size={16} /></span></div>
+            <span className="v">{submitted.length}</span>
+            <span className="tiny muted">of {rows.length} students</span>
+          </div>
+          <div className="kpi">
+            <div className="kpi-head"><span className="l">Marked</span><span className="kpi-icon"><Icon name="check" size={16} /></span></div>
+            <span className="v">{marked.length}</span>
+            <span className="tiny muted">{Math.max(0, submitted.length - marked.length)} still to mark</span>
+          </div>
+          <div className="kpi">
+            <div className="kpi-head"><span className="l">Late</span><span className="kpi-icon amber"><Icon name="clock" size={16} /></span></div>
+            <span className="v" style={{ color: late.length ? 'var(--amber-ink)' : undefined }}>{late.length}</span>
+          </div>
+          <div className="kpi">
+            <div className="kpi-head"><span className="l">Average mark</span><span className="kpi-icon blue"><Icon name="chart" size={16} /></span></div>
+            <span className="v">{avg === null ? '—' : `${avg}%`}</span>
+          </div>
         </div>
+
+        {(assignMeta.rubric.length > 0 || assignMeta.syndicate.enabled) && (
+          <div className="notice notice-info row-wrap" style={{ justifyContent: 'space-between', gap: 10 }}>
+            <div className="row-wrap" style={{ gap: 8 }}>
+              {assignMeta.syndicate.enabled && (
+                <span className="badge badge-teal"><Icon name="users" size={13} /> Syndicate Mode ({assignMeta.syndicate.groups.length} groups)</span>
+              )}
+              {assignMeta.rubric.length > 0 && (
+                <span className="badge badge-blue"><Icon name="clipboard" size={13} /> Clickable Rubric ({assignMeta.rubric.length} criteria)</span>
+              )}
+            </div>
+            <span className="tiny muted">Marking one group submission can apply scores across every member in that syndicate.</span>
+          </div>
+        )}
 
         <GroupFilters rows={data.rows} value={group} onChange={setGroup} />
         <GroupSummaryTable summary={summary} doneLabel="Marked" />
 
         {!a.results_released && marked.length > 0 && (
-          <div className="notice notice-warn">{isTA ? 'Students cannot see these marks until the lecturer releases them.' : <>Students cannot see their marks yet. Press <strong>Release marks</strong> when you have finished.</>}</div>
+          <div className="notice notice-warn">
+            {isTA ? 'Students cannot see these marks until the lecturer releases them.' : <>Students cannot see their marks yet. Press <strong>Release marks</strong> when you have finished.</>}
+          </div>
         )}
 
         <section className="card-flush">
@@ -149,10 +216,10 @@ export default function AssignmentMarking() {
               <label className="search">
                 <span className="sr-only">Search</span>
                 <Icon name="search" size={16} />
-                <input className="input" style={{ width: 230, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, index, programme, stream" />
+                <input className="input" style={{ width: 230, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, index, syndicate, stream" />
               </label>
               <div className="chips" role="group" aria-label="Filter">
-                {[['tomark', `To mark · ${submitted.length - marked.length}`], ['marked', 'Marked'], ['late', 'Late'], ['missing', 'Not submitted'], ['all', 'All']].map(([id, label]) => (
+                {[['tomark', `To mark · ${Math.max(0, submitted.length - marked.length)}`], ['marked', 'Marked'], ['late', 'Late'], ['missing', 'Not submitted'], ['all', 'All']].map(([id, label]) => (
                   <button key={id} type="button" className="chip" aria-pressed={filter === id} onClick={() => setFilter(id)}>{label}</button>
                 ))}
               </div>
@@ -160,6 +227,7 @@ export default function AssignmentMarking() {
                 value={sort}
                 onChange={setSort}
                 options={[
+                  ...(assignMeta.syndicate.enabled ? [{ value: 'syn_asc', label: 'Syndicate Group (A → Z)' }] : []),
                   { value: 'marks_desc', label: 'Marks: High → Low' },
                   { value: 'marks_asc', label: 'Marks: Low → High' },
                   { value: 'name_asc', label: 'Name (A → Z)' },
@@ -175,6 +243,7 @@ export default function AssignmentMarking() {
             </div>
             <button type="button" className="btn btn-sm" onClick={exportXlsx}><Icon name="download" size={16} /> Export to Excel</button>
           </div>
+
           {shown.length === 0 ? <Empty icon="inbox">{filter === 'tomark' ? 'Nothing waiting to be marked.' : 'No students match.'}</Empty> : (
             <div className="table-wrap">
               <table className="table">
@@ -182,6 +251,7 @@ export default function AssignmentMarking() {
                   <tr>
                     <SortTh label="Index no." ascKey="index_asc" descKey="index_desc" current={sort} onSort={setSort} />
                     <SortTh label="Student" ascKey="name_asc" descKey="name_desc" current={sort} onSort={setSort} />
+                    {assignMeta.syndicate.enabled && <SortTh label="Syndicate" ascKey="syn_asc" descKey="syn_asc" current={sort} onSort={setSort} />}
                     <SortTh label="Group" ascKey="prog_asc" descKey="prog_desc" current={sort} onSort={setSort} className="hide-sm" />
                     <SortTh label="Submitted" ascKey="sub_asc" descKey="sub_desc" defaultDir="desc" current={sort} onSort={setSort} />
                     <SortTh label="Marks" ascKey="marks_asc" descKey="marks_desc" defaultDir="desc" current={sort} onSort={setSort} className="num" />
@@ -189,28 +259,41 @@ export default function AssignmentMarking() {
                   </tr>
                 </thead>
                 <tbody>
-                  {shown.slice(0, 400).map((r, i) => (
-                    <tr key={r.index_no}>
-                      <td className="mono small">{r.index_no}</td>
-                      <td>{r.full_name}</td>
-                      <td className="small muted hide-sm">{[r.programme, r.stream].filter(Boolean).join(' · ') || '—'}</td>
-                      <td className="small">
-                        {r.sub ? (
-                          <>{relative(r.sub.submitted_at)} {r.sub.is_late && <span className="badge badge-amber">Late</span>}
-                            <div className="tiny muted" style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sub.file_name}</div></>
-                        ) : <span className="muted">Not submitted</span>}
-                      </td>
-                      <td className="num">{r.sub?.marks !== null && r.sub?.marks !== undefined ? `${fmtNumber(r.sub.marks)} / ${fmtNumber(a.max_marks)}` : '—'}</td>
-                      <td>
-                        {r.sub && (
-                          <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
-                            <button type="button" className="icon-btn plain" aria-label="Open file" onClick={() => act(() => openStoredFile('submissions', r.sub.file_path))}><Icon name="eye" /></button>
-                            <button type="button" className="btn btn-sm btn-primary" onClick={() => setMarking(i)}>{r.sub.marks !== null ? 'Edit mark' : 'Mark'}</button>
-                          </div>
+                  {shown.slice(0, 400).map((r, i) => {
+                    const effectiveSub = r.sub || r._synLeaderSub;
+                    return (
+                      <tr key={r.index_no}>
+                        <td className="mono small">{r.index_no}</td>
+                        <td>{r.full_name}</td>
+                        {assignMeta.syndicate.enabled && (
+                          <td>
+                            {r._syn ? <span className="badge badge-blue">{r._syn.name}</span> : <span className="tiny muted">—</span>}
+                          </td>
                         )}
-                      </td>
-                    </tr>
-                  ))}
+                        <td className="small muted hide-sm">{[r.programme, r.stream].filter(Boolean).join(' · ') || '—'}</td>
+                        <td className="small">
+                          {effectiveSub ? (
+                            <>
+                              {relative(effectiveSub.submitted_at)} {effectiveSub.is_late && <span className="badge badge-amber">Late</span>}
+                              {!r.sub && r._synLeaderSub && <span className="badge" style={{ marginLeft: 4 }}>Group file</span>}
+                              <div className="tiny muted" style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{effectiveSub.file_name}</div>
+                            </>
+                          ) : <span className="muted">Not submitted</span>}
+                        </td>
+                        <td className="num">{r.sub?.marks !== null && r.sub?.marks !== undefined ? `${fmtNumber(r.sub.marks)} / ${fmtNumber(a.max_marks)}` : '—'}</td>
+                        <td>
+                          {effectiveSub && (
+                            <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
+                              <button type="button" className="icon-btn plain" aria-label="Open file" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}><Icon name="eye" /></button>
+                              <button type="button" className="btn btn-sm btn-primary" onClick={() => setMarking(i)}>
+                                {r.sub?.marks !== null && r.sub?.marks !== undefined ? 'Edit mark' : 'Mark'}
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -218,36 +301,68 @@ export default function AssignmentMarking() {
         </section>
       </div>
 
-      {marking !== null && shown[marking]?.sub && (
+      {marking !== null && (shown[marking]?.sub || shown[marking]?._synLeaderSub) && (
         <MarkModal
-          key={shown[marking].sub.id}
+          key={(shown[marking].sub || shown[marking]._synLeaderSub).id + ':' + shown[marking].index_no}
           a={a}
+          assignMeta={assignMeta}
+          allRows={enrichedRows}
           row={shown[marking]}
-          hasNext={shown.slice(marking + 1).some((r) => r.sub)}
+          hasNext={shown.slice(marking + 1).some((r) => r.sub || r._synLeaderSub)}
+          onShowSql={() => setShowSql(true)}
           onClose={() => setMarking(null)}
-          onSaved={(patch, next) => {
-            updateSub(shown[marking].sub.id, patch);
+          onSaved={(patch, next, reloadFull) => {
+            if (reloadFull) {
+              reload();
+            } else if (shown[marking].sub) {
+              updateSub(shown[marking].sub.id, patch);
+            }
             if (next) {
-              const rest = shown.findIndex((r, k) => k > marking && r.sub);
-              // when filtering "to mark", the saved row drops out, so the next one slides into the same place
+              const rest = shown.findIndex((r, k) => k > marking && (r.sub || r._synLeaderSub));
               setMarking(filter === 'tomark' ? (rest > -1 ? rest - 1 : null) : rest > -1 ? rest : null);
             } else setMarking(null);
           }}
         />
       )}
+
       {editing && <AssignmentForm course={{ id: a.course_id }} a={a} onClose={() => setEditing(false)} onSaved={reload} />}
+
+      {showSql && (
+        <Modal title="Enable Syndicate Group Sync in Supabase" onClose={() => setShowSql(false)} wide>
+          <p className="small muted">
+            Run this one-time SQL script in your <strong>Supabase Dashboard → SQL Editor</strong> to enable automatic teammate syncing when one syndicate member uploads or gets marked.
+          </p>
+          <pre className="mono small" style={{ maxHeight: 260, overflowY: 'auto', padding: 12, background: 'var(--surface-2)', borderRadius: 8, fontSize: 11 }}>
+            {ALL_NEW_FEATURES_SQL}
+          </pre>
+          <div className="between" style={{ alignItems: 'center', marginTop: 12 }}>
+            <span className="tiny muted">100% idempotent — safe to run once on your live project.</span>
+            <button type="button" className="btn btn-primary" onClick={copySql}>
+              {copiedSql ? 'Copied SQL' : 'Copy SQL to Clipboard'}
+            </button>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }
 
-function MarkModal({ a, row, hasNext, onClose, onSaved }) {
+function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, onSaved }) {
   const toast = useToast();
   const [act] = useAction();
-  const [marks, setMarks] = useState(row.sub.marks ?? '');
-  const [feedback, setFeedback] = useState(row.sub.feedback || '');
+  const effectiveSub = row.sub || row._synLeaderSub;
+  const [marks, setMarks] = useState(row.sub?.marks ?? '');
+  const [feedback, setFeedback] = useState(row.sub?.feedback || '');
   const [busy, setBusy] = useState(false);
 
-  async function save(next) {
+  const syndicate = row._syn;
+  const syndicatePeers = useMemo(() => {
+    if (!syndicate) return [];
+    const byNorm = new Map(allRows.map((r) => [normalizeIndexNo(r.index_no), r]));
+    return syndicate.members.map((idx) => byNorm.get(idx) || { index_no: idx, full_name: idx });
+  }, [syndicate, allRows]);
+
+  async function save(next, applyToGroup = false) {
     const m = Number(marks);
     if (marks === '' || Number.isNaN(m) || m < 0 || m > Number(a.max_marks)) {
       toast(`Marks must be between 0 and ${fmtNumber(a.max_marks)}.`, 'error');
@@ -256,9 +371,46 @@ function MarkModal({ a, row, hasNext, onClose, onSaved }) {
     setBusy(true);
     try {
       const patch = { marks: m, feedback, marked_at: new Date().toISOString() };
+      if (applyToGroup && syndicate?.members?.length) {
+        try {
+          const updatedCount = await rpc('mark_syndicate_submission', {
+            p_assignment: a.id,
+            p_source_submission: effectiveSub.id,
+            p_member_indexes: syndicate.members,
+            p_marks: m,
+            p_feedback: feedback,
+          });
+          toast(`Saved · ${syndicate.name} (${updatedCount} member${updatedCount === 1 ? '' : 's'} marked)`);
+          onSaved(patch, next, true);
+          return;
+        } catch (synErr) {
+          if (/mark_syndicate_submission|Could not find|does not exist|schema cache/i.test(synErr.message || '')) {
+            // Fallback: mark all members who currently have submission rows
+            const withSub = syndicatePeers.filter((p) => p.sub?.id);
+            await Promise.all(
+              withSub.map((p) => rpc('mark_submission', { p_submission: p.sub.id, p_marks: m, p_feedback: feedback }))
+            );
+            const missingCount = syndicatePeers.length - withSub.length;
+            if (missingCount > 0) {
+              toast(`Marked ${withSub.length} submitted member(s). Install Syndicate SQL to also sync marks to ${missingCount} un-uploaded member(s).`, 'error');
+              onShowSql?.();
+            } else {
+              toast(`Saved · ${syndicate.name} (${withSub.length} members)`);
+            }
+            onSaved(patch, next, true);
+            return;
+          }
+          throw synErr;
+        }
+      }
+
+      if (!row.sub?.id) {
+        toast('This teammate has not uploaded individually — use "Save & apply to group" or install Syndicate SQL.', 'error');
+        return;
+      }
       await rpc('mark_submission', { p_submission: row.sub.id, p_marks: m, p_feedback: feedback });
       toast(`Saved · ${row.full_name}`);
-      onSaved(patch, next);
+      onSaved(patch, next, false);
     } catch (e) {
       toast(e.message, 'error');
     } finally {
@@ -267,26 +419,75 @@ function MarkModal({ a, row, hasNext, onClose, onSaved }) {
   }
 
   return (
-    <Modal title={row.full_name} onClose={onClose}
-      footer={<>
-        <button type="button" className="btn" onClick={onClose}>Close</button>
-        <button type="button" className="btn" onClick={() => save(false)} disabled={busy}>Save</button>
-        {hasNext && <button type="button" className="btn btn-primary" onClick={() => save(true)} disabled={busy}>Save and next</button>}
-      </>}>
+    <Modal
+      title={syndicate ? `${row.full_name} · ${syndicate.name}` : row.full_name}
+      wide
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn" onClick={onClose}>Close</button>
+          {row.sub?.id && (
+            <button type="button" className="btn" onClick={() => save(false, false)} disabled={busy}>Save single</button>
+          )}
+          {syndicate && syndicatePeers.length > 1 && (
+            <button type="button" className="btn btn-primary" onClick={() => save(hasNext, true)} disabled={busy}>
+              {hasNext ? `Save & apply to group (${syndicatePeers.length}) →` : `Save & apply to all ${syndicatePeers.length} members`}
+            </button>
+          )}
+          {(!syndicate || syndicatePeers.length <= 1) && (
+            <>
+              {!hasNext && <button type="button" className="btn btn-primary" onClick={() => save(false, false)} disabled={busy}>Save</button>}
+              {hasNext && <button type="button" className="btn btn-primary" onClick={() => save(true, false)} disabled={busy}>Save and next</button>}
+            </>
+          )}
+        </>
+      }
+    >
       <div className="notice notice-info row-wrap">
         <Icon name="file" />
         <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
-          <strong>{row.sub.file_name}</strong><br />
-          <span className="small">Submitted {fmtFull(row.sub.submitted_at)}{row.sub.is_late ? ' · LATE' : ''}</span>
+          <strong>{effectiveSub.file_name}</strong><br />
+          <span className="small">Submitted {fmtFull(effectiveSub.submitted_at)}{effectiveSub.is_late ? ' · LATE' : ''}</span>
         </span>
-        <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('submissions', row.sub.file_path))}>Open file</button>
+        <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}>Open file</button>
       </div>
-      {row.sub.note && <p className="small"><span className="eyebrow">Student's note: </span>{row.sub.note}</p>}
+
+      {syndicate && (
+        <div className="stack-sm" style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--teal-50)', border: '1px solid var(--teal)' }}>
+          <div className="between">
+            <strong className="small" style={{ color: 'var(--teal-dark)' }}>
+              {syndicate.name} ({syndicatePeers.length} members)
+            </strong>
+            <span className="tiny muted">One mark applies to every activated member</span>
+          </div>
+          <div className="row-wrap" style={{ gap: 6 }}>
+            {syndicatePeers.map((m) => (
+              <span key={m.index_no} className="badge badge-teal">
+                {m.index_no}{m.full_name && m.full_name !== m.index_no ? ` · ${m.full_name}` : ''}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {effectiveSub.note && <p className="small"><span className="eyebrow">Student's note: </span>{effectiveSub.note}</p>}
+
+      <RubricGrader
+        criteria={assignMeta.rubric}
+        maxMarks={Number(a.max_marks)}
+        currentFeedback={feedback}
+        onApply={(total, mergedFeedback) => {
+          if (total !== null) setMarks(total);
+          setFeedback(mergedFeedback);
+        }}
+      />
+
       <Field label={`Marks out of ${fmtNumber(a.max_marks)}`}>
         <input className="input mono" type="number" min="0" max={a.max_marks} step="0.5" style={{ maxWidth: 160 }} value={marks} onChange={(e) => setMarks(e.target.value)} autoFocus />
       </Field>
+
       <Field label="Feedback to the student" hint="shown when you release marks">
-        <textarea className="textarea" value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+        <textarea className="textarea" rows={4} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
       </Field>
     </Modal>
   );

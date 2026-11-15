@@ -381,3 +381,89 @@ export function buildStudentSummaryHtml({
   const sub = `${student.full_name} (${student.index_no}) · ${course.code} — ${course.title}${course.semester ? ` · ${course.semester}` : ''}`;
   return baseHtml('Individual Student Academic Record', sub, body);
 }
+
+export function buildExamEligibilityHtml({ course, sessions = [], students = [], threshold = 75, groupLabelText = '' }) {
+  const total = students.length;
+  const withSess = students.filter((s) => s.applicable > 0);
+  const eligibleCount = students.filter((s) => !s.applicable || ((s.attended / s.applicable) * 100 >= threshold)).length;
+  const ineligibleCount = withSess.filter((s) => (s.attended / s.applicable) * 100 < threshold).length;
+
+  const kpis = `
+    <div class="kpis">
+      <div class="kpi"><div class="l">Candidates Listed</div><div class="v">${total}</div></div>
+      <div class="kpi"><div class="l">Sessions Held</div><div class="v">${sessions.length}</div></div>
+      <div class="kpi"><div class="l">Eligible (≥ ${threshold}%)</div><div class="v" style="color:#166534">${eligibleCount}</div></div>
+      <div class="kpi"><div class="l">Below ${threshold}% Threshold</div><div class="v" style="color:${ineligibleCount ? '#991b1b' : '#0f172a'}">${ineligibleCount}</div></div>
+    </div>`;
+
+  // Group by Programme / Stream cleanly for hall door distribution
+  const groupMap = new Map();
+  for (const r of students) {
+    const key = [r.programme, r.stream].filter(Boolean).join(' · ') || 'General Roster';
+    if (!groupMap.has(key)) groupMap.set(key, []);
+    groupMap.get(key).push(r);
+  }
+  const groupNames = [...groupMap.keys()].sort((a, b) => a.localeCompare(b));
+
+  const sectionsHtml = groupNames.map((gName, gIdx) => {
+    const list = [...groupMap.get(gName)].sort((a, b) =>
+      String(a.index_no || '').localeCompare(String(b.index_no || '')) ||
+      String(a.full_name || '').localeCompare(String(b.full_name || ''))
+    );
+    const gEligible = list.filter((s) => !s.applicable || ((s.attended / s.applicable) * 100 >= threshold)).length;
+    const rowsHtml = list.map((r, i) => {
+      const p = r.applicable ? Math.round((r.attended / r.applicable) * 100) : null;
+      const isOk = p === null || p >= threshold;
+      const cls = p === null ? 'neutral' : isOk ? 'ok' : 'bad';
+      const status = p === null ? 'Cleared' : isOk ? 'Eligible' : `Below ${threshold}%`;
+      return `<tr>
+        <td class="num">${i + 1}</td>
+        <td class="mono"><strong>${esc(r.index_no)}</strong></td>
+        <td>${esc(r.full_name)}</td>
+        <td class="num mono">${r.attended} / ${r.applicable}</td>
+        <td class="num mono">${p === null ? '—' : `${p}%`}</td>
+        <td><span class="badge ${cls}">${status}</span></td>
+        <td style="width:72px"></td>
+        <td style="width:155px;height:26px"></td>
+      </tr>`;
+    }).join('');
+
+    return `
+      <div style="margin-top:${gIdx === 0 ? '4px' : '16px'};break-inside:avoid-page">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;padding-bottom:3px;border-bottom:1.5px solid #cbd5e1">
+          <strong style="font-size:12px;color:#0f172a">${esc(gName)}</strong>
+          <span style="font-size:10.5px;color:#475569">${list.length} student${list.length === 1 ? '' : 's'} · ${gEligible} eligible</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th class="num" style="width:26px">#</th>
+              <th style="width:105px">Index No.</th>
+              <th>Candidate Full Name</th>
+              <th class="num" style="width:66px">Att/App</th>
+              <th class="num" style="width:48px">Rate</th>
+              <th style="width:82px">Eligibility</th>
+              <th style="width:72px">Seat / Booklet</th>
+              <th style="width:155px">Candidate Signature</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>`;
+  }).join('');
+
+  const body = `
+    ${kpis}
+    <div style="margin-bottom:10px;padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;font-size:10.5px;color:#334155">
+      <strong>Examination Hall Verification:</strong> Candidates marked <strong>Eligible</strong> satisfy the ≥ ${threshold}% lecture attendance requirement. Candidates marked <strong>Below ${threshold}%</strong> require written clearance from the Head of Department / Examinations Officer prior to entry.
+    </div>
+    ${sectionsHtml || '<p style="text-align:center;color:#64748b">No students match this filter.</p>'}
+    <div class="signoff">
+      <div class="sig-box"><div class="sig-role">Chief Invigilator</div><div>Signature &amp; Date: ____________________</div></div>
+      <div class="sig-box"><div class="sig-role">Course Lecturer</div><div>Signature &amp; Date: ____________________</div></div>
+      <div class="sig-box"><div class="sig-role">Examinations Officer / HOD</div><div>Signature &amp; Date: ____________________</div></div>
+    </div>`;
+
+  const sub = `${course.code} — ${course.title}${course.semester ? ` · ${course.semester}` : ''}${groupLabelText ? ` · Filter: ${groupLabelText}` : ''}`;
+  return baseHtml('Examination Eligibility & Hall Sign-In Sheet', sub, body);
+}

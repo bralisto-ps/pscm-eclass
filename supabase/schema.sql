@@ -3913,3 +3913,260 @@ begin
     execute format('grant execute on function public.%s to authenticated', f);
   end loop;
 end $$;
+
+-- 10. Written Answer Typing & Burst Signals
+alter table public.attempts add column if not exists typing_telemetry jsonb not null default '{}'::jsonb;
+
+create or replace function public.save_typing_telemetry(p_attempt uuid, p_telemetry jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null or p_attempt is null then return; end if;
+  update public.attempts
+     set typing_telemetry = coalesce(typing_telemetry, '{}'::jsonb) || coalesce(p_telemetry, '{}'::jsonb)
+   where id = p_attempt
+     and student_id = auth.uid()
+     and status = 'in_progress';
+end;
+$$;
+
+drop function if exists public.quiz_typing_signals(uuid);
+create or replace function public.quiz_typing_signals(p_quiz uuid)
+returns table (
+  attempt_id uuid,
+  student_id uuid,
+  index_no text,
+  full_name text,
+  programme text,
+  stream text,
+  typing_telemetry jsonb
+)
+language plpgsql stable security definer set search_path = public as $$
+#variable_conflict use_column
+declare v_course uuid;
+begin
+  select course_id into v_course from public.quizzes where id = p_quiz;
+  if v_course is null then raise exception 'Quiz not found.'; end if;
+  perform public.require_staff(v_course);
+  return query
+    select b.id,
+           p.id,
+           r.index_no,
+           r.full_name,
+           r.programme,
+           r.stream,
+           coalesce(b.typing_telemetry, '{}'::jsonb)
+      from public.enrollments e
+      join public.roster r on r.index_no = e.index_no
+      join public.profiles p on p.index_no = r.index_no
+      join lateral (
+        select a.* from public.attempts a
+         where a.quiz_id = p_quiz and a.student_id = p.id
+         order by (a.status = 'in_progress'), a.score desc nulls last, a.submitted_at desc
+         limit 1
+      ) b on true
+     where e.course_id = v_course
+       and b.typing_telemetry is not null
+       and b.typing_telemetry <> '{}'::jsonb
+     order by r.full_name, r.index_no;
+end;
+$$;
+
+-- 11. Syndicate / Group Case Study Submissions & Shared File Access
+create or replace function public.submit_group_assignment(
+  p_assignment uuid,
+  p_path text,
+  p_name text,
+  p_note text,
+  p_member_indexes text[] default '{}'
+) returns timestamptz
+language plpgsql security definer set search_path = public as $$
+declare
+  x public.assignments;
+  v_late boolean;
+  v_member_uid uuid;
+  v_idx text;
+begin
+  if not public.can_submit(p_assignment) then
+    raise exception 'This assignment is closed or has already been marked.';
+  end if;
+  if p_path is null or regexp_replace(p_path, '^r2:', '') not like p_assignment::text || '/' || auth.uid()::text || '/%' then
+    raise exception 'Upload location is not valid.';
+  end if;
+  select * into x from public.assignments where id = p_assignment;
+  v_late := x.due_at is not null and now() > x.due_at;
+
+  insert into public.submissions (assignment_id, student_id, file_path, file_name, note, submitted_at, is_late)
+  values (p_assignment, auth.uid(), p_path, coalesce(p_name, ''), coalesce(p_note, ''), now(), v_late)
+  on conflict (assignment_id, student_id) do update
+     set file_path = excluded.file_path,
+         file_name = excluded.file_name,
+         note = excluded.note,
+         submitted_at = now(),
+         is_late = excluded.is_late;
+
+  if p_member_indexes is not null and coalesce(array_length(p_member_indexes, 1), 0) > 0 then
+    foreach v_idx in array p_member_indexes loop
+      select p.id into v_member_uid
+        from public.profiles p
+        join public.enrollments e on e.index_no = p.index_no
+       where e.course_id = x.course_id
+         and upper(trim(p.index_no)) = upper(trim(v_idx))
+         and p.id <> auth.uid()
+       limit 1;
+      if v_member_uid is not null then
+        insert into public.submissions (assignment_id, student_id, file_path, file_name, note, submitted_at, is_late)
+        values (p_assignment, v_member_uid, p_path, coalesce(p_name, ''), coalesce(p_note, ''), now(), v_late)
+        on conflict (assignment_id, student_id) do update
+           set file_path = excluded.file_path,
+               file_name = excluded.file_name,
+               note = excluded.note,
+               submitted_at = now(),
+               is_late = excluded.is_late
+         where public.submissions.marks is null;
+      end if;
+    end loop;
+  end if;
+  return now();
+end;
+$$;
+
+create or replace function public.mark_syndicate_submission(
+  p_assignment uuid,
+  p_source_submission uuid,
+  p_member_indexes text[],
+  p_marks numeric,
+  p_feedback text
+) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  v_course uuid;
+  v_max numeric;
+  v_src public.submissions;
+  v_idx text;
+  v_member_uid uuid;
+  v_cnt int := 0;
+begin
+  select x.course_id, x.max_marks into v_course, v_max
+    from public.assignments x
+   where x.id = p_assignment;
+  if v_course is null then raise exception 'Assignment not found.'; end if;
+  perform public.require_staff(v_course);
+  if p_marks is not null and (p_marks < 0 or p_marks > v_max) then
+    raise exception 'Marks must be between 0 and %.', v_max;
+  end if;
+
+  select * into v_src from public.submissions where id = p_source_submission and assignment_id = p_assignment;
+  if not found then raise exception 'Source submission not found.'; end if;
+
+  update public.submissions
+     set marks = p_marks,
+         feedback = coalesce(p_feedback, ''),
+         marked_at = case when p_marks is null then null else now() end,
+         marked_by = case when p_marks is null then null else auth.uid() end
+   where id = v_src.id;
+  v_cnt := 1;
+
+  if p_member_indexes is not null and coalesce(array_length(p_member_indexes, 1), 0) > 0 then
+    foreach v_idx in array p_member_indexes loop
+      select p.id into v_member_uid
+        from public.profiles p
+        join public.enrollments e on e.index_no = p.index_no
+       where e.course_id = v_course
+         and upper(trim(p.index_no)) = upper(trim(v_idx))
+         and p.id <> v_src.student_id
+       limit 1;
+      if v_member_uid is not null then
+        insert into public.submissions (
+          assignment_id, student_id, file_path, file_name, note, submitted_at, is_late,
+          marks, feedback, marked_at, marked_by
+        )
+        values (
+          p_assignment, v_member_uid, v_src.file_path, v_src.file_name, v_src.note, v_src.submitted_at, v_src.is_late,
+          p_marks, coalesce(p_feedback, ''),
+          case when p_marks is null then null else now() end,
+          case when p_marks is null then null else auth.uid() end
+        )
+        on conflict (assignment_id, student_id) do update
+           set file_path = coalesce(nullif(public.submissions.file_path, ''), excluded.file_path),
+               file_name = coalesce(nullif(public.submissions.file_name, ''), excluded.file_name),
+               marks = excluded.marks,
+               feedback = excluded.feedback,
+               marked_at = excluded.marked_at,
+               marked_by = excluded.marked_by;
+        v_cnt := v_cnt + 1;
+      end if;
+    end loop;
+  end if;
+
+  perform public.log_course_audit(
+    v_course,
+    'mark_syndicate_assignment',
+    format('Marked syndicate group (%s / %s) across %s member(s)', p_marks, v_max, v_cnt),
+    jsonb_build_object('assignment_id', p_assignment, 'source_submission', p_source_submission, 'members_marked', v_cnt, 'marks', p_marks)
+  );
+  return v_cnt;
+end;
+$$;
+
+drop policy if exists "submissions read" on storage.objects;
+create policy "submissions read" on storage.objects for select to authenticated
+  using (bucket_id = 'submissions'
+         and (public.is_lecturer()
+              or (storage.foldername(name))[2] = auth.uid()::text
+              or exists (
+                select 1 from public.submissions s
+                 where s.assignment_id = public.try_uuid((storage.foldername(name))[1])
+                   and s.student_id = auth.uid()
+                   and regexp_replace(s.file_path, '^r2:', '') = name
+              )
+              or public.is_ta((select course_id from public.assignments
+                                where id = public.try_uuid((storage.foldername(name))[1])))));
+
+create or replace function public.file_access(p_bucket text, p_path text, p_action text) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+declare
+  clean_path text := regexp_replace(coalesce(p_path, ''), '^r2:', '');
+  parts text[] := string_to_array(clean_path, '/');
+begin
+  if auth.uid() is null or coalesce(p_path, '') like '%..%' or cardinality(parts) < 2 then return false; end if;
+  if p_bucket = 'materials' then
+    if p_action = 'download' then
+      return public.is_lecturer() or public.is_ta(public.try_uuid(parts[1])) or public.is_enrolled(public.try_uuid(parts[1]));
+    end if;
+    return public.is_lecturer();
+  elsif p_bucket = 'submissions' then
+    if cardinality(parts) < 3 then return false; end if;
+    if p_action = 'download' then
+      return public.is_lecturer()
+          or parts[2] = auth.uid()::text
+          or exists (
+            select 1 from public.submissions s
+             where s.assignment_id = public.try_uuid(parts[1])
+               and s.student_id = auth.uid()
+               and regexp_replace(s.file_path, '^r2:', '') = clean_path
+          )
+          or public.is_ta((select course_id from public.assignments where id = public.try_uuid(parts[1])));
+    end if;
+    if p_action = 'upload' then
+      return parts[2] = auth.uid()::text and public.can_submit(public.try_uuid(parts[1]));
+    end if;
+    return public.is_lecturer();
+  end if;
+  return false;
+end;
+$$;
+
+do $$
+declare f text;
+begin
+  foreach f in array array[
+    'save_typing_telemetry(uuid, jsonb)',
+    'quiz_typing_signals(uuid)',
+    'submit_group_assignment(uuid, text, text, text, text[])',
+    'mark_syndicate_submission(uuid, uuid, text[], numeric, text)'
+  ]
+  loop
+    execute format('revoke execute on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated', f);
+  end loop;
+end $$;

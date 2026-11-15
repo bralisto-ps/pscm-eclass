@@ -15,7 +15,7 @@ export const FORMAT_LABELS = {
 export const cleanText = (str) => String(str || '').replace(META_REGEX, '').trim();
 
 export function parseQuizMeta(quiz) {
-  const raw = quiz?.instructions || '';
+  const raw = typeof quiz === 'string' ? quiz : (quiz?.instructions || '');
   const match = raw.match(META_REGEX);
   let cleanInstructions = raw;
   let meta = {
@@ -38,6 +38,7 @@ export function parseQuizMeta(quiz) {
       essay: '',
     },
     two_phase_screens: false,
+    question_rubrics: {},
   };
 
   if (match) {
@@ -64,6 +65,10 @@ export function parseQuizMeta(quiz) {
           essay: parsed.format_quotas?.essay ?? '',
         },
         two_phase_screens: Boolean(parsed.two_phase_screens),
+        question_rubrics:
+          parsed.question_rubrics && typeof parsed.question_rubrics === 'object'
+            ? parsed.question_rubrics
+            : {},
       };
     } catch {
       // ignore
@@ -77,13 +82,14 @@ export function parseQuizMeta(quiz) {
 }
 
 export function serializeQuizMeta(cleanInstructions, meta) {
-  const base = String(cleanInstructions || '').trim();
+  const base = String(cleanInstructions || '').replace(META_REGEX, '').trim();
   const payload = {
     custom_times_enabled: Boolean(meta.custom_times_enabled),
     format_times: meta.format_times || {},
     format_quotas_enabled: Boolean(meta.format_quotas_enabled),
     format_quotas: meta.format_quotas || {},
     two_phase_screens: Boolean(meta.two_phase_screens),
+    question_rubrics: meta.question_rubrics && typeof meta.question_rubrics === 'object' ? meta.question_rubrics : {},
   };
   return `${base}\n\n<!-- QUIZ_META:${JSON.stringify(payload)} -->`.trim();
 }

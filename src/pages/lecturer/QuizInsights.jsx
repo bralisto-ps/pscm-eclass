@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { rpc } from '../../lib/supabase.js';
+import { useMemo, useState } from 'react';
+import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
 import { fmtNumber } from '../../lib/format.js';
 import { downloadWorkbook } from '../../lib/sheets.js';
 import Icon from '../../components/Icon.jsx';
@@ -91,11 +91,49 @@ export function ItemAnalysis({ quiz }) {
   );
 }
 
-export function Integrity({ quiz, rows, photos = new Map() }) {
+export function Integrity({ quiz, rows, photos = new Map(), onShowSql }) {
   const [threshold, setThreshold] = useState(0.6);
   const [viewingPhoto, setViewingPhoto] = useState(null);
   const sim = useLoad(() => rpc('quiz_similar_answers', { p_quiz: quiz.id, p_threshold: threshold }), [quiz.id, threshold]);
   const figs = useLoad(() => rpc('quiz_figure_matches', { p_quiz: quiz.id }), [quiz.id]);
+  const typing = useLoad(async () => {
+    const [signals, qs] = await Promise.all([
+      rpcAll('quiz_typing_signals', { p_quiz: quiz.id }),
+      run(supabase.from('questions').select('id, prompt, kind, position').eq('quiz_id', quiz.id)),
+    ]);
+    return { signals, qMap: new Map((qs || []).map((q) => [q.id, q])) };
+  }, [quiz.id]);
+
+  const typingRows = useMemo(() => {
+    if (!typing.data) return [];
+    const out = [];
+    for (const st of typing.data.signals || []) {
+      const tel = st.typing_telemetry || {};
+      for (const [qid, m] of Object.entries(tel)) {
+        if (!m || (!m.words && !m.chars)) continue;
+        const qObj = typing.data.qMap.get(qid);
+        const isBurst = Number(m.maxBurstChars || 0) >= 60 || Number(m.burstEvents || 0) >= 2;
+        const isFast = Number(m.wpm || 0) >= 95 && Number(m.words || 0) >= 25;
+        const severity = isBurst ? 2 : isFast ? 1 : 0;
+        out.push({
+          key: `${st.attempt_id}:${qid}`,
+          full_name: st.full_name,
+          index_no: st.index_no,
+          prompt: qObj?.prompt || 'Written / Short answer',
+          words: Number(m.words || 0),
+          chars: Number(m.chars || 0),
+          activeSec: Number(m.activeSec || 0),
+          wpm: m.wpm ? Number(m.wpm) : null,
+          maxBurstChars: Number(m.maxBurstChars || 0),
+          burstEvents: Number(m.burstEvents || 0),
+          severity,
+        });
+      }
+    }
+    out.sort((a, b) => b.severity - a.severity || b.maxBurstChars - a.maxBurstChars || (b.wpm || 0) - (a.wpm || 0));
+    return out;
+  }, [typing.data]);
+
   const flagged = rows.filter((r) => r.exits > 0 || r.devices > 1);
 
   return (
@@ -152,6 +190,74 @@ export function Integrity({ quiz, rows, photos = new Map() }) {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+      </section>
+
+      
+      <section className="card-flush">
+        <div className="card-head" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <div>
+            <h2>Written &amp; short-answer typing &amp; burst signals</h2>
+            <span className="small muted">tracks active composition pace vs. sudden large text insertions</span>
+          </div>
+          {typingRows.some((r) => r.severity > 0) && (
+            <span className="badge badge-amber">{typingRows.filter((r) => r.severity > 0).length} unusual pace / burst</span>
+          )}
+        </div>
+        {typing.loading ? <Loading /> : typing.error ? (
+          <div style={{ padding: 18 }}>
+            {/quiz_typing_signals|Could not find|does not exist|schema cache/i.test(typing.error) ? (
+              <div className="row-wrap between">
+                <span className="small muted">Run the updated SQL script in Supabase to collect typing-speed and burst signals on written quiz questions.</span>
+                {onShowSql && <button type="button" className="btn btn-sm btn-primary" onClick={onShowSql}>View Setup SQL</button>}
+              </div>
+            ) : (
+              <ErrorNote error={typing.error} />
+            )}
+          </div>
+        ) : typingRows.length === 0 ? (
+          <Empty icon="edit">No short-answer or written typing telemetry recorded on this quiz yet.</Empty>
+        ) : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Student</th>
+                  <th>Question</th>
+                  <th className="num">Words</th>
+                  <th className="num">Active time</th>
+                  <th className="num">Pace</th>
+                  <th className="num">Max burst</th>
+                  <th>Signal</th>
+                </tr>
+              </thead>
+              <tbody>
+                {typingRows.slice(0, 120).map((r) => (
+                  <tr key={r.key} style={r.severity >= 2 ? { background: 'var(--red-50)' } : r.severity === 1 ? { background: 'var(--amber-50)' } : undefined}>
+                    <td>
+                      {r.full_name} <span className="mono tiny muted">{r.index_no}</span>
+                    </td>
+                    <td className="small muted" style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r.prompt}
+                    </td>
+                    <td className="num mono">{r.words}</td>
+                    <td className="num mono">{r.activeSec}s</td>
+                    <td className="num mono">{r.wpm ? `${r.wpm} wpm` : '—'}</td>
+                    <td className="num mono">{r.maxBurstChars > 0 ? `+${r.maxBurstChars} ch` : '—'}</td>
+                    <td>
+                      {r.severity >= 2 ? (
+                        <span className="badge badge-red">Rapid burst (+{r.maxBurstChars} ch)</span>
+                      ) : r.severity === 1 ? (
+                        <span className="badge badge-amber">High pace ({r.wpm} wpm)</span>
+                      ) : (
+                        <span className="badge badge-teal">Normal</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </section>

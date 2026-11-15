@@ -1,5 +1,6 @@
 import { parseCourseMeta } from '../../lib/courseMeta.js';
 import { cleanText } from '../../lib/quizMeta.js';
+import { findStudentSyndicate, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
 import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
 import { getLetter, getRemarks, GradesTable, TargetGradeCalculator } from './Grades.jsx';
 import Messages from '../../components/Messages.jsx';
@@ -86,7 +87,7 @@ export default function StudentCourse() {
 
       <div className="page">
         <ErrorBoundary key={tab}>
-          {tab === 'materials' && <Materials data={data} profile={profile} onQuizzes={() => setTab('quizzes')} graded={graded} />}
+          {tab === 'materials' && <Materials data={data} course={course} profile={profile} onQuizzes={() => setTab('quizzes')} graded={graded} />}
           {tab === 'quizzes' && <Quizzes quizzes={data.quizzes} reload={reload} />}
           {tab === 'assignments' && <Assignments assignments={data.assignments} reload={reload} />}
           {tab === 'attendance' && (
@@ -111,7 +112,8 @@ export default function StudentCourse() {
 }
 
 // ---------------- materials ----------------
-function Materials({ data, profile, onQuizzes, graded }) {
+function Materials({ data, course, profile, onQuizzes, graded }) {
+  const toast = useToast();
   const [act] = useAction();
   const [viewedSet, setViewedSet] = useState(() => new Set(data.viewedIds || []));
   const [reading, setReading] = useState(null);
@@ -242,7 +244,16 @@ function Materials({ data, profile, onQuizzes, graded }) {
         <Suspense fallback={<div className="secure-reader-backdrop" style={{ alignItems: 'center', justifyContent: 'center' }}><div className="spinner" /></div>}>
           <SecureSlideViewer
             material={reading}
+            courseCode={course?.code}
             watermarkText={[profile?.full_name, profile?.index_no].filter(Boolean).join(' · ')}
+            onAskSlide={async (slideNo, qText, anonymous) => {
+              await rpc('forum_post', {
+                p_course: course.id,
+                p_body: `[${reading.title} · Slide ${slideNo}]\n${qText}`,
+                p_anonymous: anonymous,
+              });
+              toast('Question posted to Course Q&A.');
+            }}
             onClose={() => setReading(null)}
           />
         </Suspense>
@@ -467,13 +478,15 @@ function Assignments({ assignments, reload }) {
 const MAX_BYTES = 5 * 1024 * 1024;
 
 function AssignmentCard({ a, reload }) {
-  const { session } = useAuth();
+  const { session, profile } = useAuth();
   const toast = useToast();
   const [act] = useAction();
   const fileRef = useRef(null);
   const [file, setFile] = useState(null);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+  const assignMeta = useMemo(() => parseAssignmentMeta(a), [a]);
+  const mySyndicate = useMemo(() => findStudentSyndicate(assignMeta, profile?.index_no), [assignMeta, profile?.index_no]);
   const s = a.submission;
   const now = Date.now();
   const overdue = a.due_at && new Date(a.due_at).getTime() < now;
@@ -489,7 +502,25 @@ function AssignmentCard({ a, reload }) {
     try {
       const path = `${a.id}/${session.user.id}/${Date.now()}-${safeFileName(file.name)}`;
       const stored = await uploadFile('submissions', path, file);
-      await rpc('submit_assignment', { p_assignment: a.id, p_path: stored, p_name: file.name, p_note: note });
+      if (mySyndicate?.members?.length) {
+        try {
+          await rpc('submit_group_assignment', {
+            p_assignment: a.id,
+            p_path: stored,
+            p_name: file.name,
+            p_note: note,
+            p_member_indexes: mySyndicate.members,
+          });
+        } catch (groupErr) {
+          if (/submit_group_assignment|Could not find|does not exist|schema cache/i.test(groupErr.message || '')) {
+            await rpc('submit_assignment', { p_assignment: a.id, p_path: stored, p_name: file.name, p_note: note });
+          } else {
+            throw groupErr;
+          }
+        }
+      } else {
+        await rpc('submit_assignment', { p_assignment: a.id, p_path: stored, p_name: file.name, p_note: note });
+      }
       toast('Submitted. Well done!');
       setFile(null);
       setNote('');
@@ -527,7 +558,28 @@ function AssignmentCard({ a, reload }) {
         )}
       </div>
 
-      {a.instructions && <p className="pre small" style={{ color: 'var(--text-2)' }}>{a.instructions}</p>}
+      {mySyndicate && (
+        <div className="notice notice-info small row-wrap" style={{ justifyContent: 'space-between', gap: 10 }}>
+          <div className="row" style={{ gap: 8 }}>
+            <Icon name="users" size={16} />
+            <span>
+              <strong>{mySyndicate.name}</strong> · Syndicate Case Study
+              <span className="muted"> ({mySyndicate.members.length} members: <span className="mono">{mySyndicate.members.join(', ')}</span>)</span>
+            </span>
+          </div>
+          <span className="tiny muted">One upload &amp; mark applies to your group</span>
+        </div>
+      )}
+
+      {assignMeta.cleanInstructions && <p className="pre small" style={{ color: 'var(--text-2)' }}>{assignMeta.cleanInstructions}</p>}
+      {assignMeta.rubric.length > 0 && (
+        <div className="row-wrap tiny muted" style={{ gap: 6 }}>
+          <span className="eyebrow">Marking criteria:</span>
+          {assignMeta.rubric.map((c) => (
+            <span key={c.id} className="badge">{c.title} ({fmtNumber(c.maxMarks)})</span>
+          ))}
+        </div>
+      )}
 
       {s && (
         <div className="notice notice-info row-wrap">
@@ -611,7 +663,7 @@ function CACard({ ca, course, profile }) {
     <div className="stack">
       {/* Official Released Final Results Banner */}
       {isExamReleased && (
-        <section className="card stack" style={{ background: 'linear-gradient(135deg, #f0fdfa, #f8fafc)', border: '1px solid #99f6e4' }}>
+        <section className="card stack" style={{ background: 'linear-gradient(135deg, var(--teal-50), var(--surface))', border: '1px solid var(--teal)' }}>
           <div className="between" style={{ flexWrap: 'wrap', gap: 12 }}>
             <div className="stack-sm" style={{ gap: 2 }}>
               <div className="row" style={{ gap: 8, alignItems: 'center' }}>

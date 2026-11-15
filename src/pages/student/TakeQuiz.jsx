@@ -104,7 +104,7 @@ function AntiCameraShield({ text, blurred, onResume }) {
         borderRadius: 8, fontSize: 10, fontWeight: 600, letterSpacing: '0.5px',
         display: 'flex', alignItems: 'center', gap: 6, boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
       }}>
-        <span>🔒 ANTI-CHEAT ACTIVE</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="shield" size={13} /> ANTI-CHEAT ACTIVE</span>
         <span style={{ opacity: 0.6 }}>·</span>
         <span style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{safe}</span>
       </div>
@@ -433,6 +433,7 @@ function Runner({ initial }) {
   ); // question id -> latest value not yet confirmed saved
   const inflight = useRef({});   // question id -> true while saving
   const timers = useRef({});     // debounce timers
+  const typingRef = useRef({});  // passive typing & burst signals for short/essay
 
   // ---------------- Callbacks & functions declared before any effects ----------------
   const recordExit = useCallback(async (kind) => {
@@ -574,6 +575,35 @@ function Runner({ initial }) {
   }, [attempt.id, toast]);
 
   function setAnswer(qid, value, immediate) {
+    const targetQ = questions.find((x) => x.id === qid);
+    if (targetQ && (targetQ.kind === 'short' || targetQ.kind === 'essay') && typeof value === 'string') {
+      const now = Date.now();
+      const prev = typingRef.current[qid] || {
+        firstAt: now,
+        lastAt: now,
+        lastLen: String(answers[qid] || '').length,
+        activeMs: 0,
+        maxBurstChars: 0,
+        burstEvents: 0,
+        editCount: 0,
+      };
+      const dt = Math.max(0, now - prev.lastAt);
+      const deltaChars = Math.max(0, value.length - prev.lastLen);
+      const isBurst = dt <= 1400 && deltaChars >= 35;
+      const nextActiveMs = prev.activeMs + (prev.editCount === 0 ? 0 : Math.min(12000, dt));
+      const words = value.trim().split(/\s+/).filter(Boolean).length;
+      typingRef.current[qid] = {
+        firstAt: prev.firstAt,
+        lastAt: now,
+        lastLen: value.length,
+        activeMs: nextActiveMs,
+        maxBurstChars: Math.max(prev.maxBurstChars, isBurst ? deltaChars : 0),
+        burstEvents: prev.burstEvents + (isBurst ? 1 : 0),
+        editCount: prev.editCount + 1,
+        words,
+        chars: value.length,
+      };
+    }
     setAnswers((a) => ({ ...a, [qid]: value }));
     latest.current[qid] = value;
     upsertQueuedAnswer(attempt.id, qid, value);
@@ -603,6 +633,29 @@ function Runner({ initial }) {
     }
 
     try {
+      const telemetryEntries = Object.entries(typingRef.current);
+      if (telemetryEntries.length > 0) {
+        const compact = {};
+        for (const [qid, t] of telemetryEntries) {
+          const spanSec = Math.max(1, Math.round((t.lastAt - t.firstAt) / 1000));
+          const activeSec = Math.max(1, Math.round((t.activeMs || 0) / 1000));
+          const wpm = activeSec >= 3 && t.words >= 5 ? Math.round((t.words / activeSec) * 60) : null;
+          compact[qid] = {
+            words: t.words || 0,
+            chars: t.chars || 0,
+            activeSec,
+            spanSec,
+            maxBurstChars: t.maxBurstChars || 0,
+            burstEvents: t.burstEvents || 0,
+            wpm,
+          };
+        }
+        try {
+          await rpc('save_typing_telemetry', { p_attempt: attempt.id, p_telemetry: compact });
+        } catch {
+          /* optional telemetry RPC */
+        }
+      }
       const status = await rpc('submit_attempt', { p_attempt: attempt.id });
       clearAnswerQueue(attempt.id);
       setPendingCount(0);
@@ -998,8 +1051,8 @@ function Runner({ initial }) {
                 marginBottom: 16,
                 padding: '10px 16px',
                 borderRadius: 10,
-                background: qRemaining <= 5 ? '#fef2f2' : qRemaining <= 15 ? '#fffbeb' : '#f0fdf4',
-                border: `1.5px solid ${qRemaining <= 5 ? '#ef4444' : qRemaining <= 15 ? '#f59e0b' : '#10b981'}`,
+                background: qRemaining <= 5 ? 'var(--red-50)' : qRemaining <= 15 ? 'var(--amber-50)' : 'var(--teal-50)',
+                border: `1.5px solid ${qRemaining <= 5 ? 'var(--red-ink)' : qRemaining <= 15 ? 'var(--amber-ink)' : 'var(--teal)'}`,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
@@ -1013,18 +1066,18 @@ function Runner({ initial }) {
                   name="clock"
                   size={18}
                   style={{
-                    color: qRemaining <= 5 ? '#ef4444' : qRemaining <= 15 ? '#d97706' : '#15803d',
+                    color: qRemaining <= 5 ? 'var(--red-ink)' : qRemaining <= 15 ? 'var(--amber-ink)' : 'var(--teal-dark)',
                   }}
                 />
                 <div>
                   <strong
                     style={{
                       fontSize: 14,
-                      color: qRemaining <= 5 ? '#b91c1c' : qRemaining <= 15 ? '#b45309' : '#166534',
+                      color: qRemaining <= 5 ? 'var(--red-ink)' : qRemaining <= 15 ? 'var(--amber-ink)' : 'var(--teal-dark)',
                     }}
                   >
                     {qRemaining <= 5
-                      ? '⚠️ Time expiring: '
+                      ? 'Time expiring: '
                       : 'Question Timer: '}
                     {qRemaining}s remaining
                   </strong>
@@ -1077,7 +1130,7 @@ function Runner({ initial }) {
                     lineHeight: 1.75,
                     letterSpacing: '-0.015em',
                     fontWeight: 500,
-                    color: '#0f172a',
+                    color: 'var(--text)',
                     padding: '36px 30px',
                     background: 'var(--surface)',
                     borderRadius: '12px',
@@ -1105,7 +1158,7 @@ function Runner({ initial }) {
                   }}
                 >
                   <div style={{ fontSize: 13, color: 'var(--teal-900, #134e4a)', fontWeight: 600 }}>
-                    🔒 Anti-Camera Security Mode: Answer options are on Screen 2
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="lock" size={14} /> Anti-Camera Security Mode: Answer options are on Screen 2</span>
                   </div>
                   <button
                     type="button"
@@ -1129,7 +1182,7 @@ function Runner({ initial }) {
                   style={{
                     padding: '16px 20px',
                     borderRadius: 10,
-                    background: '#f8fafc',
+                    background: 'var(--surface-2)',
                     border: '1px solid var(--line-2)',
                     display: 'flex',
                     alignItems: 'center',
@@ -1194,7 +1247,7 @@ function Runner({ initial }) {
                   lineHeight: 1.75,
                   letterSpacing: '-0.015em',
                   fontWeight: antiCaptureMode ? 500 : 400,
-                  color: '#0f172a',
+                  color: 'var(--text)',
                   padding: antiCaptureMode ? '36px 30px' : '20px',
                   background: 'var(--surface)',
                   borderRadius: '12px',
@@ -1249,7 +1302,7 @@ function Runner({ initial }) {
                   }}
                 >
                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 999, background: 'rgba(15, 23, 42, 0.06)', color: 'var(--text-2)', fontSize: 12, fontWeight: 700, letterSpacing: '0.04em' }}>
-                    <span>🛡️ ANTI-CAPTURE SECURITY BUFFER</span>
+                    <Icon name="shield" size={13} /><span>ANTI-CAPTURE SECURITY BUFFER</span>
                   </div>
                   <span className="tiny muted">Keep scrolling down to reach your response options ↓</span>
                 </div>
@@ -1422,7 +1475,7 @@ function AnswerInput({ q, value, onChange, onBlur }) {
               }}
             >
               <span className="letter" style={{ borderRadius: 6 }}>
-                {selected ? '☑' : LETTERS[i]}
+                {selected ? <Icon name="check" size={14} /> : LETTERS[i]}
               </span>
               <span>{o.text}</span>
             </button>

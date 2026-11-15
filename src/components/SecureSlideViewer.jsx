@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { getSignedFileUrl } from '../lib/files.js';
 import Icon from './Icon.jsx';
 
-export default function SecureSlideViewer({ material, watermarkText, onClose }) {
+export default function SecureSlideViewer({ material, watermarkText, courseCode, onAskSlide, onClose }) {
   const canvasRef = useRef(null);
   const pdfRef = useRef(null);
   const renderTaskRef = useRef(null);
@@ -14,12 +14,23 @@ export default function SecureSlideViewer({ material, watermarkText, onClose }) 
   const [rendering, setRendering] = useState(false);
   const [error, setError] = useState('');
 
+  // "Ask about this slide" drawer state
+  const [askOpen, setAskOpen] = useState(false);
+  const [question, setQuestion] = useState('');
+  const [anonymous, setAnonymous] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [askErr, setAskErr] = useState('');
+
   // Prevent body scroll & block Save/Print/Copy shortcuts while open
   useEffect(() => {
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
     const onKey = (e) => {
+      if (askOpen) {
+        if (e.key === 'Escape') setAskOpen(false);
+        return;
+      }
       if (e.key === 'Escape') {
         onClose?.();
         return;
@@ -35,7 +46,10 @@ export default function SecureSlideViewer({ material, watermarkText, onClose }) 
       }
     };
 
-    const block = (e) => e.preventDefault();
+    const block = (e) => {
+      if (askOpen) return;
+      e.preventDefault();
+    };
     document.addEventListener('keydown', onKey);
     document.addEventListener('copy', block);
     document.addEventListener('cut', block);
@@ -46,7 +60,7 @@ export default function SecureSlideViewer({ material, watermarkText, onClose }) 
       document.removeEventListener('copy', block);
       document.removeEventListener('cut', block);
     };
-  }, [numPages, onClose]);
+  }, [numPages, onClose, askOpen]);
 
   // Dynamically load pdfjs-dist + fetch PDF bytes into memory
   useEffect(() => {
@@ -111,7 +125,6 @@ export default function SecureSlideViewer({ material, watermarkText, onClose }) 
     if (!doc || !canvas || !page || loading) return;
 
     let cancelled = false;
-
     async function renderPage() {
       setRendering(true);
       try {
@@ -120,7 +133,6 @@ export default function SecureSlideViewer({ material, watermarkText, onClose }) 
         } catch {
           // ignore
         }
-
         const pdfPage = await doc.getPage(page);
         if (cancelled) return;
 
@@ -171,13 +183,31 @@ export default function SecureSlideViewer({ material, watermarkText, onClose }) 
     };
   }, [page, scale, loading, watermarkText]);
 
+  async function submitQuestion(e) {
+    e?.preventDefault();
+    if (!onAskSlide || question.trim().length < 3 || sending) return;
+    setSending(true);
+    setAskErr('');
+    try {
+      await onAskSlide(page, question.trim(), anonymous);
+      setQuestion('');
+      setAskOpen(false);
+    } catch (err) {
+      setAskErr(err.message || 'Could not post question.');
+    } finally {
+      setSending(false);
+    }
+  }
+
   return (
     <div
       className="secure-reader-backdrop"
       role="dialog"
       aria-modal="true"
       aria-label={`Read-only viewer: ${material.title}`}
-      onContextMenu={(e) => e.preventDefault()}
+      onContextMenu={(e) => {
+        if (!askOpen) e.preventDefault();
+      }}
       onDragStart={(e) => e.preventDefault()}
     >
       <header className="secure-reader-bar">
@@ -205,7 +235,7 @@ export default function SecureSlideViewer({ material, watermarkText, onClose }) 
               >
                 <Icon name="chevronLeft" size={18} />
               </button>
-              <span className="mono small" style={{ minWidth: 86, textAlign: 'center', color: '#e2e8f0' }}>
+              <span className="mono small" style={{ minWidth: 74, textAlign: 'center', color: '#e2e8f0' }}>
                 {page} / {numPages}
               </span>
               <button
@@ -243,6 +273,20 @@ export default function SecureSlideViewer({ material, watermarkText, onClose }) 
               +
             </button>
           </div>
+
+          {onAskSlide && !loading && !error && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              style={{ background: '#0d9488', color: '#fff', borderColor: '#0d9488' }}
+              onClick={() => {
+                setAskErr('');
+                setAskOpen(true);
+              }}
+            >
+              <Icon name="chat" size={15} /> Ask about slide {page}
+            </button>
+          )}
 
           <button type="button" className="icon-btn-dark" onClick={onClose} aria-label="Close reader">
             <Icon name="close" size={20} />
@@ -299,6 +343,82 @@ export default function SecureSlideViewer({ material, watermarkText, onClose }) 
             Next <Icon name="chevronRight" size={16} />
           </button>
         </footer>
+      )}
+
+      {askOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 95,
+            background: 'rgba(9, 14, 23, 0.72)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 16,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !sending) setAskOpen(false);
+          }}
+        >
+          <form
+            onSubmit={submitQuestion}
+            className="card stack"
+            style={{
+              width: '100%',
+              maxWidth: 480,
+              userSelect: 'text',
+              WebkitUserSelect: 'text',
+            }}
+          >
+            <div className="between">
+              <div>
+                <span className="eyebrow" style={{ color: 'var(--teal-dark)' }}>
+                  {courseCode ? `${courseCode} · ` : ''}Course Q&amp;A
+                </span>
+                <h2 style={{ marginTop: 2 }}>Ask about Slide {page}</h2>
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="Close question box"
+                onClick={() => !sending && setAskOpen(false)}
+              >
+                <Icon name="close" size={18} />
+              </button>
+            </div>
+
+            <div className="notice notice-info small" style={{ padding: '8px 12px' }}>
+              Tagged automatically with <strong>[{material.title} · Slide {page}]</strong> so your lecturer and classmates know which slide you mean.
+            </div>
+
+            {askErr && <div className="notice notice-error small">{askErr}</div>}
+
+            <textarea
+              className="textarea"
+              style={{ minHeight: 110 }}
+              maxLength={1800}
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder={`What part of Slide ${page} would you like clarified?`}
+              autoFocus
+            />
+
+            <label className="check small">
+              <input type="checkbox" checked={anonymous} onChange={(e) => setAnonymous(e.target.checked)} />
+              Hide my name from classmates (lecturer can always see who asked)
+            </label>
+
+            <div className="row" style={{ justifyContent: 'flex-end', gap: 10 }}>
+              <button type="button" className="btn" onClick={() => setAskOpen(false)} disabled={sending}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={sending || question.trim().length < 3}>
+                {sending ? 'Posting…' : 'Post to Q&A'}
+              </button>
+            </div>
+          </form>
+        </div>
       )}
     </div>
   );

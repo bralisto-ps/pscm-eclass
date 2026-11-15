@@ -106,7 +106,7 @@ export default function Messages({ course, isLecturer, studentIndex, studentName
       )}
 
       {list.map((m) => (
-        <div key={m.id} className="card stack-sm" style={{ borderLeft: m.reply ? '4px solid var(--teal)' : '4px solid var(--amber)' }}>
+        <div key={m.id} className="card stack-sm" style={{ borderColor: m.reply ? 'var(--line)' : 'var(--amber)' }}>
           <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
             <div className="row" style={{ gap: 8 }}>
               {isLecturer && (

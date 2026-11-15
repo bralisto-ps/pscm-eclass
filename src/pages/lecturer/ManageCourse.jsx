@@ -150,7 +150,7 @@ function SettingsTab({ course, reload }) {
         <div><button type="button" className="btn" onClick={toggleArchive} disabled={busy}>{course.archived ? 'Restore course' : 'Archive course'}</button></div>
       </section>
 
-      <section className="card stack" style={{ borderColor: '#efc2b8' }}>
+      <section className="card stack" style={{ borderColor: 'var(--red-ink)' }}>
         <h2>Delete course</h2>
         <p className="small muted">
           Permanently deletes the course with all its materials, quizzes, attempts, assignments and grades. This cannot be undone —
