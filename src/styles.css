@@ -1,77 +1,77 @@
 :root {
-  --ink: #090e17;
-  --ink-2: #121c2d;
-  --ink-3: #1a273e;
-  --ground: #f8fafc;
+  --ink: #0b1322;
+  --ink-2: #142038;
+  --ink-3: #1e2f4f;
+  --ground: #f4f5f7;
   --surface: #ffffff;
-  --surface-2: #f1f5f9;
-  --surface-hover: #f8fafc;
-  --topbar-bg: rgba(255, 255, 255, 0.88);
-  --line: #e2e8f0;
-  --line-2: #f1f5f9;
-  --field: #cbd5e1;
+  --surface-2: #eef1f5;
+  --surface-hover: #f7f8fb;
+  --topbar-bg: rgba(255, 255, 255, 0.9);
+  --line: #dfe4ec;
+  --line-2: #edf0f5;
+  --field: #c5cdd8;
   --text: #0f172a;
   --text-2: #334155;
   --muted: #64748b;
-  --teal: #0d9488;
-  --teal-dark: #0f766e;
-  --teal-50: #f0fdfa;
-  --amber: #d97706;
-  --amber-50: #fffbeb;
+  --teal: #0b7a6f;
+  --teal-dark: #075e56;
+  --teal-50: #ecfdf8;
+  --amber: #c26d08;
+  --amber-50: #fef7ec;
   --amber-ink: #92400e;
   --red-50: #fef2f2;
   --red-ink: #b91c1c;
-  --blue-50: #eff6ff;
-  --blue-ink: #1d4ed8;
-  --plum-50: #faf5ff;
-  --plum-ink: #6b21a8;
-  --grey-50: #f1f5f9;
-  --track: #e2e8f0;
+  --blue-50: #eef4ff;
+  --blue-ink: #1e40af;
+  --plum-50: #f5f0ff;
+  --plum-ink: #6d28d9;
+  --grey-50: #eef1f5;
+  --track: #e1e6ee;
   --radius: 12px;
   --radius-sm: 8px;
   --sans: 'Plus Jakarta Sans', 'IBM Plex Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --serif: 'Fraunces', Georgia, 'Times New Roman', serif;
   --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
-  --shadow: 0 12px 28px -6px rgba(15, 23, 42, 0.09), 0 6px 12px -4px rgba(15, 23, 42, 0.04);
-  --shadow-sm: 0 1px 3px 0 rgba(15, 23, 42, 0.04), 0 1px 2px -1px rgba(15, 23, 42, 0.03);
-  --shadow-hover: 0 8px 20px -6px rgba(15, 23, 42, 0.08), 0 2px 6px -2px rgba(15, 23, 42, 0.04);
+  --shadow: 0 12px 28px -6px rgba(11, 19, 34, 0.1), 0 6px 12px -4px rgba(11, 19, 34, 0.05);
+  --shadow-sm: 0 1px 3px 0 rgba(11, 19, 34, 0.04), 0 1px 2px -1px rgba(11, 19, 34, 0.03);
+  --shadow-hover: 0 12px 24px -8px rgba(11, 19, 34, 0.12), 0 4px 10px -4px rgba(11, 19, 34, 0.05);
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
-  --shimmer-a: #e2e8f0;
-  --shimmer-b: #f1f5f9;
+  --shimmer-a: #e2e6ee;
+  --shimmer-b: #eef1f5;
 }
 
 html.dark {
-  --ink: #070b14;
-  --ink-2: #111a2e;
-  --ink-3: #1b2842;
-  --ground: #0b1120;
-  --surface: #111a2e;
-  --surface-2: #16223a;
-  --surface-hover: #1a2844;
-  --topbar-bg: rgba(17, 26, 46, 0.88);
-  --line: #22304a;
-  --line-2: #1a263e;
-  --field: #334155;
+  --ink: #070c16;
+  --ink-2: #101a2e;
+  --ink-3: #182742;
+  --ground: #090f1d;
+  --surface: #101a2e;
+  --surface-2: #16233d;
+  --surface-hover: #1b2b4a;
+  --topbar-bg: rgba(16, 26, 46, 0.9);
+  --line: #21314f;
+  --line-2: #192640;
+  --field: #324466;
   --text: #f1f5f9;
   --text-2: #cbd5e1;
   --muted: #94a3b8;
   --teal: #14b8a6;
   --teal-dark: #2dd4bf;
-  --teal-50: rgba(20, 184, 166, 0.14);
+  --teal-50: rgba(20, 184, 166, 0.15);
   --amber: #f59e0b;
-  --amber-50: rgba(245, 158, 11, 0.14);
-  --amber-ink: #fcd34d;
+  --amber-50: rgba(245, 158, 11, 0.15);
+  --amber-ink: #fbbf24;
   --red-50: rgba(239, 68, 68, 0.15);
   --red-ink: #fca5a5;
-  --blue-50: rgba(59, 130, 246, 0.15);
+  --blue-50: rgba(59, 130, 246, 0.16);
   --blue-ink: #93c5fd;
   --plum-50: rgba(168, 85, 247, 0.16);
   --plum-ink: #d8b4fe;
-  --grey-50: #1a263e;
-  --track: #22304a;
+  --grey-50: #18253e;
+  --track: #21314f;
   --shadow: 0 16px 36px -8px rgba(0, 0, 0, 0.55), 0 8px 16px -6px rgba(0, 0, 0, 0.35);
   --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.28);
-  --shadow-hover: 0 10px 24px -6px rgba(0, 0, 0, 0.48), 0 4px 10px -4px rgba(0, 0, 0, 0.32);
+  --shadow-hover: 0 12px 28px -6px rgba(0, 0, 0, 0.52), 0 4px 10px -4px rgba(0, 0, 0, 0.32);
   --shimmer-a: #1a263e;
   --shimmer-b: #243352;
 }
@@ -130,7 +130,7 @@ button { font: inherit; }
   display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; color: #fff;
   flex-shrink: 0;
 }
-.brand-name { font-weight: 700; font-size: 16px; line-height: 1.2; letter-spacing: -0.02em; }
+.brand-name { font-family: var(--serif); font-weight: 600; font-size: 17px; line-height: 1.15; letter-spacing: -0.015em; }
 .brand-sub { font-size: 11px; color: #94a3b8; letter-spacing: 0.03em; margin-top: 2px; }
 
 .nav-link {
@@ -229,8 +229,9 @@ button { font: inherit; }
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 14px 18px; border-bottom: 1px solid var(--line-2);
 }
-.card h2, .card-flush h2 { font-size: 16px; font-weight: 600; }
-.section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.card h2, .card-flush h2 { font-family: var(--serif); font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
+.section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.section-title h2 { font-family: var(--serif); font-size: 21px; font-weight: 600; letter-spacing: -0.02em; }
 .eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .list-row {
   display: flex; align-items: center; gap: 14px; padding: 13px 18px; border-top: 1px solid var(--line-2); color: var(--text);
@@ -316,6 +317,103 @@ button.list-row { width: 100%; border-left: 0; border-right: 0; border-bottom: 0
   right: 0;
   height: 4px;
 }
+
+.course-card-ed {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), border-color 0.18s var(--ease);
+}
+.course-card-ed:hover {
+  transform: translateY(-2px);
+  border-color: var(--field);
+  box-shadow: var(--shadow-hover);
+  text-decoration: none;
+  color: var(--text);
+}
+.course-card-band {
+  position: relative;
+  padding: 18px 20px 16px;
+  color: #fff;
+  background-image:
+    radial-gradient(circle at 92% 8%, rgba(255, 255, 255, 0.2), transparent 52%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.06) 0%, rgba(0, 0, 0, 0.24) 100%);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+}
+.course-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+}
+.course-card-title {
+  font-family: var(--serif);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.24;
+  letter-spacing: -0.02em;
+  color: #fff;
+  margin-top: 6px;
+  text-wrap: balance;
+}
+.course-card-body {
+  padding: 16px 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  justify-content: space-between;
+}
+.course-card-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-2);
+}
+.course-card-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.course-card-stat .num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--text);
+}
+.course-card-stat .lbl {
+  font-size: 12px;
+  color: var(--muted);
+}
+.course-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.course-card-cta {
+  font-weight: 600;
+  color: var(--teal-dark);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.course-card-ed:hover .course-card-cta {
+  color: var(--teal);
+}
 .swatch {
   width: 42px; height: 42px; border-radius: 10px; flex-shrink: 0; display: flex; align-items: center;
   justify-content: center; font-size: 13px; font-weight: 700; color: #fff;
@@ -335,6 +433,9 @@ button.list-row { width: 100%; border-left: 0; border-right: 0; border-bottom: 0
 .kpi-icon.amber { background: var(--amber-50); color: var(--amber-ink); }
 .kpi-icon.blue { background: var(--blue-50); color: var(--blue-ink); }
 .kpi-icon.red { background: var(--red-50); color: var(--red-ink); }
+.kpi-icon.plum { background: var(--plum-50); color: var(--plum-ink); }
+.kpi { transition: border-color 0.16s var(--ease), box-shadow 0.16s var(--ease); }
+.kpi:hover { border-color: var(--field); }
 .kpi .v {
   font-family: var(--mono); font-size: 26px; font-weight: 600; line-height: 1.1;
   letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--text);

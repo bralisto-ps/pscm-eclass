@@ -5,10 +5,10 @@ import { useAuth } from '../../lib/auth.jsx';
 import { buildDeadlinesIcs, googleCalendarUrl } from '../../lib/calendar.js';
 import { downloadText } from '../../lib/sheets.js';
 import { rpc, run, supabase } from '../../lib/supabase.js';
-import { dayChip, fmtDateTime, greeting, initials, relative } from '../../lib/format.js';
+import { dayChip, fmtDateTime, greeting, relative } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
-import { DashboardSkeleton, Empty, ErrorNote, Swatch, useLoad, useToast } from '../../components/ui.jsx';
+import { DashboardSkeleton, Empty, ErrorNote, useLoad, useToast } from '../../components/ui.jsx';
 
 function describe(item) {
   if (item.kind === 'quiz') {
@@ -130,18 +130,27 @@ export default function StudentHome() {
                   <div className="grid-2">
                     {data.courses.map((c) => {
                       const next = data.upcoming.find((u) => u.course_id === c.id);
+                      const urgent = next && urgencyBucket(next.due) === 'urgent';
                       return (
-                        <Link key={c.id} to={`/course/${c.id}`} className="course-tile">
-                          <div className="course-accent-bar" style={{ background: c.color }} />
-                          <Swatch color={c.color} text={initials(c.title)} />
-                          <div className="stack-sm" style={{ minWidth: 0, flex: 1, gap: 4, paddingTop: 2 }}>
-                            <div className="between" style={{ alignItems: 'flex-start', gap: 8 }}>
-                              <span className="strong">{c.title}</span>
-                              <span className="mono tiny muted nowrap">{c.code}</span>
+                        <Link key={c.id} to={`/course/${c.id}`} className="course-card-ed">
+                          <div className="course-card-band" style={{ backgroundColor: c.color }}>
+                            <div className="course-card-meta">
+                              <span className="mono">{c.code}{c.semester ? ` · ${c.semester}` : ''}</span>
+                              {next && (
+                                <span className="nowrap" style={{ color: urgent ? '#fde68a' : 'rgba(255,255,255,0.9)', fontWeight: 500 }}>
+                                  {relative(next.due)}
+                                </span>
+                              )}
                             </div>
-                            <span className="small muted">
-                              {next ? `Next: ${next.title} · ${relative(next.due)}` : c.semester || 'No upcoming deadlines'}
-                            </span>
+                            <div className="course-card-title">{c.title}</div>
+                          </div>
+                          <div className="course-card-body" style={{ padding: '14px 20px' }}>
+                            <div className="course-card-foot">
+                              <span style={{ color: urgent ? 'var(--amber-ink)' : 'var(--muted)', fontWeight: urgent ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {next ? `Next: ${next.title}` : 'All upcoming work completed'}
+                              </span>
+                              <span className="course-card-cta">Open <Icon name="chevronRight" size={14} /></span>
+                            </div>
                           </div>
                         </Link>
                       );

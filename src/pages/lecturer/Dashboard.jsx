@@ -26,6 +26,12 @@ export default function Dashboard() {
     { students: 0, activated: 0, toMark: 0, quizzes: 0 },
   );
   const activatedPct = totals.students ? Math.round((totals.activated / totals.students) * 100) : 0;
+  const priorityCourse = [...courses].sort((a, b) => (b.to_mark || 0) - (a.to_mark || 0))[0] || null;
+  const todayChip = {
+    day: new Date().toLocaleDateString('en-GB', { weekday: 'short' }).toUpperCase(),
+    date: new Date().getDate(),
+    month: new Date().toLocaleDateString('en-GB', { month: 'short' }).toUpperCase(),
+  };
 
   return (
     <>
@@ -52,50 +58,66 @@ export default function Dashboard() {
         <ErrorNote error={error} onRetry={reload} />
         {data && (
           <>
+            {courses.length > 0 && (
+              <section className="hero" aria-label="Faculty overview">
+                <div className="date-block">
+                  <span className="tiny strong" style={{ color: '#fcd34d', letterSpacing: '0.08em' }}>{todayChip.day}</span>
+                  <span className="d">{todayChip.date}</span>
+                  <span className="tiny" style={{ color: '#94a3b8' }}>{todayChip.month}</span>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }} className="stack-sm">
+                  <span className="kicker">
+                    {totals.toMark > 0 ? `Marking queue · ${priorityCourse?.code}` : 'Faculty overview'}
+                  </span>
+                  <span className="title">
+                    {totals.toMark > 0
+                      ? `${totals.toMark} submission${totals.toMark === 1 ? '' : 's'} waiting for review`
+                      : 'All coursework and assessments are up to date'}
+                  </span>
+                  <span className="meta">
+                    {courses.length} active course{courses.length === 1 ? '' : 's'} · {totals.students.toLocaleString()} enrolled students · {activatedPct}% activated
+                  </span>
+                </div>
+                {priorityCourse && (
+                  <Link
+                    to={totals.toMark > 0 ? `/teach/course/${priorityCourse.id}?tab=assignments` : `/teach/course/${priorityCourse.id}`}
+                    className="btn btn-light"
+                  >
+                    {totals.toMark > 0 ? `Review ${priorityCourse.code}` : `Open ${priorityCourse.code}`}
+                  </Link>
+                )}
+              </section>
+            )}
+
             <section className="grid-4" aria-label="Summary">
               <div className="kpi">
                 <div className="kpi-head">
                   <span className="l">Active courses</span>
-                  <span className="kpi-icon" style={{ background: 'var(--teal-50)', color: 'var(--teal-dark)' }}>
-                    <Icon name="book" size={15} />
-                  </span>
+                  <span className="kpi-icon"><Icon name="book" size={15} /></span>
                 </div>
                 <span className="v">{courses.length}</span>
                 <span className="kpi-sub">{totals.quizzes} {totals.quizzes === 1 ? 'quiz' : 'quizzes'} created</span>
               </div>
-
               <div className="kpi">
                 <div className="kpi-head">
                   <span className="l">Enrolments</span>
-                  <span className="kpi-icon" style={{ background: 'var(--blue-50)', color: 'var(--blue-ink)' }}>
-                    <Icon name="users" size={15} />
-                  </span>
+                  <span className="kpi-icon blue"><Icon name="users" size={15} /></span>
                 </div>
                 <span className="v">{totals.students.toLocaleString()}</span>
                 <span className="kpi-sub">Across {courses.length} {courses.length === 1 ? 'course' : 'courses'}</span>
               </div>
-
               <div className="kpi">
                 <div className="kpi-head">
                   <span className="l">Accounts activated</span>
-                  <span className="kpi-icon" style={{ background: 'var(--teal-50)', color: 'var(--teal-dark)' }}>
-                    <Icon name="check" size={15} />
-                  </span>
+                  <span className="kpi-icon plum"><Icon name="check" size={15} /></span>
                 </div>
                 <span className="v">{activatedPct}%</span>
                 <span className="kpi-sub">{totals.activated.toLocaleString()} of {totals.students.toLocaleString()} students</span>
               </div>
-
               <div className="kpi">
                 <div className="kpi-head">
                   <span className="l">Waiting for marking</span>
-                  <span
-                    className="kpi-icon"
-                    style={{
-                      background: totals.toMark ? 'var(--amber-50)' : 'var(--grey-50)',
-                      color: totals.toMark ? 'var(--amber-ink)' : 'var(--muted)',
-                    }}
-                  >
+                  <span className={`kpi-icon ${totals.toMark ? 'amber' : ''}`} style={!totals.toMark ? { background: 'var(--grey-50)', color: 'var(--muted)' } : undefined}>
                     <Icon name="clock" size={15} />
                   </span>
                 </div>
@@ -145,7 +167,7 @@ export default function Dashboard() {
                       <div className="course-accent-bar" style={{ background: c.color }} />
                       <Swatch color={c.color} text={initials(c.title)} size={34} />
                       <span className="stack-sm" style={{ gap: 2 }}>
-                        <span className="strong small">{c.title}</span>
+                        <span className="strong small" style={{ fontFamily: 'var(--serif)', fontSize: 15 }}>{c.title}</span>
                         <span className="mono tiny muted">{c.code}</span>
                       </span>
                     </Link>
@@ -166,28 +188,32 @@ export default function Dashboard() {
 function CourseCard({ c }) {
   const activePct = c.students ? Math.round((c.activated / c.students) * 100) : 0;
   return (
-    <Link to={`/teach/course/${c.id}`} className="course-tile" style={{ flexDirection: 'column', gap: 14 }}>
-      <div className="course-accent-bar" style={{ background: c.color }} />
-      <div className="row" style={{ width: '100%', paddingTop: 2 }}>
-        <Swatch color={c.color} text={initials(c.title)} />
-        <div className="stack-sm" style={{ gap: 2, flex: 1, minWidth: 0 }}>
-          <span className="strong" style={{ fontSize: 16 }}>{c.title}</span>
-          <span className="mono tiny muted">{c.code}{c.semester ? ` · ${c.semester}` : ''}</span>
+    <Link to={`/teach/course/${c.id}`} className="course-card-ed">
+      <div className="course-card-band" style={{ backgroundColor: c.color }}>
+        <div className="course-card-meta">
+          <span className="mono">{c.code}{c.semester ? ` · ${c.semester}` : ''}</span>
+          {c.to_mark > 0 && (
+            <span className="strong nowrap" style={{ color: '#fde68a' }}>
+              {c.to_mark} to mark
+            </span>
+          )}
         </div>
-        {c.to_mark > 0 && (
-          <span className="small strong nowrap" style={{ color: 'var(--amber-ink)' }}>
-            {c.to_mark} to mark
-          </span>
-        )}
+        <div className="course-card-title">{c.title}</div>
       </div>
-      <div className="grid-3" style={{ width: '100%', gap: 8, paddingTop: 2 }}>
-        <Mini v={c.students} l="students" />
-        <Mini v={c.materials} l="materials" />
-        <Mini v={c.quizzes} l="quizzes" />
-      </div>
-      <div style={{ width: '100%' }} className="stack-sm">
-        <Bar value={activePct} color={c.color} />
-        <span className="tiny muted">{c.activated} of {c.students} students activated ({activePct}%)</span>
+
+      <div className="course-card-body">
+        <div className="course-card-stats">
+          <Mini v={c.students} l="Students" />
+          <Mini v={c.materials} l="Materials" />
+          <Mini v={c.quizzes} l="Quizzes" />
+        </div>
+        <div className="stack-sm" style={{ gap: 8 }}>
+          <Bar value={activePct} color={c.color} />
+          <div className="course-card-foot">
+            <span>{c.activated} of {c.students} activated ({activePct}%)</span>
+            <span className="course-card-cta">Manage <Icon name="chevronRight" size={14} /></span>
+          </div>
+        </div>
       </div>
     </Link>
   );
@@ -195,9 +221,9 @@ function CourseCard({ c }) {
 
 function Mini({ v, l }) {
   return (
-    <div className="stack-sm" style={{ gap: 0 }}>
-      <span className="mono strong" style={{ fontSize: 20 }}>{Number(v).toLocaleString()}</span>
-      <span className="tiny muted">{l}</span>
+    <div className="course-card-stat">
+      <span className="num">{Number(v).toLocaleString()}</span>
+      <span className="lbl">{l}</span>
     </div>
   );
 }
@@ -286,9 +312,9 @@ export function CourseForm({ course, onClose, onSaved }) {
             />
             Any colour
           </label>
-          <div style={{ flex: 1, minWidth: 180, background: f.color, color: '#fff', borderRadius: 8, padding: '10px 14px' }}>
-            <div className="mono tiny" style={{ opacity: 0.85 }}>{f.code.trim().toUpperCase() || 'SCM 101'}</div>
-            <strong>{f.title.trim() || 'Course title'}</strong>
+          <div className="course-card-band" style={{ flex: 1, minWidth: 180, backgroundColor: f.color, borderRadius: 8, padding: '12px 16px' }}>
+            <div className="mono tiny" style={{ opacity: 0.88 }}>{f.code.trim().toUpperCase() || 'SCM 101'}</div>
+            <div className="course-card-title" style={{ fontSize: 17, marginTop: 3 }}>{f.title.trim() || 'Course title'}</div>
           </div>
         </div>
         {tooLight && <span className="small" style={{ color: 'var(--red-ink)' }}>This colour is too light for the white heading text. Pick a darker shade.</span>}
