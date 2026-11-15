@@ -26,18 +26,27 @@ export default function Dashboard() {
     { students: 0, activated: 0, toMark: 0, quizzes: 0 },
   );
   const activatedPct = totals.students ? Math.round((totals.activated / totals.students) * 100) : 0;
-  const priorityCourse = [...courses].sort((a, b) => (b.to_mark || 0) - (a.to_mark || 0))[0] || null;
+  const markingCourses = [...courses].filter((c) => (c.to_mark || 0) > 0).sort((a, b) => (b.to_mark || 0) - (a.to_mark || 0));
+  const priorityCourse = markingCourses[0] || courses[0] || null;
+  const activationWatch = [...courses]
+    .filter((c) => c.students > 0)
+    .sort((a, b) => (a.activated / a.students) - (b.activated / b.students))
+    .slice(0, 5);
+
   const todayChip = {
     day: new Date().toLocaleDateString('en-GB', { weekday: 'short' }).toUpperCase(),
     date: new Date().getDate(),
     month: new Date().toLocaleDateString('en-GB', { month: 'short' }).toUpperCase(),
   };
 
+  const facultyName =
+    (isTA ? (profile.full_name || '').split(' ')[0] : (profile.full_name || '').split(' ').slice(-1)[0]) || 'Lecturer';
+
   return (
     <>
       <Topbar
-        title={`${greeting()}, ${(isTA ? (profile.full_name || '').split(' ')[0] : (profile.full_name || '').split(' ').slice(-1)[0]) || 'Lecturer'}`}
-        sub={isTA ? 'Teaching assistant' : 'Lecturer dashboard'}
+        title={`${greeting()}, ${facultyName}`}
+        sub={isTA ? 'Teaching assistant' : 'Faculty dashboard'}
       >
         {!isTA && (
           <div className="row-wrap" style={{ gap: 8 }}>
@@ -69,13 +78,13 @@ export default function Dashboard() {
                   <span className="kicker">
                     {totals.toMark > 0 ? `Marking queue · ${priorityCourse?.code}` : 'Faculty overview'}
                   </span>
-                  <span className="title">
+                  <span className="title" style={{ fontSize: 24 }}>
                     {totals.toMark > 0
-                      ? `${totals.toMark} submission${totals.toMark === 1 ? '' : 's'} waiting for review`
-                      : 'All coursework and assessments are up to date'}
+                      ? `${totals.toMark} submission${totals.toMark === 1 ? '' : 's'} awaiting marking`
+                      : 'All coursework and quizzes are up to date'}
                   </span>
                   <span className="meta">
-                    {courses.length} active course{courses.length === 1 ? '' : 's'} · {totals.students.toLocaleString()} enrolled students · {activatedPct}% activated
+                    {courses.length} active course{courses.length === 1 ? '' : 's'} · {totals.students.toLocaleString()} students · {totals.quizzes} quizzes · {activatedPct}% portal activated
                   </span>
                 </div>
                 {priorityCourse && (
@@ -83,7 +92,7 @@ export default function Dashboard() {
                     to={totals.toMark > 0 ? `/teach/course/${priorityCourse.id}?tab=assignments` : `/teach/course/${priorityCourse.id}`}
                     className="btn btn-light"
                   >
-                    {totals.toMark > 0 ? `Review ${priorityCourse.code}` : `Open ${priorityCourse.code}`}
+                    {totals.toMark > 0 ? `Mark ${priorityCourse.code}` : `Open ${priorityCourse.code}`}
                   </Link>
                 )}
               </section>
@@ -96,7 +105,7 @@ export default function Dashboard() {
                   <span className="kpi-icon"><Icon name="book" size={15} /></span>
                 </div>
                 <span className="v">{courses.length}</span>
-                <span className="kpi-sub">{totals.quizzes} {totals.quizzes === 1 ? 'quiz' : 'quizzes'} created</span>
+                <span className="kpi-sub">{totals.quizzes} {totals.quizzes === 1 ? 'quiz' : 'quizzes'} published</span>
               </div>
               <div className="kpi">
                 <div className="kpi-head">
@@ -122,7 +131,7 @@ export default function Dashboard() {
                   </span>
                 </div>
                 <span className="v" style={{ color: totals.toMark ? 'var(--amber-ink)' : undefined }}>{totals.toMark}</span>
-                <span className="kpi-sub">{totals.toMark ? 'Pending review' : 'All caught up'}</span>
+                <span className="kpi-sub">{totals.toMark ? 'Submissions to review' : 'All caught up'}</span>
               </div>
             </section>
 
@@ -147,15 +156,63 @@ export default function Dashboard() {
                 </div>
               </div>
             ) : (
-              <section>
-                <div className="section-title">
-                  <h2>Your courses</h2>
-                  <span className="small muted">{courses.length} active</span>
-                </div>
-                <div className="grid-2">
-                  {courses.map((c) => <CourseCard key={c.id} c={c} />)}
-                </div>
-              </section>
+              <div className="two-col">
+                <main className="stack">
+                  <div className="section-title" style={{ marginBottom: 0 }}>
+                    <h2>Your courses</h2>
+                    <span className="small muted">{courses.length} active</span>
+                  </div>
+                  <div className="grid-2">
+                    {courses.map((c) => <CourseCard key={c.id} c={c} isTA={isTA} />)}
+                  </div>
+                </main>
+
+                <aside className="stack">
+                  <section className="card-flush">
+                    <div className="card-head">
+                      <h2>Marking queue</h2>
+                      <span className="small muted mono">{totals.toMark} pending</span>
+                    </div>
+                    {markingCourses.length === 0 ? (
+                      <div style={{ padding: '18px' }} className="small muted">
+                        All assignment submissions and manual quiz questions are marked.
+                      </div>
+                    ) : (
+                      markingCourses.map((c) => (
+                        <Link key={c.id} to={`/teach/course/${c.id}?tab=assignments`} className="list-row">
+                          <span className="nav-course-dot" style={{ background: c.color, width: 12, height: 12 }} />
+                          <div className="list-main">
+                            <span className="title">{c.title}</span>
+                            <span className="tiny muted">{c.code} · {c.students} students</span>
+                          </div>
+                          <span className="mono strong small" style={{ color: 'var(--amber-ink)' }}>
+                            {c.to_mark}
+                          </span>
+                        </Link>
+                      ))
+                    )}
+                  </section>
+
+                  <section className="card-flush">
+                    <div className="card-head">
+                      <h2>Cohort activation</h2>
+                      <span className="small muted mono">{activatedPct}%</span>
+                    </div>
+                    {activationWatch.map((c) => {
+                      const pctVal = c.students ? Math.round((c.activated / c.students) * 100) : 0;
+                      return (
+                        <Link key={c.id} to={`/teach/course/${c.id}?tab=students`} className="list-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+                          <div className="between">
+                            <span className="small strong">{c.code}</span>
+                            <span className="mono tiny muted">{c.activated}/{c.students} ({pctVal}%)</span>
+                          </div>
+                          <Bar value={pctVal} color={c.color} />
+                        </Link>
+                      );
+                    })}
+                  </section>
+                </aside>
+              </div>
             )}
 
             {archived.length > 0 && (
@@ -178,28 +235,29 @@ export default function Dashboard() {
           </>
         )}
       </div>
-
       {creating && <CourseForm onClose={() => setCreating(false)} />}
       {cloning && <CloneCourseModal courses={data || []} onClose={() => setCloning(false)} />}
     </>
   );
 }
 
-function CourseCard({ c }) {
+function CourseCard({ c, isTA }) {
   const activePct = c.students ? Math.round((c.activated / c.students) * 100) : 0;
   return (
-    <Link to={`/teach/course/${c.id}`} className="course-card-ed">
-      <div className="course-card-band" style={{ backgroundColor: c.color }}>
-        <div className="course-card-meta">
-          <span className="mono">{c.code}{c.semester ? ` · ${c.semester}` : ''}</span>
-          {c.to_mark > 0 && (
-            <span className="strong nowrap" style={{ color: '#fde68a' }}>
-              {c.to_mark} to mark
-            </span>
-          )}
+    <article className="course-card-ed">
+      <Link to={`/teach/course/${c.id}`} className="course-card-band-link">
+        <div className="course-card-band" style={{ backgroundColor: c.color }}>
+          <div className="course-card-meta">
+            <span className="mono">{c.code}{c.semester ? ` · ${c.semester}` : ''}</span>
+            {c.to_mark > 0 && (
+              <span className="strong nowrap" style={{ color: '#fde68a' }}>
+                {c.to_mark} to mark
+              </span>
+            )}
+          </div>
+          <div className="course-card-title">{c.title}</div>
         </div>
-        <div className="course-card-title">{c.title}</div>
-      </div>
+      </Link>
 
       <div className="course-card-body">
         <div className="course-card-stats">
@@ -207,15 +265,36 @@ function CourseCard({ c }) {
           <Mini v={c.materials} l="Materials" />
           <Mini v={c.quizzes} l="Quizzes" />
         </div>
-        <div className="stack-sm" style={{ gap: 8 }}>
+        <div className="stack-sm" style={{ gap: 6 }}>
           <Bar value={activePct} color={c.color} />
           <div className="course-card-foot">
             <span>{c.activated} of {c.students} activated ({activePct}%)</span>
-            <span className="course-card-cta">Manage <Icon name="chevronRight" size={14} /></span>
+            <Link to={`/teach/course/${c.id}`} className="course-card-cta">
+              Open <Icon name="chevronRight" size={14} />
+            </Link>
           </div>
         </div>
+        <div className="course-card-links">
+          <Link to={`/teach/course/${c.id}?tab=students`}>Students</Link>
+          <span className="muted" aria-hidden="true">·</span>
+          {!isTA && (
+            <>
+              <Link to={`/teach/course/${c.id}?tab=materials`}>Materials</Link>
+              <span className="muted" aria-hidden="true">·</span>
+            </>
+          )}
+          <Link to={`/teach/course/${c.id}?tab=assignments`}>Assignments</Link>
+          <span className="muted" aria-hidden="true">·</span>
+          <Link to={`/teach/course/${c.id}?tab=quizzes`}>Quizzes</Link>
+          {!isTA && (
+            <>
+              <span className="muted" aria-hidden="true">·</span>
+              <Link to={`/teach/course/${c.id}?tab=ca`}>CA &amp; Grades</Link>
+            </>
+          )}
+        </div>
       </div>
-    </Link>
+    </article>
   );
 }
 
@@ -244,33 +323,25 @@ export function CourseForm({ course, onClose, onSaved }) {
   async function save() {
     if (!f.code.trim() || !f.title.trim() || tooLight) return;
     const row = { ...f, code: f.code.trim().toUpperCase(), title: f.title.trim() };
-    const saved = await act(
-      () =>
-        course
-          ? run(supabase.from('courses').update(row).eq('id', course.id).select().single())
-          : run(supabase.from('courses').insert(row).select().single()),
-      course ? 'Course updated.' : 'Course created.',
-    );
-    if (saved) {
+    const result = await act(async () => {
+      if (course) {
+        await run(supabase.from('courses').update(row).eq('id', course.id));
+        return course.id;
+      }
+      const created = await run(supabase.from('courses').insert(row).select('id').single());
+      return created.id;
+    }, course ? 'Course saved.' : 'Course created.');
+    if (result) {
       onClose();
-      if (onSaved) onSaved(saved);
-      else navigate(`/teach/course/${saved.id}?tab=students`);
+      if (onSaved) onSaved();
+      else navigate(`/teach/course/${result}`);
     }
   }
 
   return (
-    <Modal
-      title={course ? 'Edit course' : 'New course'}
-      onClose={onClose}
-      footer={
-        <>
-          <button type="button" className="btn" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn btn-primary" onClick={save} disabled={busy || !f.code.trim() || !f.title.trim() || tooLight}>
-            {course ? 'Save changes' : 'Create course'}
-          </button>
-        </>
-      }
-    >
+    <Modal title={course ? 'Course settings' : 'New course'} onClose={onClose}
+      footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button>
+        <button type="button" className="btn btn-primary" onClick={save} disabled={busy || !f.code.trim() || !f.title.trim() || tooLight}>Save</button></>}>
       <div className="grid-2">
         <Field label="Course code"><input className="input mono" value={f.code} onChange={set('code')} placeholder="SCM 101" /></Field>
         <Field label="Semester" hint="optional"><input className="input" value={f.semester} onChange={set('semester')} placeholder="Semester 1, 2026/27" /></Field>
