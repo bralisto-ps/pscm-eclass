@@ -295,31 +295,53 @@ export default function TakeQuiz() {
       </div>
     );
   }
-  if (data.attempt.status !== 'in_progress') return <Done quiz={data.quiz} status={data.attempt.status} />;
+  if (data.attempt.status !== 'in_progress') return <Done quiz={data.quiz} attempt={data.attempt} status={data.attempt.status} />;
   return <Runner initial={data} />;
 }
 
-function Done({ quiz, status, autoSubmitted }) {
+function Done({ quiz, attempt, answeredCount, totalQuestions, status, autoSubmitted }) {
+  const refCode = attempt?.id ? String(attempt.id).replace(/-/g, '').slice(0, 8).toUpperCase() : 'RECORDED';
+  const submittedAt = attempt?.submitted_at ? new Date(attempt.submitted_at) : new Date();
+  const timeText = submittedAt.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   return (
     <div className="auth-main" style={{ minHeight: '100vh' }}>
-      <div className="card stack" style={{ maxWidth: 520, textAlign: 'center', alignItems: 'center', padding: 36 }}>
-        <div className="empty" style={{ padding: 0 }}>
-          <div className="icon-circle" style={{ background: 'var(--teal-50)', color: 'var(--teal-dark)' }}>
-            <Icon name="check" size={24} />
-          </div>
+      <div className="card stack" style={{ maxWidth: 540, textAlign: 'center', alignItems: 'center', padding: 34 }}>
+        <div className="icon-circle" style={{ width: 52, height: 52, borderRadius: 14, background: 'var(--teal-50)', color: 'var(--teal-dark)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Icon name="check" size={26} />
         </div>
         <h1>{autoSubmitted === 'exits' ? 'Quiz submitted automatically' : autoSubmitted === 'staff' ? 'Quiz submitted by your lecturer' : autoSubmitted ? 'Time is up — quiz submitted' : 'Quiz submitted'}</h1>
         {autoSubmitted === 'exits' && (
           <div className="notice notice-error">You left the quiz screen too many times, so your quiz was submitted with the answers you had saved. Your lecturer can see when each exit happened.</div>
         )}
-        <p className="muted">
-          {quiz.title} ({quiz.course_code}).{' '}
+        <p className="muted small">
           {status === 'needs_marking'
-            ? 'Some written answers will be marked by your lecturer.'
-            : 'Your answers have been marked.'}{' '}
-          Your score will show on the course page once your lecturer releases the results.
+            ? 'Your attempt is safely recorded. Written answers will be graded by your lecturer before scores are released.'
+            : 'Your attempt is safely recorded. Your score will appear on the course page once results are released.'}
         </p>
-        <Link to={`/course/${quiz.course_id}?tab=quizzes`} className="btn btn-dark">Back to course</Link>
+        <div className="receipt-grid">
+          <div>
+            <div className="eyebrow">Assessment</div>
+            <div className="small strong">{quiz.course_code} · {quiz.title}</div>
+          </div>
+          <div>
+            <div className="eyebrow">Receipt Ref</div>
+            <div className="mono small strong">#{refCode}</div>
+          </div>
+          <div>
+            <div className="eyebrow">Submitted</div>
+            <div className="small">{timeText}</div>
+          </div>
+          <div>
+            <div className="eyebrow">Status</div>
+            <div className="small">
+              {totalQuestions ? `${answeredCount ?? 0} of ${totalQuestions} answered · ` : ''}
+              {status === 'needs_marking' ? 'Pending review' : 'Auto-marked'}
+            </div>
+          </div>
+        </div>
+        <div className="row-wrap" style={{ justifyContent: 'center', gap: 10 }}>
+          <Link to={`/course/${quiz.course_id}?tab=quizzes`} className="btn btn-dark">Back to course</Link>
+        </div>
       </div>
     </div>
   );
@@ -891,7 +913,7 @@ function Runner({ initial }) {
     return () => window.removeEventListener('beforeunload', onLeave);
   }, []);
 
-  if (finished) return <Done quiz={quiz} status={finished.status} autoSubmitted={finished.auto} />;
+  if (finished) return <Done quiz={quiz} attempt={attempt} answeredCount={answeredCount} totalQuestions={questions.length} status={finished.status} autoSubmitted={finished.auto} />;
   const q = questions[current] || questions[0] || {};
   const answeredCount = questions.filter((x) => isAnswered(answers[x.id])).length;
   const unsaved = Object.values(saveState).some((s) => s === 'error');
@@ -939,21 +961,11 @@ function Runner({ initial }) {
           </div>
           <div className="row" style={{ gap: 8, alignItems: 'center' }}>
             <span
-              className="chip chip-active"
-              title="Anti-capture view is automatically enforced so questions and options cannot be photographed together in one shot"
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                background: 'var(--teal-50, #f0fdfa)',
-                borderColor: 'var(--teal, #0d9488)',
-                color: 'var(--teal-dark, #0d9488)',
-                cursor: 'default',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
+              className="tiny muted hide-sm"
+              title="Proctored mode: anti-capture view enforced"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontWeight: 500 }}
             >
-              <Icon name="shield" size={13} /> Anti-Capture (Enforced)
+              <Icon name="lock" size={13} style={{ color: 'var(--teal-dark)' }} /> Proctored
             </span>
 
             <span className="small muted hide-sm">{answeredCount} of {questions.length} answered</span>

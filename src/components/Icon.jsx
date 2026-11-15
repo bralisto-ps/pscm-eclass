@@ -1,3 +1,4 @@
+import { useBranding } from '../lib/branding.js';
 const PATHS = {
   home: 'M3 11l9-8 9 8M5 10v10h14V10',
   book: 'M4 19V5a2 2 0 012-2h14v16H6a2 2 0 00-2 2zM8 7h8',
@@ -54,6 +55,28 @@ const PATHS = {
 };
 
 export function BrandMark({ size = 36 }) {
+  const [brand] = useBranding();
+  if (brand.logoDataUrl) {
+    return (
+      <img
+        src={brand.logoDataUrl}
+        alt={brand.portalName}
+        width={size}
+        height={size}
+        style={{
+          width: size,
+          height: size,
+          objectFit: 'contain',
+          flexShrink: 0,
+          display: 'block',
+          borderRadius: Math.round(size * 0.25),
+          background: '#fff',
+          padding: Math.max(2, Math.round(size * 0.08)),
+          boxShadow: '0 2px 10px rgba(0,0,0,0.22)',
+        }}
+      />
+    );
+  }
   return (
     <svg
       width={size}

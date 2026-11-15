@@ -36,7 +36,7 @@ export default function StudentCourse() {
   const [checkingIn, setCheckingIn] = useState(false);
 
   const { data, error, loading, reload } = useLoad(async () => {
-    const [course, modules, materials, news, quizzes, assignments, attendance, ca] = await Promise.all([
+    const [course, modules, materials, news, quizzes, assignments, attendance, ca, viewsRes] = await Promise.all([
       run(supabase.from('courses').select('*').eq('id', courseId).maybeSingle()),
       run(supabase.from('modules').select('*').eq('course_id', courseId).order('week_no', { nullsFirst: false }).order('position')),
       run(supabase.from('materials').select('*').eq('course_id', courseId).order('position').order('created_at')),
@@ -45,8 +45,9 @@ export default function StudentCourse() {
       rpc('my_assignments', { p_course: courseId }),
       rpc('my_attendance', { p_course: courseId }),
       rpc('my_ca', { p_course: courseId }),
+      supabase.from('material_views').select('material_id').eq('course_id', courseId).then((r) => r.data || [], () => []),
     ]);
-    return { course, modules, materials, news, quizzes: quizzes || [], assignments: assignments || [], attendance, ca };
+    return { course, modules, materials, news, quizzes: quizzes || [], assignments: assignments || [], attendance, ca, viewedIds: (viewsRes || []).map((v) => v.material_id) };
   }, [courseId]);
 
   if (loading) return <CourseSkeleton />;
@@ -111,6 +112,7 @@ export default function StudentCourse() {
 // ---------------- materials ----------------
 function Materials({ data, onQuizzes, graded }) {
   const [act] = useAction();
+  const [viewedSet, setViewedSet] = useState(() => new Set(data.viewedIds || []));
   const groups = useMemo(() => {
     const g = data.modules.map((m) => ({ ...m, items: data.materials.filter((x) => x.module_id === m.id) }));
     const loose = data.materials.filter((x) => !x.module_id);
@@ -123,6 +125,11 @@ function Materials({ data, onQuizzes, graded }) {
   const nextQuiz = graded.find((q) => !q.best && (!q.closes_at || new Date(q.closes_at) > new Date()));
 
   function open(m) {
+    setViewedSet((prev) => {
+      const next = new Set(prev);
+      next.add(m.id);
+      return next;
+    });
     supabase.rpc('record_material_view', { p_material: m.id }).then(() => {}, () => {});
     if (m.url) window.open(m.url, '_blank', 'noopener');
     else if (m.storage_path) act(() => openStoredFile('materials', m.storage_path));
@@ -134,28 +141,30 @@ function Materials({ data, onQuizzes, graded }) {
 
   return (
     <div className="three-col">
-      <nav aria-label="Weeks" className="stack-sm" style={{ gap: 2 }}>
-        <span className="eyebrow" style={{ padding: '0 10px 6px' }}>Weeks</span>
-        {groups.map((g) => (
-          <button
-            key={g.id}
-            type="button"
-            onClick={() => setSelected(g.id)}
-            className="nav-link"
-            style={{
-              color: g.id === current?.id ? 'var(--text)' : 'var(--text-2)',
-              background: g.id === current?.id ? 'var(--surface)' : 'transparent',
-              border: g.id === current?.id ? '1px solid var(--line)' : '1px solid transparent',
-              fontWeight: g.id === current?.id ? 600 : 400,
-              cursor: 'pointer', textAlign: 'left', minHeight: 40,
-            }}
-          >
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: g.items.length ? 'var(--teal)' : 'var(--field)', flexShrink: 0 }} />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {g.week_no ? `Week ${g.week_no}` : g.title}
-            </span>
-          </button>
-        ))}
+      <nav aria-label="Course outline" className="week-rail">
+        <span className="eyebrow" style={{ padding: '0 10px 6px' }}>Course Outline</span>
+        {groups.map((g) => {
+          const viewedCount = g.items.filter((m) => viewedSet.has(m.id)).length;
+          return (
+            <button
+              key={g.id}
+              type="button"
+              onClick={() => setSelected(g.id)}
+              className={`week-item ${g.id === current?.id ? 'active' : ''}`}
+            >
+              <span className="week-badge">{g.week_no ? `W${g.week_no}` : 'GEN'}</span>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>
+                  {g.week_no ? g.title || `Week ${g.week_no}` : g.title}
+                </div>
+                <div className="tiny muted">
+                  {g.items.length} {g.items.length === 1 ? 'item' : 'items'}
+                  {viewedCount > 0 ? ` · ${viewedCount} viewed` : ''}
+                </div>
+              </span>
+            </button>
+          );
+        })}
       </nav>
 
       <main className="stack" style={{ minWidth: 0 }}>
@@ -167,18 +176,26 @@ function Materials({ data, onQuizzes, graded }) {
             </div>
             <div className="card-flush">
               {current.items.length === 0 && <Empty icon="file">Nothing posted for this week yet.</Empty>}
-              {current.items.map((m) => (
-                <button key={m.id} type="button" className="list-row" onClick={() => open(m)}>
-                  <KindTag kind={m.kind} />
-                  <span className="list-main">
-                    <span className="title">{m.title}</span>
-                    <span className="tiny muted">
-                      {m.url ? hostOf(m.url) : fmtBytes(m.size_bytes)} · added {relative(m.created_at)}
+              {current.items.map((m) => {
+                const seen = viewedSet.has(m.id);
+                return (
+                  <button key={m.id} type="button" className="list-row" onClick={() => open(m)}>
+                    <KindTag kind={m.kind} />
+                    <span className="list-main">
+                      <span className="title">{m.title}</span>
+                      <span className="tiny muted">
+                        {m.url ? hostOf(m.url) : fmtBytes(m.size_bytes)} · added {relative(m.created_at)}
+                      </span>
                     </span>
-                  </span>
-                  <Icon name={m.url ? 'link' : 'download'} />
-                </button>
-              ))}
+                    {seen && (
+                      <span className="viewed-tag">
+                        <Icon name="check" size={14} /> Viewed
+                      </span>
+                    )}
+                    <Icon name={m.url ? 'link' : 'download'} size={17} style={{ color: 'var(--muted)' }} />
+                  </button>
+                );
+              })}
             </div>
           </>
         )}

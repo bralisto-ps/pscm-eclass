@@ -854,3 +854,256 @@ html.dark .qnav button.done { color: #042f2e; }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------- Phase 2: Quick Jump, Mobile Bottom Nav, Course Rail, Transcript & Receipts ---------- */
+.sidebar-search-btn {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 11px;
+  margin-bottom: 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: #94a3b8;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.14s var(--ease), color 0.14s var(--ease), border-color 0.14s var(--ease);
+}
+.sidebar-search-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.sidebar-kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.35);
+  color: #cbd5e1;
+}
+
+.quick-jump {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  width: 100%;
+  max-width: 600px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  animation: modalIn 0.15s var(--ease);
+}
+.quick-jump-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.quick-jump-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  min-height: 36px;
+}
+.quick-jump-input:focus { outline: none; }
+.quick-jump-list { max-height: 360px; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.quick-jump-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s var(--ease);
+}
+.quick-jump-row.active, .quick-jump-row:hover { background: var(--surface-2); }
+.quick-jump-ico {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.quick-jump-foot {
+  padding: 9px 14px;
+  border-top: 1px solid var(--line-2);
+  background: var(--surface-2);
+}
+
+.mobile-bottom-nav { display: none; }
+@media (max-width: 960px) {
+  .page { padding-bottom: 84px; }
+  .mobile-bottom-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    height: 58px;
+    background: var(--topbar-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-top: 1px solid var(--line);
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px));
+  }
+  .mobile-bottom-link {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 500;
+    border-radius: 8px;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .mobile-bottom-link:hover { text-decoration: none; color: var(--text); }
+  .mobile-bottom-link.active { color: var(--teal-dark); font-weight: 600; }
+}
+
+/* Course Week Outline Rail */
+.week-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.week-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.14s var(--ease), border-color 0.14s var(--ease), color 0.14s var(--ease);
+}
+.week-item:hover { background: var(--surface); color: var(--text); }
+.week-item.active {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+.week-badge {
+  width: 30px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.week-item.active .week-badge {
+  background: var(--teal-50);
+  color: var(--teal-dark);
+}
+
+.viewed-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--teal-dark);
+  white-space: nowrap;
+}
+
+/* Grade Letter Tile & Breakdown Bar */
+.grade-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 15px;
+  background: var(--teal-50);
+  color: var(--teal-dark);
+  border: 1px solid rgba(13, 148, 136, 0.25);
+}
+.grade-tile.fail {
+  background: var(--red-50);
+  color: var(--red-ink);
+  border-color: rgba(185, 28, 28, 0.25);
+}
+.stacked-bar {
+  display: flex;
+  height: 10px;
+  width: 100%;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+}
+
+/* Attendance Heat Strip & Drawer Slide */
+.att-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.att-cell {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--grey-50);
+  border: 1px solid var(--line);
+}
+.att-cell.present { background: var(--teal); border-color: var(--teal); }
+.att-cell.absent { background: var(--red-50); border-color: rgba(185, 28, 28, 0.45); }
+
+@keyframes drawerIn {
+  from { transform: translateX(24px); opacity: 0.7; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.drawer-panel {
+  animation: drawerIn 0.2s var(--ease);
+}
+
+/* Exam Submission Receipt */
+.receipt-grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  text-align: left;
+}

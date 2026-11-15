@@ -1,19 +1,30 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useAuth } from '../lib/auth.jsx';
 import { useTheme } from '../lib/theme.js';
+import { DEFAULT_BRANDING, resizeCrestFile, useBranding } from '../lib/branding.js';
 import { supabase, friendlyError } from '../lib/supabase.js';
-import Icon from '../components/Icon.jsx';
+import Icon, { BrandMark } from '../components/Icon.jsx';
 import { Topbar } from '../components/Layout.jsx';
 import { Field, useToast } from '../components/ui.jsx';
 
 export default function Account() {
-  const { profile, isStaff: isLecturer, session, signOut } = useAuth();
+  const { profile, isStaff: isLecturer, isTA, session, signOut } = useAuth();
   const [theme, setTheme] = useTheme();
+  const [brand, saveBrand, resetBrand] = useBranding();
   const toast = useToast();
+  const crestInput = useRef(null);
+
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  const [bForm, setBForm] = useState({
+    portalName: brand.portalName,
+    department: brand.department,
+    coordinator: brand.coordinator,
+    logoDataUrl: brand.logoDataUrl,
+  });
 
   async function change(e) {
     e.preventDefault();
@@ -27,6 +38,34 @@ export default function Account() {
     setPw('');
     setPw2('');
     toast('Password changed.');
+  }
+
+  async function onCrestPick(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const dataUrl = await resizeCrestFile(file);
+      const next = { ...bForm, logoDataUrl: dataUrl };
+      setBForm(next);
+      saveBrand(next);
+      toast('Department crest updated.');
+    } catch (err) {
+      toast(err.message || 'Could not load image.', 'error');
+    }
+  }
+
+  function applyBrandText(e) {
+    e.preventDefault();
+    const saved = saveBrand(bForm);
+    setBForm(saved);
+    toast('Portal branding updated on this device.');
+  }
+
+  function handleResetBrand() {
+    const def = resetBrand();
+    setBForm(def);
+    toast('Reset to default PSCM crest.');
   }
 
   return (
@@ -78,6 +117,68 @@ export default function Account() {
             </div>
           </div>
         </section>
+
+        {isLecturer && !isTA && (
+          <form className="card stack" onSubmit={applyBrandText}>
+            <div className="between" style={{ flexWrap: 'wrap' }}>
+              <div>
+                <h2>Institutional crest &amp; branding</h2>
+                <p className="small muted" style={{ marginTop: 4 }}>
+                  Upload your university or department crest for the sidebar, header, and printed PDF reports.
+                </p>
+              </div>
+              <BrandMark size={44} />
+            </div>
+
+            <div className="row-wrap" style={{ gap: 10 }}>
+              <input
+                ref={crestInput}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                style={{ display: 'none' }}
+                onChange={onCrestPick}
+              />
+              <button type="button" className="btn btn-sm" onClick={() => crestInput.current?.click()}>
+                <Icon name="upload" size={15} /> Upload crest image
+              </button>
+              {(bForm.logoDataUrl || bForm.portalName !== DEFAULT_BRANDING.portalName || bForm.department !== DEFAULT_BRANDING.department) && (
+                <button type="button" className="btn btn-sm btn-ghost" onClick={handleResetBrand}>
+                  Reset to default
+                </button>
+              )}
+            </div>
+
+            <div className="grid-2">
+              <Field label="Portal name">
+                <input
+                  className="input"
+                  value={bForm.portalName}
+                  onChange={(e) => setBForm({ ...bForm, portalName: e.target.value })}
+                  placeholder={DEFAULT_BRANDING.portalName}
+                />
+              </Field>
+              <Field label="Coordinator / subtitle">
+                <input
+                  className="input"
+                  value={bForm.coordinator}
+                  onChange={(e) => setBForm({ ...bForm, coordinator: e.target.value })}
+                  placeholder={DEFAULT_BRANDING.coordinator}
+                />
+              </Field>
+            </div>
+            <Field label="Department / Institution">
+              <input
+                className="input"
+                value={bForm.department}
+                onChange={(e) => setBForm({ ...bForm, department: e.target.value })}
+                placeholder={DEFAULT_BRANDING.department}
+              />
+            </Field>
+            <div>
+              <button type="submit" className="btn btn-primary btn-sm">Save branding</button>
+            </div>
+          </form>
+        )}
 
         <form className="card stack" onSubmit={change}>
           <h2>Change password</h2>

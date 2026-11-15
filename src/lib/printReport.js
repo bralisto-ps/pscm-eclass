@@ -1,3 +1,4 @@
+import { getBranding } from './branding.js';
 function esc(v) {
   return String(v ?? '')
     .replace(/&/g, '&amp;')
@@ -116,10 +117,13 @@ function baseHtml(title, subtitle, bodyHtml) {
 </head>
 <body>
   <div class="header">
-    <div>
-      <div class="brand">PSCM E-class · Official Departmental Record</div>
-      <h1>${esc(title)}</h1>
-      <div class="sub">${esc(subtitle)}</div>
+    <div style="display:flex;align-items:center;gap:12px;">
+      ${getBranding().logoDataUrl ? `<img src="${getBranding().logoDataUrl}" alt="Crest" style="width:42px;height:42px;object-fit:contain;border-radius:6px;border:1px solid #cbd5e1;padding:2px;" />` : ''}
+      <div>
+        <div class="brand">${esc(getBranding().portalName)} · ${esc(getBranding().department)}</div>
+        <h1>${esc(title)}</h1>
+        <div class="sub">${esc(subtitle)}</div>
+      </div>
     </div>
     <div class="meta-right">
       <div>Generated: ${esc(generated)}</div>

@@ -341,7 +341,18 @@ function LiveView({ sessionId, course, onClose }) {
   const fetchedAt = useRef(Date.now());
   const [act] = useAction();
   const [spot, setSpot] = useState(null);
+  const [daylight, setDaylight] = useState(false);
+  const [isFs, setIsFs] = useState(false);
+  const stageRef = useRef(null);
   const closeRef = useRef(onClose);
+
+  function toggleFs() {
+    if (!document.fullscreenElement) {
+      stageRef.current?.requestFullscreen?.().then(() => setIsFs(true)).catch(() => {});
+    } else {
+      document.exitFullscreen?.().then(() => setIsFs(false)).catch(() => {});
+    }
+  }
   closeRef.current = onClose;
 
   useEffect(() => {
@@ -373,8 +384,14 @@ function LiveView({ sessionId, course, onClose }) {
   void tick;
 
   return (
-    <div role="dialog" aria-modal="true" aria-label="Attendance code"
-      style={{ position: 'fixed', inset: 0, zIndex: 70, background: 'var(--ink)', color: '#fff', display: 'flex', flexDirection: 'column', padding: '24px 28px' }}>
+    <div ref={stageRef} role="dialog" aria-modal="true" aria-label="Attendance code"
+      style={{
+        position: 'fixed', inset: 0, zIndex: 70,
+        background: daylight ? '#ffffff' : 'radial-gradient(circle at 50% 35%, #111c30 0%, #070b14 100%)',
+        color: daylight ? '#090e17' : '#ffffff',
+        display: 'flex', flexDirection: 'column', padding: '24px 32px',
+        transition: 'background-color 0.2s ease, color 0.2s ease',
+      }}>
       <div className="between" style={{ flexWrap: 'wrap' }}>
         <div>
           <div className="mono small" style={{ opacity: 0.75 }}>{course.code}</div>
@@ -382,11 +399,21 @@ function LiveView({ sessionId, course, onClose }) {
           {(info?.streams?.length > 0 || info?.classes?.length > 0) && <div className="small" style={{ opacity: 0.75 }}>For: {sessionWho(info)}</div>}
         </div>
         <div className="row-wrap">
+          <button type="button" className="btn btn-sm"
+            style={{ background: daylight ? '#f1f5f9' : 'rgba(255,255,255,0.1)', color: daylight ? '#090e17' : '#fff', borderColor: daylight ? '#cbd5e1' : 'rgba(255,255,255,0.22)' }}
+            onClick={() => setDaylight((d) => !d)}>
+            <Icon name={daylight ? 'moon' : 'sun'} size={15} /> {daylight ? 'Dark screen' : 'Bright hall'}
+          </button>
+          <button type="button" className="btn btn-sm"
+            style={{ background: daylight ? '#f1f5f9' : 'rgba(255,255,255,0.1)', color: daylight ? '#090e17' : '#fff', borderColor: daylight ? '#cbd5e1' : 'rgba(255,255,255,0.22)' }}
+            onClick={toggleFs}>
+            <Icon name="eye" size={15} /> {isFs ? 'Exit fullscreen' : 'Fullscreen'}
+          </button>
           {info?.count > 0 && <button type="button" className="btn btn-light" onClick={() => setSpot(true)}>Spot check</button>}
           {info?.open && <button type="button" className="btn btn-light" onClick={() => act(() => rpc('extend_attendance', { p_session: sessionId, p_minutes: 5 }))}>+5 minutes</button>}
-          {info?.open && <button type="button" className="btn" style={{ background: 'transparent', color: '#fff', borderColor: 'rgba(255,255,255,.4)' }}
+          {info?.open && <button type="button" className="btn" style={{ background: 'transparent', color: daylight ? '#b91c1c' : '#fff', borderColor: daylight ? '#fca5a5' : 'rgba(255,255,255,.4)' }}
             onClick={() => act(() => rpc('extend_attendance', { p_session: sessionId, p_minutes: 0 }))}>End now</button>}
-          <button type="button" className="icon-btn-dark" aria-label="Close" onClick={onClose}><Icon name="close" size={22} /></button>
+          <button type="button" className="icon-btn-dark" style={{ color: daylight ? '#0f172a' : '#fff' }} aria-label="Close" onClick={onClose}><Icon name="close" size={22} /></button>
         </div>
       </div>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, textAlign: 'center' }}>
@@ -398,8 +425,8 @@ function LiveView({ sessionId, course, onClose }) {
               {info.code.slice(0, 3)}&thinsp;{info.code.slice(3)}
             </div>
             <div style={{ width: 'min(520px, 80vw)' }}>
-              <div style={{ height: 8, borderRadius: 4, background: 'rgba(255,255,255,.15)', overflow: 'hidden' }}>
-                <div style={{ height: 8, width: `${(secsLeft / 30) * 100}%`, background: '#5eead4', transition: 'width .25s linear' }} />
+              <div style={{ height: 8, borderRadius: 4, background: daylight ? '#e2e8f0' : 'rgba(255,255,255,.15)', overflow: 'hidden' }}>
+                <div style={{ height: 8, width: `${(secsLeft / 30) * 100}%`, background: daylight ? '#0d9488' : '#5eead4', transition: 'width .25s linear' }} />
               </div>
               <div className="small" style={{ marginTop: 6, opacity: 0.7 }}>New code in {secsLeft}s</div>
             </div>

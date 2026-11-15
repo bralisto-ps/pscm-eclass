@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
+import { useBranding } from '../lib/branding.js';
 import Icon, { BrandMark } from '../components/Icon.jsx';
 import { Field } from '../components/ui.jsx';
 import { OfflineIndicator, PWAInstallButton } from '../components/PWABanner.jsx';
 
 export default function Login({ mode }) {
   const { signIn, activate, activateStaff } = useAuth();
+  const [brand] = useBranding();
   const navigate = useNavigate();
   const [id, setId] = useState('');
   const [password, setPassword] = useState('');
@@ -56,7 +58,7 @@ export default function Login({ mode }) {
         <div className="brand" style={{ padding: 0 }}>
           <BrandMark size={40} />
           <div>
-            <div className="brand-name" style={{ fontSize: 17 }}>PSCM E-class</div>
+            <div className="brand-name" style={{ fontSize: 17 }}>{brand.portalName}</div>
             <div className="brand-sub" style={{ color: '#94a3b8' }}>Academic Learning &amp; Assessment</div>
           </div>
         </div>
@@ -64,7 +66,7 @@ export default function Login({ mode }) {
         <div className="stack">
           <div>
             <h2>Virtual Classroom for Procurement and Supply Chain Management</h2>
-            <p>Course Coordinator: <strong style={{ color: '#fff', fontWeight: 600 }}>L.O Appiah, PhD</strong></p>
+            <p>Course Coordinator: <strong style={{ color: '#fff', fontWeight: 600 }}>{brand.coordinator}</strong></p>
           </div>
 
           <div className="auth-highlights">
@@ -88,7 +90,7 @@ export default function Login({ mode }) {
         </div>
 
         <div className="tiny" style={{ color: '#64748b' }}>
-          Department of Procurement &amp; Supply Chain Management
+          {brand.department}
         </div>
       </aside>
 
@@ -98,8 +100,8 @@ export default function Login({ mode }) {
             <div className="row" style={{ gap: 10 }}>
               <BrandMark size={34} />
               <div>
-                <div className="strong" style={{ fontSize: 16 }}>PSCM E-class</div>
-                <div className="tiny muted">L.O Appiah, PhD</div>
+                <div className="strong" style={{ fontSize: 16 }}>{brand.portalName}</div>
+                <div className="tiny muted">{brand.coordinator}</div>
               </div>
             </div>
             <span className="small muted">Virtual Classroom for Procurement and Supply Chain Management Courses</span>

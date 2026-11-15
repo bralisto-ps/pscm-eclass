@@ -116,6 +116,7 @@ export default function StudentDrawer({ course, student, ta, onClose, onOutreach
       }}
     >
       <aside
+        className="drawer-panel"
         role="dialog"
         aria-modal="true"
         aria-label={`Student profile for ${student.full_name}`}
@@ -280,6 +281,36 @@ export default function StudentDrawer({ course, student, ta, onClose, onOutreach
                         style={{ width: `${attPct}%`, background: attPct < 75 ? 'var(--amber)' : 'var(--teal)' }}
                       />
                     </div>
+                    {data.attSessions?.length > 0 && (() => {
+                      const matchesSession = (sess) => {
+                        const classes = sess.classes || [];
+                        if (classes.length) {
+                          const key = `${(student.programme || '').trim().toLowerCase()}|${(student.stream || '').trim().toLowerCase()}`;
+                          return classes.some((c) => {
+                            const [p, st] = c.split('|');
+                            return `${(p || '').trim().toLowerCase()}|${(st || '').trim().toLowerCase()}` === key;
+                          });
+                        }
+                        const streams = sess.streams || [];
+                        return !streams.length || streams.map((x) => x.trim().toLowerCase()).includes((student.stream || '').trim().toLowerCase());
+                      };
+                      const applicableSessions = [...data.attSessions].reverse().filter(matchesSession);
+                      if (!applicableSessions.length) return null;
+                      return (
+                        <div className="att-strip" aria-label="Session attendance strip">
+                          {applicableSessions.map((s) => {
+                            const attended = (data.attRow?.sessions || []).includes(s.id);
+                            return (
+                              <span
+                                key={s.id}
+                                title={`${s.title} · ${attended ? 'Present' : 'Absent'}`}
+                                className={`att-cell ${attended ? 'present' : 'absent'}`}
+                              />
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                     {attPct < 75 && (
                       <div className="tiny" style={{ color: 'var(--red-ink)' }}>
                         Below the 75% mandatory university exam attendance threshold.
