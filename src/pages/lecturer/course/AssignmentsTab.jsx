@@ -127,6 +127,7 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
   const [peerCheck, setPeerCheck] = useState(initialMeta.syndicate.peerCheck !== false);
   const [groups, setGroups] = useState(initialMeta.syndicate.groups);
   const [groupSize, setGroupSize] = useState(4);
+  const [cohortMode, setCohortMode] = useState('both');
   const [autoBusy, setAutoBusy] = useState(false);
 
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
@@ -139,9 +140,10 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
         toast('No enrolled students in this course yet.', 'error');
         return;
       }
-      const next = autoBuildSyndicateGroups(students, groupSize);
+      const next = autoBuildSyndicateGroups(students, groupSize, cohortMode);
       setGroups(next);
-      toast(`Created ${next.length} syndicate group${next.length === 1 ? '' : 's'} from ${students.length} students.`);
+      const modeNote = cohortMode === 'mix' ? 'mixed across class' : 'grouped strictly within cohort';
+      toast(`Created ${next.length} syndicate group${next.length === 1 ? '' : 's'} from ${students.length} students (${modeNote}).`);
     } catch (e) {
       toast(e.message || 'Could not load class list.', 'error');
     } finally {
@@ -238,7 +240,7 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
               </span>
             </label>
             <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
-              <div className="row" style={{ gap: 6 }}>
+              <div className="row-wrap" style={{ gap: 6, alignItems: 'center' }}>
                 <label className="row small" style={{ gap: 6 }}>
                   <span className="tiny muted">Team size:</span>
                   <input
@@ -250,6 +252,20 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
                     value={groupSize}
                     onChange={(e) => setGroupSize(e.target.value)}
                   />
+                </label>
+                <label className="row small" style={{ gap: 6 }}>
+                  <span className="tiny muted">Cohorts:</span>
+                  <select
+                    className="select"
+                    style={{ minHeight: 34, width: 'auto', fontSize: 12.5 }}
+                    value={cohortMode}
+                    onChange={(e) => setCohortMode(e.target.value)}
+                  >
+                    <option value="both">Keep programme &amp; stream separate</option>
+                    <option value="stream">Keep stream separate only</option>
+                    <option value="programme">Keep programme separate only</option>
+                    <option value="mix">Mix entire class</option>
+                  </select>
                 </label>
                 <button type="button" className="btn btn-sm" onClick={autoAssignGroups} disabled={autoBusy}>
                   <Icon name="users" size={14} /> {autoBusy ? 'Grouping…' : 'Auto-group class'}
@@ -270,7 +286,7 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
                   <div key={g.id || idx} className="row-wrap" style={{ gap: 8, alignItems: 'center', padding: '6px 8px', background: 'var(--surface)', borderRadius: 8, border: '1px solid var(--line-2)' }}>
                     <input
                       className="input"
-                      style={{ width: 130, minHeight: 34 }}
+                      style={{ width: 210, minHeight: 34 }}
                       value={g.name}
                       onChange={(e) => updateGroupName(idx, e.target.value)}
                       placeholder="Syndicate 1"

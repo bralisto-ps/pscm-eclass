@@ -154,21 +154,76 @@ export function findStudentSyndicate(meta, indexNo) {
   return (meta.syndicate.groups || []).find((g) => (g.members || []).includes(norm)) || null;
 }
 
-export function autoBuildSyndicateGroups(students = [], groupSize = 4) {
+const indexCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+function cleanCohortPart(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function cohortBucket(student, cohortMode) {
+  const prog = cleanCohortPart(student.programme);
+  const stream = cleanCohortPart(student.stream);
+  if (cohortMode === "mix") return { key: "all", label: "" };
+  if (cohortMode === "stream") {
+    return {
+      key: stream.toLowerCase() || "__none__",
+      label: stream || "Unassigned stream",
+    };
+  }
+  if (cohortMode === "programme") {
+    return {
+      key: prog.toLowerCase() || "__none__",
+      label: prog || "Unassigned programme",
+    };
+  }
+  // Default: "both" — strictly keep students with the same programme AND stream together
+  const label = [prog, stream].filter(Boolean).join(" · ") || "Unassigned";
+  return {
+    key: `${prog.toLowerCase()}||${stream.toLowerCase()}`,
+    label,
+  };
+}
+
+export function autoBuildSyndicateGroups(students = [], groupSize = 4, cohortMode = "both") {
   const size = Math.max(2, Math.min(15, Number(groupSize) || 4));
-  const sorted = [...students].sort((a, b) =>
-    String(a.stream || '').localeCompare(String(b.stream || '')) ||
-    String(a.programme || '').localeCompare(String(b.programme || '')) ||
-    String(a.index_no || '').localeCompare(String(b.index_no || ''))
+  const bucketsMap = new Map();
+  for (const s of students) {
+    const idxNo = normalizeIndexNo(s.index_no);
+    if (!idxNo) continue;
+    const { key, label } = cohortBucket(s, cohortMode);
+    if (!bucketsMap.has(key)) bucketsMap.set(key, { key, label, members: [] });
+    bucketsMap.get(key).members.push({ ...s, _normIndex: idxNo });
+  }
+
+  const buckets = [...bucketsMap.values()].sort((a, b) =>
+    indexCollator.compare(a.label, b.label)
   );
+  const showCohortInName = cohortMode !== "mix" && buckets.length > 1;
+  const stamp = Date.now().toString(36);
   const groups = [];
-  for (let i = 0; i < sorted.length; i += size) {
-    const slice = sorted.slice(i, i + size);
-    groups.push({
-      id: `grp-${groups.length + 1}`,
-      name: `Syndicate ${groups.length + 1}`,
-      members: slice.map((s) => normalizeIndexNo(s.index_no)).filter(Boolean),
-    });
+
+  for (const bucket of buckets) {
+    bucket.members.sort((a, b) =>
+      indexCollator.compare(a._normIndex, b._normIndex) ||
+      indexCollator.compare(a.full_name || "", b.full_name || "")
+    );
+    const bucketSlices = [];
+    for (let i = 0; i < bucket.members.length; i += size) {
+      bucketSlices.push(bucket.members.slice(i, i + size).map((s) => s._normIndex));
+    }
+    // Avoid leaving a single isolated student when this same cohort has >= 2 groups
+    if (bucketSlices.length >= 2 && bucketSlices[bucketSlices.length - 1].length === 1) {
+      const lone = bucketSlices.pop()[0];
+      bucketSlices[bucketSlices.length - 1].push(lone);
+    }
+    for (const members of bucketSlices) {
+      const n = groups.length + 1;
+      groups.push({
+        id: `grp-${stamp}-${n}`,
+        name: showCohortInName ? `Syndicate ${n} · ${bucket.label}` : `Syndicate ${n}`,
+        members,
+      });
+    }
   }
   return groups;
 }
