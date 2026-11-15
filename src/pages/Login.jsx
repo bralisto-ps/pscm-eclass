@@ -54,7 +54,7 @@ export default function Login({ mode }) {
   return (
     <div className="auth">
       <aside className="auth-side">
-        <div className="auth-grid-bg" aria-hidden="true" />
+        
         <div className="brand" style={{ padding: 0 }}>
           <BrandMark size={40} />
           <div>
@@ -69,18 +69,18 @@ export default function Login({ mode }) {
             <p>Course Coordinator: <strong style={{ color: '#fff', fontWeight: 600 }}>{brand.coordinator}</strong></p>
           </div>
 
-          <div className="auth-highlights">
-            <div className="auth-highlight">
-              <span className="auth-highlight-ico"><Icon name="book" size={16} /></span>
-              <span>Lecture notes, study desk flashcards, and downloadable handouts</span>
+          <div className="auth-editorial-list">
+            <div className="auth-editorial-item">
+              <span className="auth-editorial-num">01</span>
+              <span>Lecture notes, study desk flashcards, and course materials</span>
             </div>
-            <div className="auth-highlight">
-              <span className="auth-highlight-ico"><Icon name="shield" size={16} /></span>
-              <span>Timed online assessments with live attendance check-in</span>
+            <div className="auth-editorial-item">
+              <span className="auth-editorial-num">02</span>
+              <span>Timed assessments and live hall attendance verification</span>
             </div>
-            <div className="auth-highlight">
-              <span className="auth-highlight-ico"><Icon name="chart" size={16} /></span>
-              <span>Instant quiz feedback, continuous assessment, and grade tracking</span>
+            <div className="auth-editorial-item">
+              <span className="auth-editorial-num">03</span>
+              <span>Continuous assessment standing and instant feedback</span>
             </div>
           </div>
 
@@ -89,7 +89,7 @@ export default function Login({ mode }) {
           </div>
         </div>
 
-        <div className="tiny" style={{ color: '#64748b' }}>
+        <div className="tiny" style={{ color: 'rgba(226, 232, 240, 0.72)' }}>
           {brand.department}
         </div>
       </aside>

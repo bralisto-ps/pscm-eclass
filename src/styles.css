@@ -30,6 +30,7 @@
   --radius: 12px;
   --radius-sm: 8px;
   --sans: 'Plus Jakarta Sans', 'IBM Plex Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --serif: 'Fraunces', Georgia, 'Times New Roman', serif;
   --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
   --shadow: 0 12px 28px -6px rgba(15, 23, 42, 0.09), 0 6px 12px -4px rgba(15, 23, 42, 0.04);
   --shadow-sm: 0 1px 3px 0 rgba(15, 23, 42, 0.04), 0 1px 2px -1px rgba(15, 23, 42, 0.03);
@@ -198,7 +199,7 @@ button { font: inherit; }
   position: sticky; top: 0; z-index: 5;
 }
 .topbar-title { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; min-width: 0; }
-.topbar-title h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.025em; }
+.topbar-title h1 { font-family: var(--serif); font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
 .mobile-bar { display: none; }
 .page { padding: 28px 32px 52px; width: 100%; max-width: 1400px; }
 .page-narrow { max-width: 760px; }
@@ -242,8 +243,14 @@ button.list-row { width: 100%; border-left: 0; border-right: 0; border-bottom: 0
 .list-main .title { font-weight: 500; overflow-wrap: anywhere; }
 
 .hero {
-  background: radial-gradient(circle at 88% 18%, rgba(20, 184, 166, 0.22), transparent 52%),
-              linear-gradient(135deg, #0b1322 0%, #111c30 100%);
+  position: relative;
+  overflow: hidden;
+  background-color: #0b1322;
+  background-image:
+    linear-gradient(96deg, #090e17 34%, rgba(9, 14, 23, 0.78) 68%, rgba(9, 14, 23, 0.56) 100%),
+    url('/images/supply-chain-horizon.webp');
+  background-size: cover;
+  background-position: center right;
   color: #fff; border-radius: 14px; padding: 24px 26px;
   display: flex; align-items: center; gap: 22px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -258,7 +265,7 @@ button.list-row { width: 100%; border-left: 0; border-right: 0; border-bottom: 0
 }
 .hero .date-block .d { font-size: 30px; font-weight: 700; line-height: 1; letter-spacing: -0.03em; }
 .hero .kicker { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #fcd34d; }
-.hero .title { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; text-wrap: balance; }
+.hero .title { font-family: var(--serif); font-size: 22px; font-weight: 600; letter-spacing: -0.015em; text-wrap: balance; }
 .hero .meta { color: #cbd5e1; font-size: 14px; }
 
 .course-band {
@@ -271,7 +278,7 @@ button.list-row { width: 100%; border-left: 0; border-right: 0; border-bottom: 0
 }
 .course-band a { color: rgba(255, 255, 255, 0.88); font-weight: 500; }
 .course-band a:hover { color: #fff; text-decoration: none; }
-.course-band h1 { font-size: 27px; color: #fff; font-weight: 700; letter-spacing: -0.025em; margin-top: 2px; }
+.course-band h1 { font-family: var(--serif); font-size: 29px; color: #fff; font-weight: 600; letter-spacing: -0.02em; margin-top: 2px; }
 .course-band .code { font-family: var(--mono); font-size: 13px; opacity: 0.88; letter-spacing: 0.02em; }
 .band-chip {
   font-size: 12px; font-weight: 500; padding: 5px 11px; border-radius: 999px;
@@ -525,10 +532,7 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .auth-side {
   position: relative;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 80% 15%, rgba(20, 184, 166, 0.2), transparent 48%),
-    radial-gradient(circle at 15% 88%, rgba(13, 148, 136, 0.14), transparent 45%),
-    #090e17;
+  background-color: #090e17;
   color: #fff;
   padding: 44px 48px;
   display: flex;
@@ -549,7 +553,7 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
   -webkit-mask-image: radial-gradient(circle at 30% 45%, #000 15%, transparent 78%);
 }
 .auth-side > * { position: relative; z-index: 1; }
-.auth-side h2 { font-size: clamp(26px, 2.7vw, 35px); line-height: 1.18; max-width: 480px; font-weight: 700; letter-spacing: -0.025em; text-wrap: balance; }
+.auth-side h2 { font-family: var(--serif); font-size: clamp(28px, 3vw, 40px); line-height: 1.14; max-width: 490px; font-weight: 600; letter-spacing: -0.02em; text-wrap: balance; }
 .auth-side p { color: #cbd5e1; max-width: 440px; margin-top: 10px; font-size: 15px; }
 .auth-highlights { display: flex; flex-direction: column; gap: 12px; margin-top: 18px; max-width: 440px; }
 .auth-highlight {
@@ -1106,4 +1110,59 @@ html.dark .qnav button.done { color: #042f2e; }
   background: var(--surface-2);
   border: 1px solid var(--line);
   text-align: left;
+}
+
+/* Editorial Cover Photo (desktop only, non-blocking WebP) */
+@media (min-width: 961px) {
+  .auth-side::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: url('/images/supply-chain-cover.webp');
+    background-size: cover;
+    background-position: center;
+    transform: scale(1.02);
+    z-index: 0;
+  }
+  .auth-side::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(180deg, rgba(9, 14, 23, 0.78) 0%, rgba(9, 14, 23, 0.42) 45%, rgba(9, 14, 23, 0.90) 100%),
+      linear-gradient(90deg, rgba(9, 14, 23, 0.65) 0%, rgba(9, 14, 23, 0.35) 100%);
+    z-index: 0;
+  }
+}
+
+.auth-editorial-list {
+  display: flex;
+  flex-direction: column;
+  max-width: 440px;
+  margin-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.16);
+}
+.auth-editorial-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  font-size: 14px;
+  color: rgba(241, 245, 249, 0.92);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+}
+.auth-editorial-num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #5eead4;
+  letter-spacing: 0.06em;
+  flex-shrink: 0;
+}
+
+@keyframes editorialRise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.auth-side .stack, .hero > *, .topbar-title {
+  animation: editorialRise 0.28s var(--ease);
 }
