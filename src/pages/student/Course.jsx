@@ -3,10 +3,11 @@ import { cleanText } from '../../lib/quizMeta.js';
 import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
 import { getLetter, getRemarks, GradesTable, TargetGradeCalculator } from './Grades.jsx';
 import Messages from '../../components/Messages.jsx';
-import { useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { rpc, run, supabase, safeFileName } from '../../lib/supabase.js';
-import { openStoredFile, uploadFile, SUBMISSION_ACCEPT } from '../../lib/files.js';
+import { isViewOnlyPath, openStoredFile, uploadFile, SUBMISSION_ACCEPT } from '../../lib/files.js';
+const SecureSlideViewer = lazy(() => import('../../components/SecureSlideViewer.jsx'));
 import CheckInModal from '../../components/CheckIn.jsx';
 import Forum from '../../components/Forum.jsx';
 import { useAuth } from '../../lib/auth.jsx';
@@ -85,7 +86,7 @@ export default function StudentCourse() {
 
       <div className="page">
         <ErrorBoundary key={tab}>
-          {tab === 'materials' && <Materials data={data} onQuizzes={() => setTab('quizzes')} graded={graded} />}
+          {tab === 'materials' && <Materials data={data} profile={profile} onQuizzes={() => setTab('quizzes')} graded={graded} />}
           {tab === 'quizzes' && <Quizzes quizzes={data.quizzes} reload={reload} />}
           {tab === 'assignments' && <Assignments assignments={data.assignments} reload={reload} />}
           {tab === 'attendance' && (
@@ -110,9 +111,10 @@ export default function StudentCourse() {
 }
 
 // ---------------- materials ----------------
-function Materials({ data, onQuizzes, graded }) {
+function Materials({ data, profile, onQuizzes, graded }) {
   const [act] = useAction();
   const [viewedSet, setViewedSet] = useState(() => new Set(data.viewedIds || []));
+  const [reading, setReading] = useState(null);
   const groups = useMemo(() => {
     const g = data.modules.map((m) => ({ ...m, items: data.materials.filter((x) => x.module_id === m.id) }));
     const loose = data.materials.filter((x) => !x.module_id);
@@ -132,6 +134,7 @@ function Materials({ data, onQuizzes, graded }) {
     });
     supabase.rpc('record_material_view', { p_material: m.id }).then(() => {}, () => {});
     if (m.url) window.open(m.url, '_blank', 'noopener');
+    else if (isViewOnlyPath(m.storage_path)) setReading(m);
     else if (m.storage_path) act(() => openStoredFile('materials', m.storage_path));
   }
 
@@ -192,7 +195,13 @@ function Materials({ data, onQuizzes, graded }) {
                         <Icon name="check" size={14} /> Viewed
                       </span>
                     )}
-                    <Icon name={m.url ? 'link' : 'download'} size={17} style={{ color: 'var(--muted)' }} />
+                    {isViewOnlyPath(m.storage_path) ? (
+                      <span className="tiny muted nowrap" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <Icon name="lock" size={14} /> Read-only
+                      </span>
+                    ) : (
+                      <Icon name={m.url ? 'link' : 'download'} size={17} style={{ color: 'var(--muted)' }} />
+                    )}
                   </button>
                 );
               })}
@@ -229,6 +238,15 @@ function Materials({ data, onQuizzes, graded }) {
           ))}
         </div>
       </aside>
+      {reading && (
+        <Suspense fallback={<div className="secure-reader-backdrop" style={{ alignItems: 'center', justifyContent: 'center' }}><div className="spinner" /></div>}>
+          <SecureSlideViewer
+            material={reading}
+            watermarkText={[profile?.full_name, profile?.index_no].filter(Boolean).join(' · ')}
+            onClose={() => setReading(null)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

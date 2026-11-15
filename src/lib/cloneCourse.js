@@ -90,13 +90,15 @@ export async function cloneCourse({
 
     for (const mat of materials) {
       let nextStoragePath = mat.storage_path || null;
-      if (nextStoragePath && !String(nextStoragePath).startsWith('r2:')) {
-        const parts = String(nextStoragePath).split('/');
+      const isViewOnly = String(nextStoragePath || '').startsWith('viewonly:');
+      const rawStoragePath = isViewOnly ? String(nextStoragePath).slice('viewonly:'.length) : nextStoragePath;
+      if (rawStoragePath && !String(rawStoragePath).startsWith('r2:')) {
+        const parts = String(rawStoragePath).split('/');
         const filename = parts.slice(1).join('/') || parts[0];
         const targetPath = `${newCourse.id}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${filename}`;
         try {
-          const { error: copyErr } = await supabase.storage.from('materials').copy(nextStoragePath, targetPath);
-          if (!copyErr) nextStoragePath = targetPath;
+          const { error: copyErr } = await supabase.storage.from('materials').copy(rawStoragePath, targetPath);
+          if (!copyErr) nextStoragePath = isViewOnly ? `viewonly:${targetPath}` : targetPath;
         } catch {
           // Keep existing path if storage copy fails
         }

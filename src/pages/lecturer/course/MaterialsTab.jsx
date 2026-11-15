@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
+import { useAuth } from '../../../lib/auth.jsx';
 import { rpc, run, supabase, safeFileName } from '../../../lib/supabase.js';
-import { openStoredFile, removeFiles, uploadFile, STORAGE_LIMIT_LABEL } from '../../../lib/files.js';
+import { isViewOnlyPath, openStoredFile, removeFiles, setViewOnlyFlag, uploadFile, STORAGE_LIMIT_LABEL } from '../../../lib/files.js';
+const SecureSlideViewer = lazy(() => import('../../../components/SecureSlideViewer.jsx'));
 import { fmtBytes, hostOf, relative } from '../../../lib/format.js';
 import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, KindTag, Loading, Modal, useAction, useLoad } from '../../../components/ui.jsx';
@@ -37,7 +39,9 @@ export default function MaterialsTab({ course }) {
   }, [course.id]);
   const [editingWeek, setEditingWeek] = useState(null); // {} for new
   const [adding, setAdding] = useState(null); // module id or 'general'
+  const { profile } = useAuth();
   const [removing, setRemoving] = useState(null);
+  const [previewing, setPreviewing] = useState(null);
   const [act, busy] = useAction();
 
   if (loading) return <Loading />;
@@ -95,6 +99,15 @@ export default function MaterialsTab({ course }) {
           onEdit={() => setEditingWeek(m)}
           onDeleteWeek={() => setRemoving({ type: 'module', item: m })}
           onDelete={(item) => setRemoving({ type: 'material', item })}
+          onPreview={(item) => setPreviewing(item)}
+          onToggleLock={async (item) => {
+            const nextPath = setViewOnlyFlag(item.storage_path, !isViewOnlyPath(item.storage_path));
+            const ok = await act(
+              () => run(supabase.from('materials').update({ storage_path: nextPath }).eq('id', item.id)),
+              isViewOnlyPath(item.storage_path) ? 'Download enabled for this PDF.' : 'Set to Read-Only (no download).'
+            );
+            if (ok !== undefined) reload();
+          }}
           statMap={data.statMap}
           statsSupported={data.statsSupported}
           act={act}
@@ -107,12 +120,30 @@ export default function MaterialsTab({ course }) {
         items={general}
         onAdd={() => setAdding('general')}
         onDelete={(item) => setRemoving({ type: 'material', item })}
+        onPreview={(item) => setPreviewing(item)}
+        onToggleLock={async (item) => {
+          const nextPath = setViewOnlyFlag(item.storage_path, !isViewOnlyPath(item.storage_path));
+          const ok = await act(
+            () => run(supabase.from('materials').update({ storage_path: nextPath }).eq('id', item.id)),
+            isViewOnlyPath(item.storage_path) ? 'Download enabled for this PDF.' : 'Set to Read-Only (no download).'
+          );
+          if (ok !== undefined) reload();
+        }}
         act={act}
         muted
       />
 
       {editingWeek && <WeekForm course={course} week={editingWeek} onClose={() => setEditingWeek(null)} onSaved={reload} />}
       {adding && <MaterialForm course={course} moduleId={adding === 'general' ? null : adding} onClose={() => setAdding(null)} onSaved={reload} />}
+      {previewing && (
+        <Suspense fallback={<div className="secure-reader-backdrop" style={{ alignItems: 'center', justifyContent: 'center' }}><div className="spinner" /></div>}>
+          <SecureSlideViewer
+            material={previewing}
+            watermarkText={profile?.full_name || 'Faculty Preview'}
+            onClose={() => setPreviewing(null)}
+          />
+        </Suspense>
+      )}
       {removing && (
         <Confirm
           title={removing.type === 'module' ? 'Delete this week?' : 'Delete this material?'}
@@ -130,7 +161,7 @@ export default function MaterialsTab({ course }) {
   );
 }
 
-function WeekCard({ title, summary, items, onAdd, onEdit, onDeleteWeek, onDelete, statMap, statsSupported, act, muted }) {
+function WeekCard({ title, summary, items, onAdd, onEdit, onDeleteWeek, onDelete, onPreview, onToggleLock, statMap, statsSupported, act, muted }) {
   return (
     <section className="card-flush" style={muted ? { background: 'var(--surface-2)' } : undefined}>
       <div className="card-head">
@@ -147,11 +178,20 @@ function WeekCard({ title, summary, items, onAdd, onEdit, onDeleteWeek, onDelete
       {items.length === 0 && <p className="small muted" style={{ padding: '14px 18px' }}>Nothing here yet.</p>}
       {items.map((m) => {
         const st = statMap?.get(m.id);
+        const viewOnly = isViewOnlyPath(m.storage_path);
+        const isPdf = m.storage_path && (m.kind === 'pdf' || /\.pdf$/i.test(m.storage_path));
         return (
         <div key={m.id} className="list-row">
           <KindTag kind={m.kind} />
           <span className="list-main">
-            <span className="title">{m.title}</span>
+            <span className="title">
+              {m.title}
+              {viewOnly && (
+                <span className="badge badge-teal" style={{ marginLeft: 8, fontSize: 11 }}>
+                  <Icon name="lock" size={11} /> Read-only
+                </span>
+              )}
+            </span>
             <span className="tiny muted">
               {m.url ? hostOf(m.url) : fmtBytes(m.size_bytes)} · added {relative(m.created_at)}
               {statsSupported && (
@@ -159,8 +199,20 @@ function WeekCard({ title, summary, items, onAdd, onEdit, onDeleteWeek, onDelete
               )}
             </span>
           </span>
+          {isPdf && onToggleLock && (
+            <button
+              type="button"
+              className="icon-btn plain"
+              title={viewOnly ? 'Currently read-only — click to allow downloads' : 'Currently downloadable — click to lock as read-only'}
+              aria-label={viewOnly ? `Allow downloads for ${m.title}` : `Make ${m.title} read-only`}
+              onClick={() => onToggleLock(m)}
+              style={{ color: viewOnly ? 'var(--teal-dark)' : 'var(--muted)' }}
+            >
+              <Icon name="lock" size={16} />
+            </button>
+          )}
           <button type="button" className="icon-btn plain" aria-label={`Open ${m.title}`}
-            onClick={() => (m.url ? window.open(m.url, '_blank', 'noopener') : act(() => openStoredFile('materials', m.storage_path)))}>
+            onClick={() => (m.url ? window.open(m.url, '_blank', 'noopener') : viewOnly ? onPreview?.(m) : act(() => openStoredFile('materials', m.storage_path)))}>
             <Icon name={m.url ? 'link' : 'eye'} />
           </button>
           <button type="button" className="icon-btn plain" aria-label={`Delete ${m.title}`} onClick={() => onDelete(m)}>
@@ -205,6 +257,7 @@ function WeekForm({ course, week, onClose, onSaved }) {
 function MaterialForm({ course, moduleId, onClose, onSaved }) {
   const [mode, setMode] = useState('upload');
   const [files, setFiles] = useState([]);
+  const [viewOnly, setViewOnly] = useState(true);
   const [title, setTitle] = useState('');
   const [url, setUrl] = useState('');
   const [busy, setBusy] = useState(false);
@@ -231,9 +284,11 @@ function MaterialForm({ course, moduleId, onClose, onSaved }) {
           } catch (upErr) {
             throw new Error(`Upload of "${file.name}" failed: ${upErr.message}`);
           }
+          const isPdfFile = /\.pdf$/i.test(file.name);
+          const finalPath = viewOnly && isPdfFile ? setViewOnlyFlag(stored, true) : stored;
           const niceTitle = files.length === 1 && title.trim() ? title.trim() : file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
           await run(supabase.from('materials').insert({
-            course_id: course.id, module_id: moduleId, kind: kindFromName(file.name), title: niceTitle, storage_path: stored, size_bytes: file.size,
+            course_id: course.id, module_id: moduleId, kind: kindFromName(file.name), title: niceTitle, storage_path: finalPath, size_bytes: file.size,
           }));
         }
       }
@@ -266,6 +321,17 @@ function MaterialForm({ course, moduleId, onClose, onSaved }) {
             </Field>
           )}
           {files.length > 1 && <p className="small muted">{files.length} files — each will be titled from its file name. You can rename by deleting and re-adding.</p>}
+          <label className="check" style={{ marginTop: 4 }}>
+            <input type="checkbox" checked={viewOnly} onChange={(e) => setViewOnly(e.target.checked)} />
+            <span>
+              <strong>Read-only in browser (no download)</strong> — for PDFs, blocks downloading/copying and stamps each student&apos;s index number across every slide
+            </span>
+          </label>
+          {viewOnly && files.some((f) => /\.(ppt|pptx|key|odp)$/i.test(f.name)) && (
+            <div className="notice notice-warn small">
+              <strong>PowerPoint file selected:</strong> Browsers cannot display raw <span className="mono">.pptx</span> files without downloading. To block downloads and AI uploads, export your slides in PowerPoint (<em>File → Save As → PDF</em>) and upload the PDF instead.
+            </div>
+          )}
         </>
       ) : (
         <>

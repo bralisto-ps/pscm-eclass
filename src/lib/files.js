@@ -1,13 +1,25 @@
 // One place for uploading, opening and deleting files.
-// With VITE_FILES_BACKEND=r2 new files go to Cloudflare R2 (through the
-// "files" Edge Function); otherwise they go to Supabase Storage.
-// Paths stored in the database start with "r2:" when the file is on R2,
-// so older Supabase files keep working after switching.
+// Paths stored in the database may start with "viewonly:" (read-only in-browser viewer)
+// and/or "r2:" (Cloudflare R2 storage).
 import { supabase, friendlyError } from './supabase.js';
 
 // Using Supabase Pro 100 GB storage as primary; past files on R2 starting with 'r2:' continue to open seamlessly
 export const usingR2 = false;
 export const STORAGE_LIMIT_LABEL = '100 GB (Supabase Pro)';
+
+export function isViewOnlyPath(storedPath) {
+  return String(storedPath || '').startsWith('viewonly:');
+}
+
+export function stripViewOnly(storedPath) {
+  return String(storedPath || '').replace(/^viewonly:/, '');
+}
+
+export function setViewOnlyFlag(storedPath, viewOnly) {
+  const clean = stripViewOnly(storedPath);
+  if (!clean) return clean;
+  return viewOnly ? `viewonly:${clean}` : clean;
+}
 
 async function callFiles(body) {
   const { data, error } = await supabase.functions.invoke('files', { body });
@@ -44,17 +56,20 @@ export async function uploadFile(bucket, path, file) {
   return path;
 }
 
+export async function getSignedFileUrl(bucket, storedPath) {
+  const cleanPath = stripViewOnly(storedPath);
+  if (String(cleanPath).startsWith('r2:')) {
+    return (await callFiles({ action: 'download', bucket, path: cleanPath })).url;
+  }
+  const { data, error } = await supabase.storage.from(bucket).createSignedUrl(cleanPath, 60 * 60);
+  if (error) throw new Error(friendlyError(error));
+  return data.signedUrl;
+}
+
 export async function openStoredFile(bucket, storedPath) {
   const win = window.open('', '_blank');
   try {
-    let url;
-    if (String(storedPath).startsWith('r2:')) {
-      url = (await callFiles({ action: 'download', bucket, path: storedPath })).url;
-    } else {
-      const { data, error } = await supabase.storage.from(bucket).createSignedUrl(storedPath, 60 * 60);
-      if (error) throw new Error(friendlyError(error));
-      url = data.signedUrl;
-    }
+    const url = await getSignedFileUrl(bucket, storedPath);
     if (win) win.location.href = url;
     else window.location.href = url;
   } catch (e) {
@@ -64,7 +79,7 @@ export async function openStoredFile(bucket, storedPath) {
 }
 
 export async function removeFiles(bucket, storedPaths) {
-  const paths = (storedPaths || []).filter(Boolean);
+  const paths = (storedPaths || []).filter(Boolean).map(stripViewOnly);
   const r2 = paths.filter((p) => p.startsWith('r2:'));
   const local = paths.filter((p) => !p.startsWith('r2:'));
   for (let i = 0; i < r2.length; i += 500) {
