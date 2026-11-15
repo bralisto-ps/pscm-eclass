@@ -1,139 +1,577 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { rpc, run, supabase } from '../../lib/supabase.js';
 import { useAuth } from '../../lib/auth.jsx';
-import { COURSE_COLORS, contrastWithWhite, greeting, initials } from '../../lib/format.js';
+import { COURSE_COLORS, contrastWithWhite, fmtDate, greeting, initials, relative } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import { Bar, DashboardSkeleton, ErrorNote, Field, Modal, Swatch, useAction, useLoad } from '../../components/ui.jsx';
 import CloneCourseModal from '../../components/CloneCourseModal.jsx';
 
+function dayKey(d) {
+  const dt = new Date(d);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+}
+
+async function fetchDashboardBundle() {
+  const overview = await rpc('lecturer_overview');
+  const courses = Array.isArray(overview) ? overview : [];
+  if (!courses.length) {
+    return {
+      courses,
+      pendingAssignments: [],
+      pendingQuizzes: [],
+      deadlines: [],
+      liveAttendance: [],
+      liveQuizzes: [],
+      liveQuizTakers: 0,
+      dailyPulse: [],
+      unansweredQa: [],
+    };
+  }
+
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const sevenDaysAgo = new Date(now);
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+  sevenDaysAgo.setHours(0, 0, 0, 0);
+  const fourteenDaysAhead = new Date(now.getTime() + 14 * 86400 * 1000).toISOString();
+
+  const [
+    unmarkedSubsRes,
+    unmarkedEssaysRes,
+    quizzesRes,
+    assignmentsRes,
+    attendanceRes,
+    recentAttemptsRes,
+    recentSubsRes,
+    qaRes,
+  ] = await Promise.allSettled([
+    supabase
+      .from('submissions')
+      .select('id, assignment_id, submitted_at, assignments!inner(id, title, course_id)')
+      .is('marks', null)
+      .order('submitted_at', { ascending: false })
+      .limit(500),
+    supabase
+      .from('responses')
+      .select('id, attempts!inner(quiz_id, status, quizzes!inner(id, title, course_id)), questions!inner(kind)')
+      .is('marks_awarded', null)
+      .neq('attempts.status', 'in_progress')
+      .eq('questions.kind', 'essay')
+      .limit(500),
+    supabase
+      .from('quizzes')
+      .select('id, course_id, title, opens_at, closes_at, published, is_practice')
+      .eq('published', true),
+    supabase
+      .from('assignments')
+      .select('id, course_id, title, due_at, published')
+      .eq('published', true),
+    supabase
+      .from('attendance_sessions')
+      .select('id, course_id, title, opens_at, closes_at')
+      .lte('opens_at', nowIso)
+      .gte('closes_at', nowIso)
+      .order('closes_at'),
+    supabase
+      .from('attempts')
+      .select('id, quiz_id, status, started_at, submitted_at, quizzes!inner(course_id)')
+      .gte('started_at', sevenDaysAgo.toISOString())
+      .limit(1000),
+    supabase
+      .from('submissions')
+      .select('id, submitted_at')
+      .gte('submitted_at', sevenDaysAgo.toISOString())
+      .limit(1000),
+    supabase
+      .from('forum_posts')
+      .select('id, course_id, body, created_at')
+      .is('answer', null)
+      .eq('hidden', false)
+      .order('created_at', { ascending: false })
+      .limit(20),
+  ]);
+
+  const activeIds = new Set(courses.filter((c) => !c.archived).map((c) => c.id));
+
+  // 1. Aggregate unmarked assignment submissions per assignment
+  const assignMap = new Map();
+  if (unmarkedSubsRes.status === 'fulfilled' && !unmarkedSubsRes.value.error) {
+    for (const s of unmarkedSubsRes.value.data || []) {
+      const a = s.assignments;
+      if (!a || !activeIds.has(a.course_id)) continue;
+      if (!assignMap.has(a.id)) {
+        assignMap.set(a.id, {
+          kind: 'assign',
+          id: a.id,
+          title: a.title,
+          courseId: a.course_id,
+          count: 0,
+          latestAt: s.submitted_at,
+          to: `/teach/assignment/${a.id}`,
+        });
+      }
+      assignMap.get(a.id).count += 1;
+    }
+  }
+
+  // 2. Aggregate unmarked written quiz responses per quiz
+  const quizMarkMap = new Map();
+  if (unmarkedEssaysRes.status === 'fulfilled' && !unmarkedEssaysRes.value.error) {
+    for (const r of unmarkedEssaysRes.value.data || []) {
+      const q = r.attempts?.quizzes;
+      if (!q || !activeIds.has(q.course_id)) continue;
+      if (!quizMarkMap.has(q.id)) {
+        quizMarkMap.set(q.id, {
+          kind: 'quiz',
+          id: q.id,
+          title: q.title,
+          courseId: q.course_id,
+          count: 0,
+          to: `/teach/quiz/${q.id}/results?tab=marking`,
+        });
+      }
+      quizMarkMap.get(q.id).count += 1;
+    }
+  }
+
+  // 3. Quizzes: currently open + upcoming deadlines
+  const liveQuizzes = [];
+  const deadlines = [];
+  if (quizzesRes.status === 'fulfilled' && !quizzesRes.value.error) {
+    for (const q of quizzesRes.value.data || []) {
+      if (!activeIds.has(q.course_id)) continue;
+      const opens = q.opens_at ? new Date(q.opens_at).getTime() : 0;
+      const closes = q.closes_at ? new Date(q.closes_at).getTime() : Infinity;
+      const nowMs = now.getTime();
+      if (!q.is_practice && opens <= nowMs && closes >= nowMs && q.closes_at) {
+        liveQuizzes.push({
+          id: q.id,
+          courseId: q.course_id,
+          title: q.title,
+          closesAt: q.closes_at,
+          to: `/teach/quiz/${q.id}/results?tab=live`,
+        });
+      }
+      if (!q.is_practice && q.closes_at && q.closes_at >= nowIso && q.closes_at <= fourteenDaysAhead) {
+        deadlines.push({
+          kind: 'quiz',
+          id: q.id,
+          courseId: q.course_id,
+          title: q.title,
+          due: q.closes_at,
+          to: `/teach/quiz/${q.id}/results`,
+        });
+      }
+    }
+  }
+
+  // 4. Assignments: upcoming deadlines
+  if (assignmentsRes.status === 'fulfilled' && !assignmentsRes.value.error) {
+    for (const a of assignmentsRes.value.data || []) {
+      if (!activeIds.has(a.course_id)) continue;
+      if (a.due_at && a.due_at >= nowIso && a.due_at <= fourteenDaysAhead) {
+        deadlines.push({
+          kind: 'assign',
+          id: a.id,
+          courseId: a.course_id,
+          title: a.title,
+          due: a.due_at,
+          to: `/teach/assignment/${a.id}`,
+        });
+      }
+    }
+  }
+  deadlines.sort((a, b) => new Date(a.due) - new Date(b.due));
+
+  // 5. Live attendance sessions
+  const liveAttendance = [];
+  if (attendanceRes.status === 'fulfilled' && !attendanceRes.value.error) {
+    for (const s of attendanceRes.value.data || []) {
+      if (!activeIds.has(s.course_id)) continue;
+      liveAttendance.push({
+        id: s.id,
+        courseId: s.course_id,
+        title: s.title || 'Class attendance',
+        closesAt: s.closes_at,
+        to: `/teach/course/${s.course_id}?tab=attendance`,
+      });
+    }
+  }
+
+  // 6. 7-Day student activity pulse + live active quiz takers
+  const pulseDays = [];
+  const pulseByKey = new Map();
+  for (let i = 0; i < 7; i += 1) {
+    const d = new Date(sevenDaysAgo);
+    d.setDate(sevenDaysAgo.getDate() + i);
+    const key = dayKey(d);
+    const entry = {
+      key,
+      short: d.toLocaleDateString('en-GB', { weekday: 'short' }).slice(0, 3),
+      full: d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }),
+      attempts: 0,
+      submissions: 0,
+      total: 0,
+      isToday: i === 6,
+    };
+    pulseDays.push(entry);
+    pulseByKey.set(key, entry);
+  }
+
+  let liveQuizTakers = 0;
+  const activeTakersByQuiz = new Map();
+  if (recentAttemptsRes.status === 'fulfilled' && !recentAttemptsRes.value.error) {
+    for (const at of recentAttemptsRes.value.data || []) {
+      if (at.status === 'in_progress' && activeIds.has(at.quizzes?.course_id)) {
+        liveQuizTakers += 1;
+        activeTakersByQuiz.set(at.quiz_id, (activeTakersByQuiz.get(at.quiz_id) || 0) + 1);
+      }
+      const bucket = pulseByKey.get(dayKey(at.started_at));
+      if (bucket) {
+        bucket.attempts += 1;
+        bucket.total += 1;
+      }
+    }
+  }
+  if (recentSubsRes.status === 'fulfilled' && !recentSubsRes.value.error) {
+    for (const sub of recentSubsRes.value.data || []) {
+      const bucket = pulseByKey.get(dayKey(sub.submitted_at));
+      if (bucket) {
+        bucket.submissions += 1;
+        bucket.total += 1;
+      }
+    }
+  }
+
+  // Attach active takers count to live quizzes
+  for (const lq of liveQuizzes) {
+    lq.activeTakers = activeTakersByQuiz.get(lq.id) || 0;
+  }
+
+  // 7. Unanswered Q&A
+  const unansweredQa = [];
+  if (qaRes.status === 'fulfilled' && !qaRes.value.error) {
+    for (const p of qaRes.value.data || []) {
+      if (!activeIds.has(p.course_id)) continue;
+      unansweredQa.push({
+        id: p.id,
+        courseId: p.course_id,
+        body: p.body,
+        createdAt: p.created_at,
+        to: `/teach/course/${p.course_id}?tab=qa`,
+      });
+    }
+  }
+
+  return {
+    courses,
+    pendingAssignments: [...assignMap.values()].sort((a, b) => b.count - a.count),
+    pendingQuizzes: [...quizMarkMap.values()].sort((a, b) => b.count - a.count),
+    deadlines: deadlines.slice(0, 6),
+    liveAttendance,
+    liveQuizzes,
+    liveQuizTakers,
+    dailyPulse: pulseDays,
+    unansweredQa: unansweredQa.slice(0, 4),
+  };
+}
+
 export default function Dashboard() {
   const { profile, isTA } = useAuth();
-  const { data, error, loading, reload } = useLoad(() => rpc('lecturer_overview'), []);
+  const { data: bundle, error, loading, reload } = useLoad(fetchDashboardBundle, []);
   const [creating, setCreating] = useState(false);
   const [cloning, setCloning] = useState(false);
+  const [search, setSearch] = useState('');
+  const [semesterFilter, setSemesterFilter] = useState('ALL');
+  const [hoveredDay, setHoveredDay] = useState(null);
 
-  const courses = (data || []).filter((c) => !c.archived);
-  const archived = (data || []).filter((c) => c.archived);
-  const totals = courses.reduce(
-    (t, c) => ({
-      students: t.students + c.students,
-      activated: t.activated + c.activated,
-      toMark: t.toMark + c.to_mark,
-      quizzes: t.quizzes + c.quizzes,
-    }),
-    { students: 0, activated: 0, toMark: 0, quizzes: 0 },
-  );
+  const allRows = bundle?.courses || [];
+  const courses = useMemo(() => allRows.filter((c) => !c.archived), [allRows]);
+  const archived = useMemo(() => allRows.filter((c) => c.archived), [allRows]);
+  const courseById = useMemo(() => new Map(allRows.map((c) => [c.id, c])), [allRows]);
+
+  const semesters = useMemo(() => {
+    const s = [...new Set(courses.map((c) => (c.semester || '').trim()).filter(Boolean))];
+    return s;
+  }, [courses]);
+
+  const filteredCourses = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return courses.filter((c) => {
+      if (semesterFilter !== 'ALL' && (c.semester || '').trim() !== semesterFilter) return false;
+      if (!q) return true;
+      return `${c.code} ${c.title} ${c.semester || ''}`.toLowerCase().includes(q);
+    });
+  }, [courses, search, semesterFilter]);
+
+  const totals = useMemo(() => {
+    return courses.reduce(
+      (t, c) => ({
+        students: t.students + c.students,
+        activated: t.activated + c.activated,
+        toMark: t.toMark + c.to_mark,
+        quizzes: t.quizzes + c.quizzes,
+      }),
+      { students: 0, activated: 0, toMark: 0, quizzes: 0 },
+    );
+  }, [courses]);
+
   const activatedPct = totals.students ? Math.round((totals.activated / totals.students) * 100) : 0;
-  const markingCourses = [...courses].filter((c) => (c.to_mark || 0) > 0).sort((a, b) => (b.to_mark || 0) - (a.to_mark || 0));
-  const priorityCourse = markingCourses[0] || courses[0] || null;
-  const activationWatch = [...courses]
-    .filter((c) => c.students > 0)
-    .sort((a, b) => (a.activated / a.students) - (b.activated / b.students))
-    .slice(0, 5);
 
-  const todayChip = {
-    day: new Date().toLocaleDateString('en-GB', { weekday: 'short' }).toUpperCase(),
-    date: new Date().getDate(),
-    month: new Date().toLocaleDateString('en-GB', { month: 'short' }).toUpperCase(),
-  };
+  // Combine per-assignment + per-quiz marking items; fallback cleanly to course links if needed
+  const directQueue = useMemo(() => {
+    if (!bundle) return [];
+    const items = [...bundle.pendingAssignments, ...bundle.pendingQuizzes].sort((a, b) => b.count - a.count);
+    if (items.length > 0) return items;
+    return courses
+      .filter((c) => (c.to_mark || 0) > 0)
+      .sort((a, b) => (b.to_mark || 0) - (a.to_mark || 0))
+      .map((c) => ({
+        kind: 'course',
+        id: c.id,
+        title: c.title,
+        courseId: c.id,
+        count: c.to_mark,
+        to: `/teach/course/${c.id}?tab=assignments`,
+      }));
+  }, [bundle, courses]);
 
+  const topAction = directQueue[0] || (courses[0] ? { to: `/teach/course/${courses[0].id}`, title: courses[0].code } : null);
+  const topActionCourse = topAction ? courseById.get(topAction.courseId) : null;
+
+  const activationWatch = useMemo(
+    () =>
+      courses
+        .filter((c) => c.students > 0 && c.activated < c.students)
+        .sort((a, b) => (a.activated / a.students) - (b.activated / b.students))
+        .slice(0, 5),
+    [courses],
+  );
+
+  const pulseDays = bundle?.dailyPulse || [];
+  const weeklyTotal = pulseDays.reduce((s, d) => s + d.total, 0);
+  const maxPulse = Math.max(1, ...pulseDays.map((d) => d.total));
+  const todayLabel = new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
   const facultyName =
     (isTA ? (profile.full_name || '').split(' ')[0] : (profile.full_name || '').split(' ').slice(-1)[0]) || 'Lecturer';
+
+  const hasLiveNow =
+    (bundle?.liveAttendance?.length || 0) > 0 ||
+    (bundle?.liveQuizzes?.length || 0) > 0 ||
+    (bundle?.liveQuizTakers || 0) > 0;
 
   return (
     <>
       <Topbar
         title={`${greeting()}, ${facultyName}`}
-        sub={isTA ? 'Teaching assistant' : 'Faculty dashboard'}
+        sub={isTA ? 'Teaching assistant workspace' : 'Faculty command center'}
       >
-        {!isTA && (
-          <div className="row-wrap" style={{ gap: 8 }}>
-            {(data || []).length > 0 && (
-              <button type="button" className="btn" onClick={() => setCloning(true)}>
-                <Icon name="layers" size={16} /> Clone for new semester
+        <div className="row-wrap" style={{ gap: 8 }}>
+          {courses.length >= 3 && (
+            <label className="search">
+              <span className="sr-only">Filter courses</span>
+              <Icon name="search" size={15} />
+              <input
+                className="input"
+                style={{ width: 190, minHeight: 38 }}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Find course…"
+              />
+            </label>
+          )}
+          {!isTA && (
+            <>
+              {allRows.length > 0 && (
+                <button type="button" className="btn" onClick={() => setCloning(true)}>
+                  <Icon name="layers" size={16} /> Clone semester
+                </button>
+              )}
+              <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+                <Icon name="plus" size={16} /> New course
               </button>
-            )}
-            <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
-              <Icon name="plus" size={16} /> New course
-            </button>
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </Topbar>
 
       <div className="page stack-lg">
         {loading && <DashboardSkeleton />}
         <ErrorNote error={error} onRetry={reload} />
-        {data && (
+
+        {bundle && (
           <>
             {courses.length > 0 && (
-              <section className="hero" aria-label="Faculty overview">
-                <div className="date-block">
-                  <span className="tiny strong" style={{ color: '#fcd34d', letterSpacing: '0.08em' }}>{todayChip.day}</span>
-                  <span className="d">{todayChip.date}</span>
-                  <span className="tiny" style={{ color: '#94a3b8' }}>{todayChip.month}</span>
+              <section className="exec-hero" aria-label="Faculty command overview">
+                <div className="exec-hero-main">
+                  <div className="stack-sm" style={{ gap: 10 }}>
+                    <div className="exec-kicker-row">
+                      <span className="exec-kicker">
+                        {hasLiveNow && <span className="pulse-dot" aria-hidden="true" />}
+                        {bundle.liveQuizTakers > 0
+                          ? `Live now · ${bundle.liveQuizTakers} taking quiz`
+                          : bundle.liveAttendance.length > 0
+                            ? `Live now · Attendance open`
+                            : totals.toMark > 0
+                              ? `Action queue · ${directQueue.length} item${directQueue.length === 1 ? '' : 's'}`
+                              : 'Faculty command'}
+                      </span>
+                      <span className="exec-date-pill">{todayLabel}</span>
+                    </div>
+
+                    <div>
+                      <h2 className="exec-hero-title">
+                        {totals.toMark > 0
+                          ? `${totals.toMark} ${totals.toMark === 1 ? 'script' : 'scripts'} awaiting your review`
+                          : 'All quizzes and assignments are up to date'}
+                      </h2>
+                      <p className="exec-hero-sub">
+                        {totals.toMark > 0 && topAction
+                          ? `Priority: ${topActionCourse?.code ? `${topActionCourse.code} — ` : ''}${topAction.title} (${topAction.count} pending).`
+                          : `Monitoring ${courses.length} active course${courses.length === 1 ? '' : 's'} with ${weeklyTotal.toLocaleString()} student actions this week.`}
+                      </p>
+                    </div>
+
+                    {topAction && (
+                      <div className="row-wrap" style={{ gap: 10 }}>
+                        <Link to={topAction.to} className="btn btn-light btn-sm">
+                          {totals.toMark > 0
+                            ? `Mark ${topActionCourse?.code || 'next item'}`
+                            : `Open ${topActionCourse?.code || 'course'}`}
+                          <Icon name="arrowRight" size={14} />
+                        </Link>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Single authoritative metrics strip — zero duplicate KPI grid below */}
+                  <div className="exec-metrics">
+                    <div className="exec-metric">
+                      <span className="num">{courses.length}</span>
+                      <span className="lbl">Active courses</span>
+                    </div>
+                    <div className="exec-metric">
+                      <span className="num">{totals.students.toLocaleString()}</span>
+                      <span className="lbl">Enrolled students</span>
+                    </div>
+                    <div className="exec-metric">
+                      <span className="num">{totals.quizzes}</span>
+                      <span className="lbl">Published quizzes</span>
+                    </div>
+                    <div className="exec-metric">
+                      <span className="num">{activatedPct}%</span>
+                      <span className="lbl">Portal activated</span>
+                    </div>
+                  </div>
                 </div>
-                <div style={{ flex: 1, minWidth: 0 }} className="stack-sm">
-                  <span className="kicker">
-                    {totals.toMark > 0 ? `Marking queue · ${priorityCourse?.code}` : 'Faculty overview'}
-                  </span>
-                  <span className="title" style={{ fontSize: 24 }}>
-                    {totals.toMark > 0
-                      ? `${totals.toMark} submission${totals.toMark === 1 ? '' : 's'} awaiting marking`
-                      : 'All coursework and quizzes are up to date'}
-                  </span>
-                  <span className="meta">
-                    {courses.length} active course{courses.length === 1 ? '' : 's'} · {totals.students.toLocaleString()} students · {totals.quizzes} quizzes · {activatedPct}% portal activated
-                  </span>
+
+                {/* 7-Day Live Student Activity Sparkline */}
+                <div className="exec-pulse-panel" aria-label="7-day student activity">
+                  <div className="exec-pulse-head">
+                    <div>
+                      <div className="tiny strong" style={{ color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+                        7-day class pulse
+                      </div>
+                      <div style={{ fontFamily: 'var(--serif)', fontSize: 22, fontWeight: 600, color: '#fff', lineHeight: 1.2, marginTop: 2 }}>
+                        {weeklyTotal.toLocaleString()}{' '}
+                        <span className="tiny" style={{ fontFamily: 'var(--sans)', fontWeight: 400, color: '#cbd5e1' }}>
+                          attempts &amp; hand-ins
+                        </span>
+                      </div>
+                    </div>
+                    <span className="tiny" style={{ color: hoveredDay ? '#fcd34d' : '#5eead4', fontFamily: 'var(--mono)', textAlign: 'right' }}>
+                      {hoveredDay
+                        ? `${hoveredDay.full}: ${hoveredDay.attempts} quiz · ${hoveredDay.submissions} sub`
+                        : 'Last 7 days'}
+                    </span>
+                  </div>
+
+                  <div className="exec-pulse-bars" onMouseLeave={() => setHoveredDay(null)}>
+                    {pulseDays.map((d) => {
+                      const quizH = d.attempts ? Math.max(6, Math.round((d.attempts / maxPulse) * 66)) : 0;
+                      const subH = d.submissions ? Math.max(6, Math.round((d.submissions / maxPulse) * 66)) : 0;
+                      return (
+                        <div
+                          key={d.key}
+                          className={`exec-bar-col ${d.isToday ? 'today' : ''}`}
+                          onMouseEnter={() => setHoveredDay(d)}
+                          title={`${d.full}: ${d.attempts} quiz attempt(s), ${d.submissions} assignment submission(s)`}
+                        >
+                          <div className="exec-bar-track">
+                            {subH > 0 && <div className="exec-bar-sub" style={{ height: subH }} />}
+                            {quizH > 0 && <div className="exec-bar-quiz" style={{ height: quizH }} />}
+                          </div>
+                          <span className="exec-bar-day">{d.short}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="between tiny" style={{ color: 'rgba(203, 213, 225, 0.8)', paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                    <span className="row" style={{ gap: 10 }}>
+                      <span className="row" style={{ gap: 5 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: 2, background: '#2dd4bf', display: 'inline-block' }} /> Quizzes
+                      </span>
+                      <span className="row" style={{ gap: 5 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: 2, background: '#fbbf24', display: 'inline-block' }} /> Assignments
+                      </span>
+                    </span>
+                    <span className="mono">{totals.activated.toLocaleString()}/{totals.students.toLocaleString()} active</span>
+                  </div>
                 </div>
-                {priorityCourse && (
-                  <Link
-                    to={totals.toMark > 0 ? `/teach/course/${priorityCourse.id}?tab=assignments` : `/teach/course/${priorityCourse.id}`}
-                    className="btn btn-light"
-                  >
-                    {totals.toMark > 0 ? `Mark ${priorityCourse.code}` : `Open ${priorityCourse.code}`}
-                  </Link>
-                )}
               </section>
             )}
 
-            <section className="grid-4" aria-label="Summary">
-              <div className="kpi">
-                <div className="kpi-head">
-                  <span className="l">Active courses</span>
-                  <span className="kpi-icon"><Icon name="book" size={15} /></span>
-                </div>
-                <span className="v">{courses.length}</span>
-                <span className="kpi-sub">{totals.quizzes} {totals.quizzes === 1 ? 'quiz' : 'quizzes'} published</span>
-              </div>
-              <div className="kpi">
-                <div className="kpi-head">
-                  <span className="l">Enrolments</span>
-                  <span className="kpi-icon blue"><Icon name="users" size={15} /></span>
-                </div>
-                <span className="v">{totals.students.toLocaleString()}</span>
-                <span className="kpi-sub">Across {courses.length} {courses.length === 1 ? 'course' : 'courses'}</span>
-              </div>
-              <div className="kpi">
-                <div className="kpi-head">
-                  <span className="l">Accounts activated</span>
-                  <span className="kpi-icon plum"><Icon name="check" size={15} /></span>
-                </div>
-                <span className="v">{activatedPct}%</span>
-                <span className="kpi-sub">{totals.activated.toLocaleString()} of {totals.students.toLocaleString()} students</span>
-              </div>
-              <div className="kpi">
-                <div className="kpi-head">
-                  <span className="l">Waiting for marking</span>
-                  <span className={`kpi-icon ${totals.toMark ? 'amber' : ''}`} style={!totals.toMark ? { background: 'var(--grey-50)', color: 'var(--muted)' } : undefined}>
-                    <Icon name="clock" size={15} />
-                  </span>
-                </div>
-                <span className="v" style={{ color: totals.toMark ? 'var(--amber-ink)' : undefined }}>{totals.toMark}</span>
-                <span className="kpi-sub">{totals.toMark ? 'Submissions to review' : 'All caught up'}</span>
-              </div>
-            </section>
+            {/* Live Now Classroom Strip (only renders when attendance or a timed quiz is active right now) */}
+            {(bundle.liveAttendance.length > 0 || bundle.liveQuizzes.length > 0) && (
+              <section className="live-strip" aria-label="Active sessions right now">
+                {bundle.liveAttendance.map((att) => {
+                  const c = courseById.get(att.courseId);
+                  return (
+                    <div key={att.id} className="live-pill-card">
+                      <div className="row" style={{ gap: 10, minWidth: 0 }}>
+                        <span className="pulse-dot" aria-hidden="true" />
+                        <div style={{ minWidth: 0 }}>
+                          <div className="small strong">
+                            Attendance open · {c?.code || 'Course'}
+                          </div>
+                          <div className="tiny muted">
+                            {att.title} · closes {relative(att.closesAt)}
+                          </div>
+                        </div>
+                      </div>
+                      <Link to={att.to} className="btn btn-sm btn-primary">
+                        Manage hall
+                      </Link>
+                    </div>
+                  );
+                })}
+                {bundle.liveQuizzes.map((lq) => {
+                  const c = courseById.get(lq.courseId);
+                  return (
+                    <div key={lq.id} className="live-pill-card">
+                      <div className="row" style={{ gap: 10, minWidth: 0 }}>
+                        <span className="pulse-dot" aria-hidden="true" />
+                        <div style={{ minWidth: 0 }}>
+                          <div className="small strong">
+                            Quiz live · {c?.code || 'Course'} — {lq.title}
+                          </div>
+                          <div className="tiny muted">
+                            {lq.activeTakers > 0 ? `${lq.activeTakers} student${lq.activeTakers === 1 ? '' : 's'} taking now · ` : ''}
+                            closes {relative(lq.closesAt)}
+                          </div>
+                        </div>
+                      </div>
+                      <Link to={lq.to} className="btn btn-sm">
+                        Live monitor
+                      </Link>
+                    </div>
+                  );
+                })}
+              </section>
+            )}
 
             {courses.length === 0 && isTA ? (
               <div className="card stack">
@@ -158,59 +596,155 @@ export default function Dashboard() {
             ) : (
               <div className="two-col">
                 <main className="stack">
-                  <div className="section-title" style={{ marginBottom: 0 }}>
-                    <h2>Your courses</h2>
-                    <span className="small muted">{courses.length} active</span>
+                  <div className="between" style={{ flexWrap: 'wrap', gap: 10 }}>
+                    <div className="row" style={{ gap: 10 }}>
+                      <h2 style={{ margin: 0 }}>Your courses</h2>
+                      <span className="small muted">{filteredCourses.length} shown</span>
+                    </div>
+                    {semesters.length > 1 && (
+                      <div className="chips" role="group" aria-label="Filter by semester">
+                        <button type="button" className="chip" aria-pressed={semesterFilter === 'ALL'} onClick={() => setSemesterFilter('ALL')}>
+                          All semesters
+                        </button>
+                        {semesters.map((sem) => (
+                          <button key={sem} type="button" className="chip" aria-pressed={semesterFilter === sem} onClick={() => setSemesterFilter(sem)}>
+                            {sem}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <div className="grid-2">
-                    {courses.map((c) => <CourseCard key={c.id} c={c} isTA={isTA} />)}
-                  </div>
+
+                  {filteredCourses.length === 0 ? (
+                    <div className="card small muted">No courses match “{search}”.</div>
+                  ) : (
+                    <div className="grid-2">
+                      {filteredCourses.map((c) => <CourseCard key={c.id} c={c} isTA={isTA} />)}
+                    </div>
+                  )}
                 </main>
 
                 <aside className="stack">
+                  {/* 1. Direct Marking Queue (Routes straight to Assignment OR Quiz Written Marking!) */}
                   <section className="card-flush">
                     <div className="card-head">
                       <h2>Marking queue</h2>
                       <span className="small muted mono">{totals.toMark} pending</span>
                     </div>
-                    {markingCourses.length === 0 ? (
-                      <div style={{ padding: '18px' }} className="small muted">
-                        All assignment submissions and manual quiz questions are marked.
+                    {directQueue.length === 0 ? (
+                      <div style={{ padding: '16px 18px' }} className="small muted">
+                        All assignment submissions and written quiz answers are marked.
                       </div>
                     ) : (
-                      markingCourses.map((c) => (
-                        <Link key={c.id} to={`/teach/course/${c.id}?tab=assignments`} className="list-row">
-                          <span className="nav-course-dot" style={{ background: c.color, width: 12, height: 12 }} />
-                          <div className="list-main">
-                            <span className="title">{c.title}</span>
-                            <span className="tiny muted">{c.code} · {c.students} students</span>
-                          </div>
-                          <span className="mono strong small" style={{ color: 'var(--amber-ink)' }}>
-                            {c.to_mark}
-                          </span>
-                        </Link>
-                      ))
+                      directQueue.slice(0, 6).map((item) => {
+                        const c = courseById.get(item.courseId);
+                        return (
+                          <Link key={`${item.kind}-${item.id}`} to={item.to} className="list-row">
+                            <span className="nav-course-dot" style={{ background: c?.color || 'var(--teal)', width: 11, height: 11 }} />
+                            <div className="list-main">
+                              <span className="title">{item.title}</span>
+                              <span className="tiny muted row" style={{ gap: 6, marginTop: 2 }}>
+                                <span className={`queue-kind ${item.kind === 'quiz' ? 'quiz' : item.kind === 'assign' ? 'assign' : ''}`}>
+                                  {item.kind === 'quiz' ? 'Quiz essay' : item.kind === 'assign' ? 'Assignment' : 'Course'}
+                                </span>
+                                {c?.code}
+                              </span>
+                            </div>
+                            <span className="mono strong small" style={{ color: 'var(--amber-ink)' }}>
+                              {item.count}
+                            </span>
+                          </Link>
+                        );
+                      })
                     )}
                   </section>
 
+                  {/* 2. Upcoming Deadlines Across All Courses */}
                   <section className="card-flush">
                     <div className="card-head">
-                      <h2>Cohort activation</h2>
-                      <span className="small muted mono">{activatedPct}%</span>
+                      <h2>Closing in 14 days</h2>
+                      <span className="small muted mono">{bundle.deadlines.length}</span>
                     </div>
-                    {activationWatch.map((c) => {
-                      const pctVal = c.students ? Math.round((c.activated / c.students) * 100) : 0;
-                      return (
-                        <Link key={c.id} to={`/teach/course/${c.id}?tab=students`} className="list-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
-                          <div className="between">
-                            <span className="small strong">{c.code}</span>
-                            <span className="mono tiny muted">{c.activated}/{c.students} ({pctVal}%)</span>
-                          </div>
-                          <Bar value={pctVal} color={c.color} />
-                        </Link>
-                      );
-                    })}
+                    {bundle.deadlines.length === 0 ? (
+                      <div style={{ padding: '16px 18px' }} className="small muted">
+                        No published quizzes or assignments closing in the next two weeks.
+                      </div>
+                    ) : (
+                      bundle.deadlines.map((d) => {
+                        const c = courseById.get(d.courseId);
+                        return (
+                          <Link key={`${d.kind}-${d.id}`} to={d.to} className="list-row">
+                            <span className="nav-course-dot" style={{ background: c?.color || 'var(--teal)', width: 10, height: 10 }} />
+                            <div className="list-main">
+                              <span className="title">{d.title}</span>
+                              <span className="tiny muted">
+                                {c?.code} · {d.kind === 'quiz' ? 'Quiz closes' : 'Due'} {relative(d.due)} ({fmtDate(d.due)})
+                              </span>
+                            </div>
+                            <Icon name="chevronRight" size={14} style={{ color: 'var(--muted)' }} />
+                          </Link>
+                        );
+                      })
+                    )}
                   </section>
+
+                  {/* 3. Cohort Activation Watch — Only shows courses below 100% */}
+                  <section className="card-flush">
+                    <div className="card-head">
+                      <h2>Activation watch</h2>
+                      <span className="small muted mono">{activatedPct}% overall</span>
+                    </div>
+                    {activationWatch.length === 0 ? (
+                      <div style={{ padding: '16px 18px', color: 'var(--green-ink)' }} className="small row">
+                        <Icon name="check" size={15} /> All enrolled students have activated their accounts.
+                      </div>
+                    ) : (
+                      activationWatch.map((c) => {
+                        const pctVal = c.students ? Math.round((c.activated / c.students) * 100) : 0;
+                        const missing = c.students - c.activated;
+                        return (
+                          <Link
+                            key={c.id}
+                            to={`/teach/course/${c.id}?tab=students`}
+                            className="list-row"
+                            style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}
+                          >
+                            <div className="between">
+                              <span className="small strong">{c.code}</span>
+                              <span className="mono tiny muted">
+                                {missing} pending ({pctVal}%)
+                              </span>
+                            </div>
+                            <Bar value={pctVal} color={c.color} />
+                          </Link>
+                        );
+                      })
+                    )}
+                  </section>
+
+                  {/* 4. Unanswered Q&A Threads (appears only if students are waiting for a reply) */}
+                  {bundle.unansweredQa.length > 0 && (
+                    <section className="card-flush">
+                      <div className="card-head">
+                        <h2>Unanswered Q&amp;A</h2>
+                        <span className="small muted mono">{bundle.unansweredQa.length}</span>
+                      </div>
+                      {bundle.unansweredQa.map((q) => {
+                        const c = courseById.get(q.courseId);
+                        return (
+                          <Link key={q.id} to={q.to} className="list-row">
+                            <span className="nav-course-dot" style={{ background: c?.color || 'var(--teal)', width: 10, height: 10 }} />
+                            <div className="list-main">
+                              <span className="title" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                                {q.body}
+                              </span>
+                              <span className="tiny muted">{c?.code} · asked {relative(q.createdAt)}</span>
+                            </div>
+                          </Link>
+                        );
+                      })}
+                    </section>
+                  )}
                 </aside>
               </div>
             )}
@@ -235,14 +769,15 @@ export default function Dashboard() {
           </>
         )}
       </div>
+
       {creating && <CourseForm onClose={() => setCreating(false)} />}
-      {cloning && <CloneCourseModal courses={data || []} onClose={() => setCloning(false)} />}
+      {cloning && <CloneCourseModal courses={allRows} onClose={() => setCloning(false)} />}
     </>
   );
 }
 
 function CourseCard({ c, isTA }) {
-  const activePct = c.students ? Math.round((c.activated / c.students) * 100) : 0;
+  const unactivated = Math.max(0, (c.students || 0) - (c.activated || 0));
   return (
     <article className="course-card-ed">
       <Link to={`/teach/course/${c.id}`} className="course-card-band-link">
@@ -258,34 +793,36 @@ function CourseCard({ c, isTA }) {
           <div className="course-card-title">{c.title}</div>
         </div>
       </Link>
-
       <div className="course-card-body">
         <div className="course-card-stats">
           <Mini v={c.students} l="Students" />
           <Mini v={c.materials} l="Materials" />
           <Mini v={c.quizzes} l="Quizzes" />
         </div>
-        <div className="stack-sm" style={{ gap: 6 }}>
-          <Bar value={activePct} color={c.color} />
-          <div className="course-card-foot">
-            <span>{c.activated} of {c.students} activated ({activePct}%)</span>
-            <Link to={`/teach/course/${c.id}`} className="course-card-cta">
-              Open <Icon name="chevronRight" size={14} />
+        <div className="course-card-foot">
+          {unactivated === 0 ? (
+            <span style={{ color: 'var(--green-ink)' }}>
+              {c.students > 0 ? 'All students activated' : 'No students enrolled yet'}
+            </span>
+          ) : (
+            <Link to={`/teach/course/${c.id}?tab=students`} style={{ color: 'var(--amber-ink)', fontWeight: 500 }}>
+              {unactivated} student{unactivated === 1 ? '' : 's'} not yet activated
             </Link>
-          </div>
+          )}
+          <span className="mono tiny muted">{c.semester || 'Active'}</span>
         </div>
         <div className="course-card-links">
-          <Link to={`/teach/course/${c.id}?tab=students`}>Students</Link>
-          <span className="muted" aria-hidden="true">·</span>
           {!isTA && (
             <>
               <Link to={`/teach/course/${c.id}?tab=materials`}>Materials</Link>
               <span className="muted" aria-hidden="true">·</span>
             </>
           )}
+          <Link to={`/teach/course/${c.id}?tab=quizzes`}>Quizzes</Link>
+          <span className="muted" aria-hidden="true">·</span>
           <Link to={`/teach/course/${c.id}?tab=assignments`}>Assignments</Link>
           <span className="muted" aria-hidden="true">·</span>
-          <Link to={`/teach/course/${c.id}?tab=quizzes`}>Quizzes</Link>
+          <Link to={`/teach/course/${c.id}?tab=attendance`}>Attendance</Link>
           {!isTA && (
             <>
               <span className="muted" aria-hidden="true">·</span>

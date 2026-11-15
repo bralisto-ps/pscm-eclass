@@ -97,6 +97,7 @@ async function buildUnifiedRiskMap(course, students = []) {
 }
 
 export default function StudentsTab({ course, ta }) {
+  const toast = useToast();
   const { data: loaded, error, loading, reload } = useLoad(async () => {
     const [students, options] = await Promise.all([
       rpcAll('course_students', { p_course: course.id }),
@@ -204,6 +205,19 @@ export default function StudentsTab({ course, ta }) {
     reload();
   }
 
+  async function copyUnactivated() {
+    const list = (rows.length ? rows : data).filter((r) => !r.activated).map((r) => r.index_no);
+    if (!list.length) {
+      toast('All shown students have already activated their accounts.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(list.join('\n'));
+      toast(`Copied ${list.length} unactivated index number${list.length === 1 ? '' : 's'} to clipboard.`);
+    } catch {
+      toast(`Found ${list.length} unactivated students — use Export to download the list.`);
+    }
+  }
   function exportList() {
     const list = rows.length ? rows : data;
     downloadExcel(`${course.code} class list.xlsx`, [
@@ -286,6 +300,7 @@ export default function StudentsTab({ course, ta }) {
           </div>
           <div className="row-wrap">
             <button type="button" className="btn btn-sm" style={{ borderColor: 'var(--red-ink)', color: 'var(--red-ink)', background: 'var(--red-50)' }} onClick={() => setOutreach(true)} title="Open At-Risk Radar & Personalized Bulk Advisory"><Icon name="alert" size={16} /> At-Risk Radar{risk?.size ? ` (${risk.size})` : ''}</button>
+            {data.length - activated > 0 && <button type="button" className="btn btn-sm" onClick={copyUnactivated} title="Copy index numbers of unactivated students"><Icon name="copy" size={15} /> Copy unactivated ({data.length - activated})</button>}
             {data.length > 0 && <button type="button" className="btn btn-sm" onClick={exportList}><Icon name="download" size={16} /> {rows.length !== data.length ? `Export (${rows.length})` : 'Export'}</button>}
             <button type="button" className="btn btn-sm" onClick={() => setAdding(true)}><Icon name="plus" size={16} /> Add student</button>
             <button type="button" className="btn btn-sm btn-primary" onClick={() => setImporting(true)}><Icon name="upload" size={16} /> Upload class list</button>

@@ -57,6 +57,8 @@ const PATHS = {
   code: 'M16 18l6-6-6-6M8 6l-6 6 6 6',
   'map-pin': 'M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0zM12 10a2 2 0 100-4 2 2 0 000 4z',
   sparkles: 'M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3zM19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z',
+  copy: 'M9 9h10v10H9zM5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1',
+  activity: 'M22 12h-4l-3 9L9 3l-3 9H2',
 };
 
 export function BrandMark({ size = 36 }) {
