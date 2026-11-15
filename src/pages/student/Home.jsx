@@ -1,12 +1,14 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import CheckInModal from '../../components/CheckIn.jsx';
 import { useAuth } from '../../lib/auth.jsx';
+import { buildDeadlinesIcs, googleCalendarUrl } from '../../lib/calendar.js';
+import { downloadText } from '../../lib/sheets.js';
 import { rpc, run, supabase } from '../../lib/supabase.js';
 import { dayChip, fmtDateTime, greeting, initials, relative } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
-import { DashboardSkeleton, Empty, ErrorNote, Swatch, useLoad } from '../../components/ui.jsx';
+import { DashboardSkeleton, Empty, ErrorNote, Swatch, useLoad, useToast } from '../../components/ui.jsx';
 
 function describe(item) {
   if (item.kind === 'quiz') {
@@ -19,8 +21,16 @@ function describe(item) {
   return `Due ${fmtDateTime(item.due)}`;
 }
 
+function urgencyBucket(dueIso) {
+  const diffH = (new Date(dueIso).getTime() - Date.now()) / 3600000;
+  if (diffH <= 48) return 'urgent';
+  if (diffH <= 168) return 'week';
+  return 'later';
+}
+
 export default function StudentHome() {
   const { profile } = useAuth();
+  const toast = useToast();
   const { data, error, loading, reload } = useLoad(async () => {
     const [courses, upcoming, news, openAtt] = await Promise.all([
       run(supabase.from('courses').select('id, code, title, color, semester, description').eq('archived', false).order('code')),
@@ -33,6 +43,42 @@ export default function StudentHome() {
 
   const firstName = (profile.full_name || '').split(' ')[0];
   const [checkIn, setCheckIn] = useState(null);
+  const [dlFilter, setDlFilter] = useState('all'); // 'all' | 'week' | 'quiz' | 'assignment'
+  const [showAllDl, setShowAllDl] = useState(false);
+
+  const upcomingList = data?.upcoming || [];
+  const filteredUpcoming = useMemo(() => {
+    const now = Date.now();
+    const weekEnd = now + 7 * 24 * 3600 * 1000;
+    return upcomingList.filter((u) => {
+      if (dlFilter === 'week') {
+        const t = new Date(u.due).getTime();
+        return t <= weekEnd;
+      }
+      if (dlFilter === 'quiz') return u.kind === 'quiz';
+      if (dlFilter === 'assignment') return u.kind === 'assignment';
+      return true;
+    });
+  }, [upcomingList, dlFilter]);
+
+  const urgentCount = useMemo(
+    () => upcomingList.filter((u) => urgencyBucket(u.due) === 'urgent').length,
+    [upcomingList],
+  );
+
+  function exportIcs() {
+    const target = filteredUpcoming.length ? filteredUpcoming : upcomingList;
+    if (!target.length) {
+      toast('No upcoming deadlines to export.', 'error');
+      return;
+    }
+    const originUrl = typeof window !== 'undefined' ? window.location.origin : 'https://eclasspscm.com';
+    const ics = buildDeadlinesIcs(target, originUrl);
+    downloadText('PSCM_Eclass_Deadlines.ics', ics, 'text/calendar;charset=utf-8');
+    toast(`Exported ${target.length} deadline${target.length === 1 ? '' : 's'} to calendar (.ics)`);
+  }
+
+  const visibleDeadlines = showAllDl ? filteredUpcoming : filteredUpcoming.slice(0, 6);
 
   return (
     <>
@@ -58,7 +104,7 @@ export default function StudentHome() {
               ))}
 
               {data.upcoming[0] ? (
-                <NextUp item={data.upcoming[0]} />
+                <NextUp item={data.upcoming[0]} onExportOne={exportIcs} />
               ) : (
                 <section className="hero">
                   <div>
@@ -107,29 +153,110 @@ export default function StudentHome() {
 
             <aside className="stack">
               <section className="card-flush">
-                <div className="card-head"><h2>Coming up</h2></div>
-                {data.upcoming.length === 0 && <Empty icon="calendar">No deadlines.</Empty>}
-                {data.upcoming.slice(0, 6).map((u) => {
-                  const d = dayChip(u.due);
-                  return (
-                    <Link key={u.kind + u.id} to={`/course/${u.course_id}?tab=${u.kind === 'quiz' ? 'quizzes' : 'assignments'}`} className="list-row">
-                      <div
-                        className="day-chip"
-                        style={{
-                          background: u.kind === 'quiz' ? 'var(--amber-50)' : 'var(--teal-50)',
-                          color: u.kind === 'quiz' ? 'var(--amber-ink)' : 'var(--teal-dark)',
-                        }}
+                <div className="card-head" style={{ flexWrap: 'wrap', gap: 8 }}>
+                  <div className="row" style={{ gap: 8 }}>
+                    <h2>Deadlines</h2>
+                    {urgentCount > 0 && (
+                      <span className="badge badge-amber">{urgentCount} in 48h</span>
+                    )}
+                  </div>
+                  {upcomingList.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={exportIcs}
+                      title="Download .ics file for Apple, Outlook, or Google Calendar"
+                    >
+                      <Icon name="calendar" size={14} /> Export .ics
+                    </button>
+                  )}
+                </div>
+
+                {upcomingList.length > 0 && (
+                  <div className="row-wrap" style={{ padding: '10px 16px', gap: 6, borderBottom: '1px solid var(--line-2)', background: 'var(--surface-2)' }}>
+                    {[
+                      { id: 'all', label: `All (${upcomingList.length})` },
+                      { id: 'week', label: 'This week' },
+                      { id: 'quiz', label: 'Quizzes' },
+                      { id: 'assignment', label: 'Assignments' },
+                    ].map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        className={`btn btn-sm ${dlFilter === f.id ? 'btn-primary' : 'btn-ghost'}`}
+                        style={{ minHeight: 30, padding: '0 10px', fontSize: 12 }}
+                        onClick={() => { setDlFilter(f.id); setShowAllDl(false); }}
                       >
-                        <span className="dw">{d.day}</span>
-                        <span className="dd">{d.date}</span>
-                      </div>
-                      <div className="list-main">
-                        <span className="title">{u.title}</span>
-                        <span className="tiny muted">{u.course_code} · {u.kind === 'quiz' ? 'Quiz' : 'Assignment'}</span>
-                      </div>
-                    </Link>
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {filteredUpcoming.length === 0 && (
+                  <Empty icon="calendar">
+                    {upcomingList.length === 0 ? 'No deadlines.' : 'No deadlines match this filter.'}
+                  </Empty>
+                )}
+
+                {visibleDeadlines.map((u) => {
+                  const d = dayChip(u.due);
+                  const bucket = urgencyBucket(u.due);
+                  const gcal = googleCalendarUrl(u, typeof window !== 'undefined' ? window.location.origin : 'https://eclasspscm.com');
+                  return (
+                    <div key={u.kind + u.id} className="list-row" style={{ gap: 10 }}>
+                      <Link
+                        to={`/course/${u.course_id}?tab=${u.kind === 'quiz' ? 'quizzes' : 'assignments'}`}
+                        className="row"
+                        style={{ flex: 1, minWidth: 0, gap: 12, textDecoration: 'none', color: 'inherit' }}
+                      >
+                        <div
+                          className="day-chip"
+                          style={{
+                            background: u.kind === 'quiz' ? 'var(--amber-50)' : 'var(--teal-50)',
+                            color: u.kind === 'quiz' ? 'var(--amber-ink)' : 'var(--teal-dark)',
+                          }}
+                        >
+                          <span className="dw">{d.day}</span>
+                          <span className="dd">{d.date}</span>
+                        </div>
+                        <div className="list-main">
+                          <span className="title">{u.title}</span>
+                          <span className="tiny muted">
+                            {u.course_code} · {u.kind === 'quiz' ? 'Quiz' : 'Assignment'} ·{' '}
+                            <span style={{ color: bucket === 'urgent' ? 'var(--red-ink)' : undefined, fontWeight: bucket === 'urgent' ? 600 : undefined }}>
+                              {relative(u.due)}
+                            </span>
+                          </span>
+                        </div>
+                      </Link>
+                      {gcal && (
+                        <a
+                          href={gcal}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="icon-btn plain"
+                          title="Add to Google Calendar"
+                          aria-label={`Add ${u.title} to Google Calendar`}
+                        >
+                          <Icon name="calendar" size={15} />
+                        </a>
+                      )}
+                    </div>
                   );
                 })}
+
+                {filteredUpcoming.length > 6 && (
+                  <div style={{ padding: '10px 16px', borderTop: '1px solid var(--line-2)', textAlign: 'center' }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => setShowAllDl((s) => !s)}
+                    >
+                      {showAllDl ? 'Show fewer' : `Show all ${filteredUpcoming.length} deadlines`}
+                    </button>
+                  </div>
+                )}
               </section>
 
               <section className="card-flush">

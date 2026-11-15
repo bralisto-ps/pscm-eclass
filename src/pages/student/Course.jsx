@@ -1,10 +1,10 @@
 import { parseCourseMeta } from '../../lib/courseMeta.js';
 import { cleanText } from '../../lib/quizMeta.js';
-import { findStudentSyndicate, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
+import { findStudentSyndicate, normalizeIndexNo, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
 import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
 import { getLetter, getRemarks, GradesTable, TargetGradeCalculator } from './Grades.jsx';
 import Messages from '../../components/Messages.jsx';
-import { lazy, Suspense, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { rpc, run, supabase, safeFileName } from '../../lib/supabase.js';
 import { isViewOnlyPath, openStoredFile, uploadFile, SUBMISSION_ACCEPT } from '../../lib/files.js';
@@ -610,6 +610,163 @@ function AssignmentCard({ a, reload }) {
           <div>
             <button type="button" className="btn btn-primary" disabled={!file || busy} onClick={upload}>
               <Icon name="upload" /> {busy ? 'Uploading…' : s ? 'Replace submission' : 'Submit assignment'}
+            </button>
+          </div>
+        </div>
+      )}
+      {mySyndicate && assignMeta.syndicate.peerCheck !== false && (
+        <SyndicatePeerCheck
+          assignmentId={a.id}
+          syndicate={mySyndicate}
+          selfIndex={profile?.index_no}
+          locked={Boolean(s?.marked && a.released)}
+        />
+      )}
+    </div>
+  );
+}
+
+function SyndicatePeerCheck({ assignmentId, syndicate, selfIndex, locked }) {
+  const toast = useToast();
+  const selfNorm = normalizeIndexNo(selfIndex);
+  const peers = useMemo(
+    () => (syndicate?.members || []).filter((idx) => normalizeIndexNo(idx) !== selfNorm),
+    [syndicate, selfNorm],
+  );
+  const [open, setOpen] = useState(false);
+  const [ratings, setRatings] = useState({});
+  const [notes, setNotes] = useState({});
+  const [savedAt, setSavedAt] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
+
+  useEffect(() => {
+    if (!peers.length) return;
+    let alive = true;
+    rpc('my_syndicate_peer_review', { p_assignment: assignmentId })
+      .then((res) => {
+        if (!alive || !res) return;
+        const rMap = {};
+        const nMap = {};
+        (res.ratings || []).forEach((item) => {
+          const k = normalizeIndexNo(item.index_no);
+          if (item.score) rMap[k] = Number(item.score);
+          if (item.note) nMap[k] = String(item.note);
+        });
+        setRatings(rMap);
+        setNotes(nMap);
+        setSavedAt(res.submitted_at || null);
+      })
+      .catch((err) => {
+        if (/my_syndicate_peer_review|Could not find|does not exist|schema cache/i.test(err?.message || '')) {
+          if (alive) setUnavailable(true);
+        }
+      });
+    return () => { alive = false; };
+  }, [assignmentId, peers.length]);
+
+  if (!peers.length) return null;
+
+  async function savePeerCheck() {
+    const missing = peers.filter((idx) => !ratings[normalizeIndexNo(idx)]);
+    if (missing.length) {
+      toast(`Please rate all ${peers.length} teammate${peers.length === 1 ? '' : 's'} before submitting.`, 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const payload = peers.map((idx) => {
+        const k = normalizeIndexNo(idx);
+        return {
+          index_no: k,
+          score: Number(ratings[k]),
+          note: String(notes[k] || '').trim(),
+        };
+      });
+      const ts = await rpc('save_syndicate_peer_review', { p_assignment: assignmentId, p_ratings: payload });
+      setSavedAt(ts || new Date().toISOString());
+      setOpen(false);
+      toast('Confidential teammate check saved.');
+    } catch (err) {
+      if (/save_syndicate_peer_review|Could not find|does not exist|schema cache/i.test(err?.message || '')) {
+        setUnavailable(true);
+        toast('Peer check sync is not enabled on the database yet.', 'error');
+      } else {
+        toast(err.message || 'Could not save peer check.', 'error');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ borderTop: '1px solid var(--line-2)', paddingTop: 14 }}>
+      <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <div className="row" style={{ gap: 8 }}>
+          <Icon name="lock" size={14} style={{ color: 'var(--teal-dark)' }} />
+          <span className="small strong">Confidential Peer-Contribution Check</span>
+          {savedAt ? (
+            <span className="badge badge-teal"><Icon name="check" size={12} /> Submitted</span>
+          ) : (
+            <span className="badge badge-amber">Pending ({peers.length} teammate{peers.length === 1 ? '' : 's'})</span>
+          )}
+        </div>
+        {!unavailable && !locked && (
+          <button type="button" className="btn btn-sm" onClick={() => setOpen((o) => !o)}>
+            {open ? 'Hide' : savedAt ? 'Update ratings' : 'Rate teammates (1–5)'}
+          </button>
+        )}
+      </div>
+      <p className="tiny muted" style={{ marginTop: 4 }}>
+        Your ratings &amp; notes are strictly confidential — only your lecturer and TA can see them.
+      </p>
+      {unavailable && (
+        <p className="tiny muted">Confidential peer check will appear here once your lecturer enables Syndicate Peer Review SQL.</p>
+      )}
+      {open && !unavailable && !locked && (
+        <div className="stack-sm" style={{ marginTop: 10, padding: '12px 14px', borderRadius: 10, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+          {peers.map((idx) => {
+            const k = normalizeIndexNo(idx);
+            const cur = ratings[k] || 0;
+            return (
+              <div key={k} className="stack-sm" style={{ paddingBottom: 10, borderBottom: '1px solid var(--line-2)' }}>
+                <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                  <span className="mono strong small">{k}</span>
+                  <div className="row" style={{ gap: 4 }}>
+                    {[
+                      { v: 1, label: '1 · Minimal' },
+                      { v: 2, label: '2 · Low' },
+                      { v: 3, label: '3 · Fair' },
+                      { v: 4, label: '4 · Strong' },
+                      { v: 5, label: '5 · Led' },
+                    ].map((opt) => (
+                      <button
+                        key={opt.v}
+                        type="button"
+                        className={`btn btn-sm ${cur === opt.v ? 'btn-primary' : ''}`}
+                        style={{ minHeight: 30, padding: '0 8px', fontSize: 12 }}
+                        onClick={() => setRatings((prev) => ({ ...prev, [k]: opt.v }))}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <input
+                  className="input"
+                  style={{ minHeight: 34, fontSize: 13 }}
+                  maxLength={200}
+                  value={notes[k] || ''}
+                  onChange={(e) => setNotes((prev) => ({ ...prev, [k]: e.target.value }))}
+                  placeholder={`Optional private note on ${k}'s contribution (lecturer eyes only)`}
+                />
+              </div>
+            );
+          })}
+          <div className="between" style={{ paddingTop: 4 }}>
+            <span className="tiny muted">1 = little/no work · 5 = led or exceeded share</span>
+            <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={savePeerCheck}>
+              {busy ? 'Saving…' : 'Save confidential check'}
             </button>
           </div>
         </div>

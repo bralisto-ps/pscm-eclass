@@ -103,6 +103,8 @@ function CAInner({ course, data, reload, onCourseChanged }) {
   const [entering, setEntering] = useState(null);
   const [removing, setRemoving] = useState(null);
   const [examModal, setExamModal] = useState(false);
+  const [borderlineModal, setBorderlineModal] = useState(false);
+  const [borderlineMargin, setBorderlineMargin] = useState(1);
   const [printingReport, setPrintingReport] = useState(false);
   const [group, setGroup] = useState(ALL_GROUPS);
   const [q, setQ] = useState('');
@@ -119,24 +121,109 @@ function CAInner({ course, data, reload, onCourseChanged }) {
   const saved = data.components;
   const dec = Number(course.ca_decimals ?? 0);
 
-  const rows = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    const enriched = data.rows.map((r) => {
+  const GRADE_ORDER = ['A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'E'];
+  const BOUNDARIES = [
+    { min: 80, grade: 'A' },
+    { min: 75, grade: 'B+' },
+    { min: 70, grade: 'B' },
+    { min: 65, grade: 'C+' },
+    { min: 60, grade: 'C' },
+    { min: 55, grade: 'D+' },
+    { min: 50, grade: 'D' },
+  ];
+
+  const enrichedAll = useMemo(() => {
+    return data.rows.map((r) => {
       const { ca1, ca2, totalCa } = computeStudentCA(r, saved, caConfig, course.ca_total);
       const ex = examConfig.scores?.[r.index_no] !== undefined && examConfig.scores[r.index_no] !== ''
         ? Number(examConfig.scores[r.index_no])
         : null;
       const total100 = ex !== null ? Number((totalCa + ex).toFixed(dec)) : null;
       const grade = total100 !== null ? getGradeLetter(total100) : (totalCa >= 20 ? 'Pending' : 'At Risk');
-      return { ...r, _ca1: ca1, _ca2: ca2, _totalCa: totalCa, _exam: ex, _total100: total100, _grade: grade };
-    });
 
-    const filtered = enriched.filter((r) => {
+      let borderline = null;
+      if (total100 !== null) {
+        for (const b of BOUNDARIES) {
+          if (total100 < b.min && total100 >= b.min - borderlineMargin) {
+            borderline = {
+              mode: 'final',
+              score: total100,
+              targetScore: b.min,
+              targetGrade: b.grade,
+              gap: Number((b.min - total100).toFixed(2)),
+            };
+            break;
+          }
+        }
+      } else if (totalCa < 20 && totalCa >= 20 - borderlineMargin) {
+        borderline = {
+          mode: 'ca',
+          score: totalCa,
+          targetScore: 20,
+          targetGrade: 'CA Pass (20)',
+          gap: Number((20 - totalCa).toFixed(2)),
+        };
+      }
+
+      return { ...r, _ca1: ca1, _ca2: ca2, _totalCa: totalCa, _exam: ex, _total100: total100, _grade: grade, _borderline: borderline };
+    });
+  }, [data.rows, saved, caConfig, course.ca_total, examConfig, dec, borderlineMargin]);
+
+  const boardStats = useMemo(() => {
+    const scoped = enrichedAll.filter((r) => matchesGroup(r, group));
+    const counts = { 'A': 0, 'B+': 0, 'B': 0, 'C+': 0, 'C': 0, 'D+': 0, 'D': 0, 'E': 0 };
+    const finalScores = [];
+    for (const r of scoped) {
+      if (r._total100 !== null) {
+        finalScores.push(r._total100);
+        if (counts[r._grade] !== undefined) counts[r._grade]++;
+      }
+    }
+    finalScores.sort((a, b) => a - b);
+    const n = finalScores.length;
+    const mean100 = n ? finalScores.reduce((s, v) => s + v, 0) / n : null;
+    const median100 = n ? (n % 2 ? finalScores[(n - 1) / 2] : (finalScores[n / 2 - 1] + finalScores[n / 2]) / 2) : null;
+    const passCount = finalScores.filter((v) => v >= 50).length;
+    const passRate = n ? Math.round((passCount / n) * 100) : null;
+    const maxCount = Math.max(1, ...Object.values(counts));
+    const borderlineRows = scoped
+      .filter((r) => r._borderline)
+      .sort((a, b) => a._borderline.gap - b._borderline.gap || byNameIndex(a, b));
+
+    const caBands = [
+      { key: 'ca_high', label: '30–40', count: scoped.filter((r) => r._totalCa >= 30).length, color: 'var(--teal)' },
+      { key: 'ca_mid', label: '20–29.9', count: scoped.filter((r) => r._totalCa >= 20 && r._totalCa < 30).length, color: 'var(--blue-ink)' },
+      { key: 'ca_border', label: '18–19.9', count: scoped.filter((r) => r._totalCa >= 18 && r._totalCa < 20).length, color: 'var(--amber)' },
+      { key: 'ca_low', label: '< 18', count: scoped.filter((r) => r._totalCa < 18).length, color: 'var(--red-ink)' },
+    ];
+
+    return {
+      totalStudents: scoped.length,
+      gradedCount: n,
+      counts,
+      maxCount,
+      mean100,
+      median100,
+      passRate,
+      min100: n ? finalScores[0] : null,
+      max100: n ? finalScores[n - 1] : null,
+      borderlineRows,
+      caBands,
+      caAtRisk: scoped.filter((r) => r._totalCa < 20).length,
+    };
+  }, [enrichedAll, group]);
+
+  const rows = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    const filtered = enrichedAll.filter((r) => {
       if (!matchesGroup(r, group)) return false;
-      if (gradeFilter === 'A' && r._grade !== 'A') return false;
+      if (gradeFilter === 'borderline' && !r._borderline) return false;
+      if (['A', 'B+', 'C+', 'D+', 'D'].includes(gradeFilter) && r._grade !== gradeFilter) return false;
       if (gradeFilter === 'B' && r._grade !== 'B+' && r._grade !== 'B') return false;
+      if (gradeFilter === 'B_exact' && r._grade !== 'B') return false;
       if (gradeFilter === 'C' && r._grade !== 'C+' && r._grade !== 'C') return false;
-      if (gradeFilter === 'D' && r._grade !== 'D+' && r._grade !== 'D') return false;
+      if (gradeFilter === 'C_exact' && r._grade !== 'C') return false;
+      if (gradeFilter === 'D_group' && r._grade !== 'D+' && r._grade !== 'D') return false;
       if (gradeFilter === 'E' && r._grade !== 'E' && r._grade !== 'At Risk') return false;
       if (gradeFilter === 'ca_pass' && r._totalCa < 20) return false;
       if (gradeFilter === 'ca_risk' && r._totalCa >= 20) return false;
@@ -169,7 +256,7 @@ function CAInner({ course, data, reload, onCourseChanged }) {
         default: return byNameIndex(a, b);
       }
     });
-  }, [data.rows, saved, caConfig, course.ca_total, examConfig, dec, group, gradeFilter, q, sort]);
+  }, [enrichedAll, group, gradeFilter, q, sort]);
 
   const hasFilters = Boolean(q.trim() || gradeFilter !== 'all' || group.programme !== '*' || group.stream !== '*' || sort !== 'name_asc');
   function clearFilters() {
@@ -553,6 +640,152 @@ function CAInner({ course, data, reload, onCourseChanged }) {
         </div>
       </section>
 
+
+      {/* Exam-Board Grade Distribution & Borderline Review */}
+      {saved.length > 0 && data.rows.length > 0 && (
+        <section className="card stack">
+          <div className="between" style={{ flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <h2>Exam-Board Histogram &amp; Borderline Queue</h2>
+              <p className="small muted">
+                {boardStats.gradedCount > 0
+                  ? `Distribution across ${boardStats.gradedCount} of ${boardStats.totalStudents} graded scripts · Click any bar to filter the table below`
+                  : `No Final Exam (/60) marks entered yet — showing Continuous Assessment (/40) spread across ${boardStats.totalStudents} students`}
+              </p>
+            </div>
+            <div className="row-wrap" style={{ gap: 8 }}>
+              <label className="row small" style={{ gap: 6 }}>
+                <span className="muted">Margin</span>
+                <select
+                  aria-label="Borderline tolerance"
+                  className="select"
+                  style={{ width: 'auto', minHeight: 36, fontSize: 13 }}
+                  value={borderlineMargin}
+                  onChange={(e) => setBorderlineMargin(Number(e.target.value))}
+                >
+                  <option value={1}>Within 1.0 mark</option>
+                  <option value={2}>Within 2.0 marks</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className={`btn btn-sm ${gradeFilter === 'borderline' ? 'btn-primary' : ''}`}
+                onClick={() => setGradeFilter(gradeFilter === 'borderline' ? 'all' : 'borderline')}
+                disabled={boardStats.borderlineRows.length === 0}
+              >
+                <Icon name="filter" size={14} /> Filter Borderline ({boardStats.borderlineRows.length})
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                onClick={() => setBorderlineModal(true)}
+                disabled={boardStats.borderlineRows.length === 0}
+              >
+                <Icon name="award" size={14} /> Review Borderline ({boardStats.borderlineRows.length})
+              </button>
+            </div>
+          </div>
+
+          {boardStats.gradedCount > 0 ? (
+            <>
+              <div className="grid-4">
+                <div className="kpi">
+                  <div className="kpi-head"><span className="l">Class Mean</span><span className="kpi-icon blue"><Icon name="chart" size={16} /></span></div>
+                  <span className="v">{boardStats.mean100 !== null ? boardStats.mean100.toFixed(1) : '—'}</span>
+                  <span className="tiny muted">out of 100</span>
+                </div>
+                <div className="kpi">
+                  <div className="kpi-head"><span className="l">Median Total</span><span className="kpi-icon"><Icon name="award" size={16} /></span></div>
+                  <span className="v">{boardStats.median100 !== null ? boardStats.median100.toFixed(1) : '—'}</span>
+                  <span className="tiny muted">Range {boardStats.min100?.toFixed(0)}–{boardStats.max100?.toFixed(0)}</span>
+                </div>
+                <div className="kpi">
+                  <div className="kpi-head"><span className="l">Pass Rate (&ge;50)</span><span className="kpi-icon"><Icon name="check" size={16} /></span></div>
+                  <span className="v">{boardStats.passRate !== null ? `${boardStats.passRate}%` : '—'}</span>
+                  <span className="tiny muted">{boardStats.counts.E} below 50%</span>
+                </div>
+                <div className="kpi">
+                  <div className="kpi-head"><span className="l">Borderline Queue</span><span className="kpi-icon amber"><Icon name="alert" size={16} /></span></div>
+                  <span className="v" style={{ color: boardStats.borderlineRows.length ? 'var(--amber-ink)' : undefined }}>{boardStats.borderlineRows.length}</span>
+                  <span className="tiny muted">Within {borderlineMargin}.0 mark of next grade</span>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(8, minmax(0, 1fr))',
+                  gap: 10,
+                  alignItems: 'end',
+                  padding: '16px 14px 10px',
+                  borderRadius: 10,
+                  background: 'var(--surface-2)',
+                  border: '1px solid var(--line)',
+                }}
+              >
+                {GRADE_ORDER.map((g) => {
+                  const count = boardStats.counts[g] || 0;
+                  const share = boardStats.gradedCount ? Math.round((count / boardStats.gradedCount) * 100) : 0;
+                  const hPct = Math.round((count / boardStats.maxCount) * 100);
+                  const filterKey = g === 'B' ? 'B_exact' : g === 'C' ? 'C_exact' : g;
+                  const active = gradeFilter === filterKey;
+                  const barColor =
+                    g === 'A' ? 'var(--teal)' :
+                    g === 'B+' || g === 'B' ? 'var(--blue-ink)' :
+                    g === 'C+' || g === 'C' ? 'var(--amber)' :
+                    g === 'D+' || g === 'D' ? 'var(--muted)' : 'var(--red-ink)';
+                  return (
+                    <button
+                      key={g}
+                      type="button"
+                      onClick={() => setGradeFilter(active ? 'all' : filterKey)}
+                      title={`Click to filter Grade ${g}`}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '6px 4px',
+                        borderRadius: 8,
+                        border: active ? '1.5px solid var(--teal)' : '1px solid transparent',
+                        background: active ? 'var(--surface)' : 'transparent',
+                        cursor: 'pointer',
+                        color: 'inherit',
+                      }}
+                    >
+                      <span className="mono tiny muted">{count} ({share}%)</span>
+                      <div style={{ width: '100%', height: 84, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+                        <div
+                          style={{
+                            width: '72%',
+                            maxWidth: 38,
+                            height: count === 0 ? 4 : Math.max(10, Math.round((hPct / 100) * 80)),
+                            borderRadius: '6px 6px 2px 2px',
+                            background: count === 0 ? 'var(--track)' : barColor,
+                            transition: 'height 0.25s var(--ease)',
+                          }}
+                        />
+                      </div>
+                      <span className="strong small">{g}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <div className="grid-4">
+              {boardStats.caBands.map((b) => (
+                <div key={b.key} className="kpi">
+                  <div className="kpi-head"><span className="l">CA {b.label} / 40</span></div>
+                  <span className="v" style={{ color: b.color }}>{b.count}</span>
+                  <span className="tiny muted">{boardStats.totalStudents ? `${Math.round((b.count / boardStats.totalStudents) * 100)}% of class` : ''}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Grade Table Section */}
       <section className="card-flush">
         <div className="card-head" style={{ flexWrap: 'wrap', gap: 12 }}>
@@ -574,10 +807,16 @@ function CAInner({ course, data, reload, onCourseChanged }) {
                 onChange={(e) => setGradeFilter(e.target.value)}
               >
                 <option value="all">All grades</option>
+                <option value="borderline">Borderline ({boardStats.borderlineRows.length})</option>
                 <option value="A">Grade A (80–100)</option>
-                <option value="B">Grade B+ / B (70–79)</option>
-                <option value="C">Grade C+ / C (60–69)</option>
-                <option value="D">Grade D+ / D (50–59)</option>
+                <option value="B+">Grade B+ (75–79)</option>
+                <option value="B_exact">Grade B (70–74)</option>
+                <option value="B">Grade B+ &amp; B (70–79)</option>
+                <option value="C+">Grade C+ (65–69)</option>
+                <option value="C_exact">Grade C (60–64)</option>
+                <option value="C">Grade C+ &amp; C (60–69)</option>
+                <option value="D+">Grade D+ (55–59)</option>
+                <option value="D">Grade D (50–54)</option>
                 <option value="E">Grade E / At Risk (&lt; 50)</option>
                 <option value="ca_pass">CA ≥ 20 / 40</option>
                 <option value="ca_risk">CA &lt; 20 / 40 (At Risk)</option>
@@ -660,6 +899,11 @@ function CAInner({ course, data, reload, onCourseChanged }) {
                       </td>
                       <td className="num strong">
                         {total100 !== null ? total100.toFixed(dec) : '—'}
+                        {r._borderline && (
+                          <div className="tiny" style={{ color: 'var(--amber-ink)', fontWeight: 500 }}>
+                            +{r._borderline.gap.toFixed(1)} to {r._borderline.targetGrade}
+                          </div>
+                        )}
                       </td>
                       <td>
                         <span className={`badge ${
@@ -713,6 +957,23 @@ function CAInner({ course, data, reload, onCourseChanged }) {
             ].filter(Boolean).join(' · '),
           })}
           onClose={() => setPrintingReport(false)}
+        />
+      )}
+      {borderlineModal && (
+        <BorderlineReviewModal
+          course={course}
+          rows={boardStats.borderlineRows}
+          examConfig={examConfig}
+          margin={borderlineMargin}
+          dec={dec}
+          onClose={() => setBorderlineModal(false)}
+          onSave={async (updatedExamConfig) => {
+            setExamConfig(updatedExamConfig);
+            const serialized = serializeCourseMeta(meta.about, caConfig, updatedExamConfig);
+            await run(supabase.from('courses').update({ description: serialized }).eq('id', course.id));
+            toast('Moderated exam marks saved.');
+            reload();
+          }}
         />
       )}
       {examModal && (
@@ -1042,6 +1303,115 @@ function ExamReleaseModal({ course, data, dec, savedComponents, caConfig, examCo
                   </td>
                 </tr>
               ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+
+function BorderlineReviewModal({ course, rows, examConfig, margin, dec, onClose, onSave }) {
+  const [scores, setScores] = useState({ ...(examConfig.scores || {}) });
+  const [busy, setBusy] = useState(false);
+
+  function bumpStudent(r) {
+    if (r._borderline?.mode !== 'final' || r._exam === null) return;
+    const bumped = Math.min(60, Number((r._exam + r._borderline.gap).toFixed(2)));
+    setScores((prev) => ({ ...prev, [r.index_no]: String(bumped) }));
+  }
+
+  async function handleSave() {
+    setBusy(true);
+    try {
+      await onSave({
+        released: Boolean(examConfig.released),
+        max_score: 60,
+        scores,
+      });
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={`Borderline Candidates (Within ${margin}.0 mark) · ${course.code}`}
+      onClose={onClose}
+      wide
+      footer={
+        <>
+          <button type="button" className="btn" onClick={onClose} disabled={busy}>Close</button>
+          {rows.some((r) => r._borderline?.mode === 'final') && (
+            <button type="button" className="btn btn-primary" onClick={handleSave} disabled={busy}>
+              {busy ? 'Saving…' : 'Save Moderated Exam Marks'}
+            </button>
+          )}
+        </>
+      }
+    >
+      <div className="stack">
+        <div className="notice notice-info small">
+          Students listed here sit within <strong>{margin}.0 mark</strong> below the next grade boundary (50, 55, 60, 65, 70, 75, 80, or 20/40 CA pass).
+          You can adjust a student&apos;s Exam (/60) mark directly or click <strong>Bump to target</strong> for board moderation.
+        </div>
+
+        <div className="card-flush" style={{ maxHeight: 380, overflowY: 'auto' }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Index no.</th>
+                <th>Name</th>
+                <th className="num">CA /40</th>
+                <th className="num">Exam /60</th>
+                <th className="num">Total</th>
+                <th>Boundary</th>
+                <th className="num">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const bl = r._borderline;
+                const liveExam = scores[r.index_no] !== undefined && scores[r.index_no] !== '' ? Number(scores[r.index_no]) : r._exam;
+                const liveTotal = bl.mode === 'final' && liveExam !== null ? Number((r._totalCa + liveExam).toFixed(dec)) : r._totalCa;
+                const liveGrade = bl.mode === 'final' ? getGradeLetter(liveTotal) : (liveTotal >= 20 ? 'CA Pass' : 'CA <20');
+                const promoted = bl.mode === 'final' ? liveTotal >= bl.targetScore : liveTotal >= 20;
+                return (
+                  <tr key={r.index_no}>
+                    <td className="mono small">{r.index_no}</td>
+                    <td>{r.full_name}</td>
+                    <td className="num mono small">{r._totalCa.toFixed(dec)}</td>
+                    <td className="num">
+                      {bl.mode === 'final' ? (
+                        <input
+                          className="input mono"
+                          style={{ width: 82, minHeight: 32, padding: '0 8px', textAlign: 'right' }}
+                          inputMode="decimal"
+                          value={scores[r.index_no] ?? ''}
+                          onChange={(e) => setScores({ ...scores, [r.index_no]: e.target.value })}
+                        />
+                      ) : (
+                        <span className="muted small">—</span>
+                      )}
+                    </td>
+                    <td className="num strong">{liveTotal.toFixed(dec)}</td>
+                    <td>
+                      <span className={`badge ${promoted ? 'badge-teal' : 'badge-amber'}`}>
+                        {promoted ? `Promoted → ${liveGrade}` : `-${bl.gap.toFixed(1)} to ${bl.targetGrade}`}
+                      </span>
+                    </td>
+                    <td className="num">
+                      {bl.mode === 'final' && !promoted && (
+                        <button type="button" className="btn btn-sm" onClick={() => bumpStudent(r)}>
+                          +{bl.gap.toFixed(1)} → {bl.targetGrade}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

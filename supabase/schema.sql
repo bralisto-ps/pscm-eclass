@@ -4170,3 +4170,120 @@ begin
     execute format('grant execute on function public.%s to authenticated', f);
   end loop;
 end $$;
+
+-- ---------------------------------------------------------------------
+-- 12. Confidential Syndicate Peer-Contribution Check
+-- ---------------------------------------------------------------------
+create table if not exists public.syndicate_peer_reviews (
+  id             uuid primary key default gen_random_uuid(),
+  assignment_id  uuid not null references public.assignments on delete cascade,
+  course_id      uuid not null references public.courses on delete cascade,
+  reviewer_id    uuid not null references public.profiles on delete cascade,
+  reviewer_index text not null default '',
+  ratings        jsonb not null default '[]'::jsonb,
+  submitted_at   timestamptz not null default now(),
+  unique (assignment_id, reviewer_id)
+);
+
+alter table public.syndicate_peer_reviews enable row level security;
+
+drop policy if exists "peer reviews self read" on public.syndicate_peer_reviews;
+create policy "peer reviews self read" on public.syndicate_peer_reviews
+  for select to authenticated
+  using (reviewer_id = auth.uid() or public.is_staff(course_id));
+
+drop policy if exists "peer reviews self write" on public.syndicate_peer_reviews;
+create policy "peer reviews self write" on public.syndicate_peer_reviews
+  for insert to authenticated
+  with check (reviewer_id = auth.uid() and public.is_enrolled(course_id));
+
+drop policy if exists "peer reviews self update" on public.syndicate_peer_reviews;
+create policy "peer reviews self update" on public.syndicate_peer_reviews
+  for update to authenticated
+  using (reviewer_id = auth.uid() and public.is_enrolled(course_id))
+  with check (reviewer_id = auth.uid() and public.is_enrolled(course_id));
+
+create or replace function public.save_syndicate_peer_review(
+  p_assignment uuid,
+  p_ratings jsonb
+) returns timestamptz
+language plpgsql security definer set search_path = public as $$
+declare
+  v_course uuid;
+  v_idx text;
+begin
+  select course_id into v_course from public.assignments where id = p_assignment and published;
+  if v_course is null then raise exception 'Assignment not found.'; end if;
+  if not public.is_enrolled(v_course) then raise exception 'You are not enrolled in this course.'; end if;
+
+  select index_no into v_idx from public.profiles where id = auth.uid();
+
+  insert into public.syndicate_peer_reviews (assignment_id, course_id, reviewer_id, reviewer_index, ratings, submitted_at)
+  values (p_assignment, v_course, auth.uid(), coalesce(v_idx, ''), coalesce(p_ratings, '[]'::jsonb), now())
+  on conflict (assignment_id, reviewer_id) do update
+     set ratings = excluded.ratings,
+         reviewer_index = excluded.reviewer_index,
+         submitted_at = now();
+
+  return now();
+end;
+$$;
+
+create or replace function public.my_syndicate_peer_review(
+  p_assignment uuid
+) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_row public.syndicate_peer_reviews;
+begin
+  select * into v_row
+    from public.syndicate_peer_reviews
+   where assignment_id = p_assignment
+     and reviewer_id = auth.uid();
+  if not found then
+    return jsonb_build_object('ratings', '[]'::jsonb, 'submitted_at', null);
+  end if;
+  return jsonb_build_object('ratings', v_row.ratings, 'submitted_at', v_row.submitted_at);
+end;
+$$;
+
+create or replace function public.assignment_peer_reviews(
+  p_assignment uuid
+) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_course uuid;
+  v_rows jsonb;
+begin
+  select course_id into v_course from public.assignments where id = p_assignment;
+  if v_course is null then raise exception 'Assignment not found.'; end if;
+  perform public.require_staff(v_course);
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'reviewer_index', r.reviewer_index,
+    'reviewer_name', coalesce(p.full_name, r.reviewer_index),
+    'ratings', r.ratings,
+    'submitted_at', r.submitted_at
+  ) order by r.submitted_at desc), '[]'::jsonb)
+  into v_rows
+  from public.syndicate_peer_reviews r
+  left join public.profiles p on p.id = r.reviewer_id
+  where r.assignment_id = p_assignment;
+
+  return jsonb_build_object('reviews', v_rows);
+end;
+$$;
+
+do $$
+declare f text;
+begin
+  foreach f in array array[
+    'save_syndicate_peer_review(uuid, jsonb)',
+    'my_syndicate_peer_review(uuid)',
+    'assignment_peer_reviews(uuid)'
+  ]
+  loop
+    execute format('revoke execute on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated', f);
+  end loop;
+end $$;

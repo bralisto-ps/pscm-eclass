@@ -124,6 +124,7 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
   });
   const [rubric, setRubric] = useState(initialMeta.rubric);
   const [syndicateEnabled, setSyndicateEnabled] = useState(initialMeta.syndicate.enabled);
+  const [peerCheck, setPeerCheck] = useState(initialMeta.syndicate.peerCheck !== false);
   const [groups, setGroups] = useState(initialMeta.syndicate.groups);
   const [groupSize, setGroupSize] = useState(4);
   const [autoBusy, setAutoBusy] = useState(false);
@@ -170,6 +171,7 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
       rubric,
       syndicate: {
         enabled: syndicateEnabled,
+        peerCheck,
         groups,
       },
     });
@@ -224,6 +226,17 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
 
         {syndicateEnabled && (
           <div className="stack-sm" style={{ marginTop: 6 }}>
+            <label className="check" style={{ paddingBottom: 4 }}>
+              <input
+                type="checkbox"
+                checked={peerCheck}
+                onChange={(e) => setPeerCheck(e.target.checked)}
+              />
+              <span className="small">
+                <strong>Require Confidential Peer-Contribution Check</strong>{' '}
+                <span className="muted">(teammates privately rate each member 1–5; visible only to lecturers/TAs)</span>
+              </span>
+            </label>
             <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
               <div className="row" style={{ gap: 6 }}>
                 <label className="row small" style={{ gap: 6 }}>

@@ -80,6 +80,7 @@ export function parseAssignmentMeta(assignment) {
     rubric: [], // [{ id, title, maxMarks }]
     syndicate: {
       enabled: false,
+      peerCheck: true,
       groups: [], // [{ id, name, members: ['PSCM/...'] }]
     },
   };
@@ -109,6 +110,7 @@ export function parseAssignmentMeta(assignment) {
       rubric,
       syndicate: {
         enabled: Boolean(parsed.syndicate?.enabled),
+        peerCheck: parsed.syndicate?.peerCheck !== false,
         groups,
       },
     };
@@ -139,6 +141,7 @@ export function serializeAssignmentMeta(cleanInstructions, meta = {}) {
     rubric,
     syndicate: {
       enabled: Boolean(meta.syndicate?.enabled),
+      peerCheck: meta.syndicate?.peerCheck !== false,
       groups,
     },
   };

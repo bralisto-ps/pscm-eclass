@@ -31,12 +31,16 @@ export default function AssignmentMarking() {
   const { isTA } = useAuth();
   const { data, error, loading, reload, setData } = useLoad(async () => {
     const a = await run(supabase.from('assignments').select('*, courses(id, code, title)').eq('id', assignmentId).single());
-    const [students, subs] = await Promise.all([rpcAll('course_students', { p_course: a.course_id }), allSubmissions(assignmentId)]);
+    const [students, subs, peerData] = await Promise.all([
+      rpcAll('course_students', { p_course: a.course_id }),
+      allSubmissions(assignmentId),
+      rpc('assignment_peer_reviews', { p_assignment: assignmentId }).catch(() => ({ reviews: [], _missing: true })),
+    ]);
     const byIndex = new Map(subs.map((s) => [s.profiles?.index_no, s]));
     const rows = students.map((st) => ({ ...st, sub: byIndex.get(st.index_no) || null }));
     subs.filter((s) => !students.some((st) => st.index_no === s.profiles?.index_no))
       .forEach((s) => rows.push({ index_no: s.profiles?.index_no, full_name: s.profiles?.full_name, activated: true, sub: s }));
-    return { a, rows };
+    return { a, rows, peerReviews: peerData?.reviews || [], peerMissingRpc: Boolean(peerData?._missing) };
   }, [assignmentId]);
 
   const [filter, setFilter] = useState('tomark');
@@ -51,7 +55,44 @@ export default function AssignmentMarking() {
 
   const assignMeta = useMemo(() => parseAssignmentMeta(data?.a), [data?.a]);
 
-  // Attach syndicate group & fallback teammate upload reference when syndicate mode is active
+  const peerStatsByIndex = useMemo(() => {
+    const map = new Map();
+    for (const rev of data?.peerReviews || []) {
+      const fromIdx = normalizeIndexNo(rev.reviewer_index);
+      const fromName = rev.reviewer_name || fromIdx;
+      for (const item of rev.ratings || []) {
+        const target = normalizeIndexNo(item.index_no);
+        const score = Number(item.score);
+        if (!target || Number.isNaN(score) || score <= 0) continue;
+        if (!map.has(target)) map.set(target, { scores: [], notes: [] });
+        const entry = map.get(target);
+        entry.scores.push(score);
+        if (item.note || score <= 2) {
+          entry.notes.push({
+            fromIndex: fromIdx,
+            fromName,
+            score,
+            note: String(item.note || '').trim(),
+          });
+        }
+      }
+    }
+    const out = new Map();
+    for (const [k, v] of map.entries()) {
+      const avgScore = Number((v.scores.reduce((s, n) => s + n, 0) / v.scores.length).toFixed(1));
+      const minScore = Math.min(...v.scores);
+      out.set(k, {
+        avgScore,
+        minScore,
+        count: v.scores.length,
+        flagged: avgScore < 2.8 || minScore <= 2,
+        notes: v.notes,
+      });
+    }
+    return out;
+  }, [data?.peerReviews]);
+
+  // Attach syndicate group, peer check stats & fallback teammate upload reference when syndicate mode is active
   const enrichedRows = useMemo(() => {
     if (!data) return [];
     const byNorm = new Map(data.rows.map((r) => [normalizeIndexNo(r.index_no), r]));
@@ -67,9 +108,10 @@ export default function AssignmentMarking() {
           }
         }
       }
-      return { ...r, _syn: syn, _synLeaderSub: synLeaderSub };
+      const peer = peerStatsByIndex.get(normalizeIndexNo(r.index_no)) || null;
+      return { ...r, _syn: syn, _synLeaderSub: synLeaderSub, _peer: peer };
     });
-  }, [data, assignMeta]);
+  }, [data, assignMeta, peerStatsByIndex]);
 
   const shown = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -114,6 +156,8 @@ export default function AssignmentMarking() {
   const submitted = rows.filter((r) => r.sub || r._synLeaderSub);
   const marked = rows.filter((r) => r.sub && r.sub.marks !== null);
   const late = submitted.filter((r) => (r.sub || r._synLeaderSub)?.is_late);
+  const showPeerCol = assignMeta.syndicate.enabled && assignMeta.syndicate.peerCheck !== false;
+  const flaggedPeerCount = showPeerCol ? rows.filter((r) => r._peer?.flagged).length : 0;
   const avg = marked.length ? Math.round(marked.reduce((s, r) => s + pct(r.sub.marks, a.max_marks), 0) / marked.length) : null;
 
   async function toggleRelease() {
@@ -193,6 +237,9 @@ export default function AssignmentMarking() {
               {assignMeta.syndicate.enabled && (
                 <span className="badge badge-teal"><Icon name="users" size={13} /> Syndicate Mode ({assignMeta.syndicate.groups.length} groups)</span>
               )}
+              {flaggedPeerCount > 0 && (
+                <span className="badge badge-red"><Icon name="alert" size={13} /> {flaggedPeerCount} Low Peer Rating{flaggedPeerCount === 1 ? '' : 's'}</span>
+              )}
               {assignMeta.rubric.length > 0 && (
                 <span className="badge badge-blue"><Icon name="clipboard" size={13} /> Clickable Rubric ({assignMeta.rubric.length} criteria)</span>
               )}
@@ -252,6 +299,7 @@ export default function AssignmentMarking() {
                     <SortTh label="Index no." ascKey="index_asc" descKey="index_desc" current={sort} onSort={setSort} />
                     <SortTh label="Student" ascKey="name_asc" descKey="name_desc" current={sort} onSort={setSort} />
                     {assignMeta.syndicate.enabled && <SortTh label="Syndicate" ascKey="syn_asc" descKey="syn_asc" current={sort} onSort={setSort} />}
+                    {showPeerCol && <th>Peer Check</th>}
                     <SortTh label="Group" ascKey="prog_asc" descKey="prog_desc" current={sort} onSort={setSort} className="hide-sm" />
                     <SortTh label="Submitted" ascKey="sub_asc" descKey="sub_desc" defaultDir="desc" current={sort} onSort={setSort} />
                     <SortTh label="Marks" ascKey="marks_asc" descKey="marks_desc" defaultDir="desc" current={sort} onSort={setSort} className="num" />
@@ -268,6 +316,17 @@ export default function AssignmentMarking() {
                         {assignMeta.syndicate.enabled && (
                           <td>
                             {r._syn ? <span className="badge badge-blue">{r._syn.name}</span> : <span className="tiny muted">—</span>}
+                          </td>
+                        )}
+                        {showPeerCol && (
+                          <td>
+                            {r._peer ? (
+                              <span className={`badge ${r._peer.flagged ? 'badge-red' : 'badge-teal'}`} title={`Average from ${r._peer.count} teammate rating(s)`}>
+                                {r._peer.avgScore} / 5{r._peer.flagged ? ' · Flagged' : ''}
+                              </span>
+                            ) : (
+                              <span className="tiny muted">—</span>
+                            )}
                           </td>
                         )}
                         <td className="small muted hide-sm">{[r.programme, r.stream].filter(Boolean).join(' · ') || '—'}</td>
@@ -362,16 +421,47 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
     return syndicate.members.map((idx) => byNorm.get(idx) || { index_no: idx, full_name: idx });
   }, [syndicate, allRows]);
 
+  const hasFlaggedPeer = syndicatePeers.some((p) => p._peer?.flagged);
+  const [customSplit, setCustomSplit] = useState(false);
+  const [memberMarks, setMemberMarks] = useState(() => {
+    const init = {};
+    syndicatePeers.forEach((p) => {
+      if (p.sub?.marks !== null && p.sub?.marks !== undefined) init[p.index_no] = String(p.sub.marks);
+    });
+    return init;
+  });
+
+  function applyScaleToMember(indexNo, ratio) {
+    const base = Number(marks);
+    if (marks === '' || Number.isNaN(base)) {
+      toast('Enter the base group mark first.', 'error');
+      return;
+    }
+    const scaled = Number((base * ratio).toFixed(1));
+    setMemberMarks((prev) => ({ ...prev, [indexNo]: String(scaled) }));
+  }
+
   async function save(next, applyToGroup = false) {
     const m = Number(marks);
     if (marks === '' || Number.isNaN(m) || m < 0 || m > Number(a.max_marks)) {
       toast(`Marks must be between 0 and ${fmtNumber(a.max_marks)}.`, 'error');
       return;
     }
+    if (customSplit) {
+      for (const p of syndicatePeers) {
+        const raw = memberMarks[p.index_no];
+        const pm = raw === undefined || raw === '' ? m : Number(raw);
+        if (Number.isNaN(pm) || pm < 0 || pm > Number(a.max_marks)) {
+          toast(`Invalid mark for ${p.index_no} (must be 0 to ${fmtNumber(a.max_marks)}).`, 'error');
+          return;
+        }
+      }
+    }
     setBusy(true);
     try {
       const patch = { marks: m, feedback, marked_at: new Date().toISOString() };
       if (applyToGroup && syndicate?.members?.length) {
+        let usedSqlSync = false;
         try {
           const updatedCount = await rpc('mark_syndicate_submission', {
             p_assignment: a.id,
@@ -380,15 +470,40 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
             p_marks: m,
             p_feedback: feedback,
           });
-          toast(`Saved · ${syndicate.name} (${updatedCount} member${updatedCount === 1 ? '' : 's'} marked)`);
+          usedSqlSync = true;
+
+          // Apply any individual peer-contribution adjustments after ensuring all rows exist
+          if (customSplit) {
+            const overrides = syndicatePeers.filter((p) => {
+              const raw = memberMarks[p.index_no];
+              return raw !== undefined && raw !== '' && Number(raw) !== m;
+            });
+            if (overrides.length > 0) {
+              const freshSubs = await allSubmissions(a.id);
+              const subByIdx = new Map(freshSubs.map((s) => [normalizeIndexNo(s.profiles?.index_no), s]));
+              await Promise.all(
+                overrides.map((p) => {
+                  const targetSub = subByIdx.get(normalizeIndexNo(p.index_no));
+                  if (!targetSub) return Promise.resolve();
+                  const pm = Number(memberMarks[p.index_no]);
+                  return rpc('mark_submission', { p_submission: targetSub.id, p_marks: pm, p_feedback: feedback });
+                })
+              );
+            }
+          }
+
+          toast(`Saved · ${syndicate.name} (${updatedCount} member${updatedCount === 1 ? '' : 's'} marked${customSplit ? ' with custom adjustments' : ''})`);
           onSaved(patch, next, true);
           return;
         } catch (synErr) {
-          if (/mark_syndicate_submission|Could not find|does not exist|schema cache/i.test(synErr.message || '')) {
-            // Fallback: mark all members who currently have submission rows
+          if (!usedSqlSync && /mark_syndicate_submission|Could not find|does not exist|schema cache/i.test(synErr.message || '')) {
             const withSub = syndicatePeers.filter((p) => p.sub?.id);
             await Promise.all(
-              withSub.map((p) => rpc('mark_submission', { p_submission: p.sub.id, p_marks: m, p_feedback: feedback }))
+              withSub.map((p) => {
+                const raw = customSplit ? memberMarks[p.index_no] : undefined;
+                const pm = raw !== undefined && raw !== '' ? Number(raw) : m;
+                return rpc('mark_submission', { p_submission: p.sub.id, p_marks: pm, p_feedback: feedback });
+              })
             );
             const missingCount = syndicatePeers.length - withSub.length;
             if (missingCount > 0) {
@@ -453,24 +568,96 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
       </div>
 
       {syndicate && (
-        <div className="stack-sm" style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--teal-50)', border: '1px solid var(--teal)' }}>
-          <div className="between">
+        <div className="stack-sm" style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--teal-50)', border: '1px solid var(--teal)' }}>
+          <div className="between" style={{ flexWrap: 'wrap', gap: 6 }}>
             <strong className="small" style={{ color: 'var(--teal-dark)' }}>
               {syndicate.name} ({syndicatePeers.length} members)
             </strong>
-            <span className="tiny muted">One mark applies to every activated member</span>
+            {assignMeta.syndicate.peerCheck !== false && syndicatePeers.length > 1 && (
+              <label className="check" style={{ gap: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={customSplit}
+                  onChange={(e) => setCustomSplit(e.target.checked)}
+                />
+                <span className="tiny strong">Adjust individual marks{hasFlaggedPeer ? ' (low peer score detected)' : ''}</span>
+              </label>
+            )}
           </div>
-          <div className="row-wrap" style={{ gap: 6 }}>
+
+          <div className="stack-sm" style={{ gap: 6 }}>
             {syndicatePeers.map((m) => (
-              <span key={m.index_no} className="badge badge-teal">
-                {m.index_no}{m.full_name && m.full_name !== m.index_no ? ` · ${m.full_name}` : ''}
-              </span>
+              <div
+                key={m.index_no}
+                className="between"
+                style={{
+                  flexWrap: 'wrap',
+                  gap: 8,
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  background: 'var(--surface)',
+                  border: m._peer?.flagged ? '1px solid var(--red-ink)' : '1px solid var(--line-2)',
+                }}
+              >
+                <div className="stack-sm" style={{ gap: 2, flex: 1, minWidth: 200 }}>
+                  <div className="row-wrap" style={{ gap: 6 }}>
+                    <span className="mono strong small">{m.index_no}</span>
+                    {m.full_name && m.full_name !== m.index_no && <span className="small">{m.full_name}</span>}
+                    {m._peer && (
+                      <span className={`badge ${m._peer.flagged ? 'badge-red' : 'badge-teal'}`}>
+                        Peer: {m._peer.avgScore}/5 ({m._peer.count}){m._peer.flagged ? ' · Low contribution' : ''}
+                      </span>
+                    )}
+                  </div>
+                  {m._peer?.notes?.length > 0 && (
+                    <div className="stack-sm" style={{ gap: 2, marginTop: 2 }}>
+                      {m._peer.notes.map((n, ni) => (
+                        <span key={ni} className="tiny muted">
+                          From {n.fromName} ({n.score}/5){n.note ? `: “${n.note}”` : ''}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {customSplit && (
+                  <div className="row" style={{ gap: 4 }}>
+                    {[
+                      { r: 1, l: '100%' },
+                      { r: 0.75, l: '75%' },
+                      { r: 0.5, l: '50%' },
+                      { r: 0, l: '0%' },
+                    ].map((btn) => (
+                      <button
+                        key={btn.l}
+                        type="button"
+                        className="btn btn-sm"
+                        style={{ minHeight: 28, padding: '0 6px', fontSize: 11 }}
+                        onClick={() => applyScaleToMember(m.index_no, btn.r)}
+                      >
+                        {btn.l}
+                      </button>
+                    ))}
+                    <input
+                      className="input mono"
+                      style={{ width: 68, minHeight: 30, padding: '0 6px', textAlign: 'right', fontSize: 13 }}
+                      type="number"
+                      min="0"
+                      max={a.max_marks}
+                      step="0.5"
+                      placeholder={marks === '' ? '—' : String(marks)}
+                      value={memberMarks[m.index_no] ?? ''}
+                      onChange={(e) => setMemberMarks((prev) => ({ ...prev, [m.index_no]: e.target.value }))}
+                    />
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         </div>
       )}
 
-      {effectiveSub.note && <p className="small"><span className="eyebrow">Student's note: </span>{effectiveSub.note}</p>}
+      {effectiveSub.note && <p className="small"><span className="eyebrow">Student&apos;s note: </span>{effectiveSub.note}</p>}
 
       <RubricGrader
         criteria={assignMeta.rubric}
@@ -482,7 +669,7 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
         }}
       />
 
-      <Field label={`Marks out of ${fmtNumber(a.max_marks)}`}>
+      <Field label={`Base group mark out of ${fmtNumber(a.max_marks)}`}>
         <input className="input mono" type="number" min="0" max={a.max_marks} step="0.5" style={{ maxWidth: 160 }} value={marks} onChange={(e) => setMarks(e.target.value)} autoFocus />
       </Field>
 
