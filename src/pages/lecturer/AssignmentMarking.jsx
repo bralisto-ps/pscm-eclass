@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
 import { useAuth } from '../../lib/auth.jsx';
@@ -48,6 +48,7 @@ export default function AssignmentMarking() {
   const [group, setGroup] = useState(ALL_GROUPS);
   const [sort, setSort] = useState('name_asc');
   const [marking, setMarking] = useState(null);
+  const [gradingPres, setGradingPres] = useState(false);
   const [editing, setEditing] = useState(false);
   const [showSql, setShowSql] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
@@ -244,7 +245,14 @@ export default function AssignmentMarking() {
                 <span className="badge badge-blue"><Icon name="clipboard" size={13} /> Clickable Rubric ({assignMeta.rubric.length} criteria)</span>
               )}
             </div>
-            <span className="tiny muted">Marking one group submission can apply scores across every member in that syndicate.</span>
+            <div className="row-wrap" style={{ gap: 8 }}>
+              <span className="tiny muted">Marking one group submission can apply scores across every member in that syndicate.</span>
+              {!isTA && assignMeta.syndicate.enabled && assignMeta.syndicate.groups.length > 0 && (
+                <button type="button" className="btn btn-sm btn-primary" onClick={() => setGradingPres(true)}>
+                  <Icon name="award" size={14} /> Grade live presentation
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -343,7 +351,11 @@ export default function AssignmentMarking() {
                         <td>
                           {effectiveSub && (
                             <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
-                              <button type="button" className="icon-btn plain" aria-label="Open file" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}><Icon name="eye" /></button>
+                              {effectiveSub.file_path && effectiveSub.file_path !== 'presentation:in-class' ? (
+                                <button type="button" className="icon-btn plain" aria-label="Open file" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}><Icon name="eye" /></button>
+                              ) : (
+                                <span className="badge badge-teal" title="Graded live in class">In-class</span>
+                              )}
                               <button type="button" className="btn btn-sm btn-primary" onClick={() => setMarking(i)}>
                                 {r.sub?.marks !== null && r.sub?.marks !== undefined ? 'Edit mark' : 'Mark'}
                               </button>
@@ -386,6 +398,15 @@ export default function AssignmentMarking() {
 
       {editing && <AssignmentForm course={{ id: a.course_id }} a={a} onClose={() => setEditing(false)} onSaved={reload} />}
 
+      {gradingPres && (
+        <PresentationModal
+          a={a}
+          assignMeta={assignMeta}
+          allRows={enrichedRows}
+          onClose={() => setGradingPres(false)}
+          onSaved={reload}
+        />
+      )}
       {showSql && (
         <Modal title="Enable Syndicate Group Sync in Supabase" onClose={() => setShowSql(false)} wide>
           <p className="small muted">
@@ -533,6 +554,25 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
     }
   }
 
+  const saveRef = useRef(null);
+  saveRef.current = () => {
+    if (busy) return;
+    if (syndicate && syndicatePeers.length > 1) save(hasNext, true);
+    else save(hasNext, false);
+  };
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        saveRef.current?.();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const isInClass = effectiveSub.file_path === 'presentation:in-class';
+
   return (
     <Modal
       title={syndicate ? `${row.full_name} · ${syndicate.name}` : row.full_name}
@@ -540,6 +580,7 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
       onClose={onClose}
       footer={
         <>
+          <span className="tiny muted hide-sm" style={{ marginRight: 'auto' }}>Tip: Ctrl/Cmd + ↵ to save &amp; continue</span>
           <button type="button" className="btn" onClick={onClose}>Close</button>
           {row.sub?.id && (
             <button type="button" className="btn" onClick={() => save(false, false)} disabled={busy}>Save single</button>
@@ -564,7 +605,7 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
           <strong>{effectiveSub.file_name}</strong><br />
           <span className="small">Submitted {fmtFull(effectiveSub.submitted_at)}{effectiveSub.is_late ? ' · LATE' : ''}</span>
         </span>
-        <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}>Open file</button>
+        {!isInClass && <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}>Open file</button>}
       </div>
 
       {syndicate && (
@@ -675,6 +716,229 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
 
       <Field label="Feedback to the student" hint="shown when you release marks">
         <textarea className="textarea" rows={4} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+      </Field>
+    </Modal>
+  );
+}
+
+
+function PresentationModal({ a, assignMeta, allRows, onClose, onSaved }) {
+  const toast = useToast();
+  const groups = assignMeta.syndicate.groups || [];
+  const byNorm = useMemo(() => new Map(allRows.map((r) => [normalizeIndexNo(r.index_no), r])), [allRows]);
+
+  const initialIdx = useMemo(() => {
+    const unmarked = groups.findIndex((g) => g.members.some((m) => {
+      const st = byNorm.get(m);
+      return st?.sub?.marks === null || st?.sub?.marks === undefined;
+    }));
+    return unmarked > -1 ? unmarked : 0;
+  }, [groups, byNorm]);
+
+  const [groupIdx, setGroupIdx] = useState(initialIdx);
+  const syndicate = groups[groupIdx] || groups[0];
+
+  const peers = useMemo(() => {
+    if (!syndicate) return [];
+    return syndicate.members.map((idx) => byNorm.get(idx) || { index_no: idx, full_name: idx, activated: false });
+  }, [syndicate, byNorm]);
+
+  const [marks, setMarks] = useState(() => {
+    const existing = peers.find((p) => p.sub?.marks !== null && p.sub?.marks !== undefined)?.sub?.marks;
+    return existing ?? '';
+  });
+  const [feedback, setFeedback] = useState(() => peers.find((p) => p.sub?.feedback)?.sub?.feedback || '');
+  const [customSplit, setCustomSplit] = useState(false);
+  const [memberMarks, setMemberMarks] = useState({});
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const existing = peers.find((p) => p.sub?.marks !== null && p.sub?.marks !== undefined)?.sub?.marks;
+    const fb = peers.find((p) => p.sub?.feedback)?.sub?.feedback || '';
+    setMarks(existing ?? '');
+    setFeedback(fb);
+    const nextMap = {};
+    peers.forEach((p) => {
+      nextMap[p.index_no] = p.sub?.marks ?? existing ?? '';
+    });
+    setMemberMarks(nextMap);
+    setCustomSplit(false);
+  }, [groupIdx, peers]);
+
+  const hasNext = groupIdx < groups.length - 1;
+
+  async function save(advance) {
+    if (!syndicate) return;
+    const m = Number(marks);
+    if (marks === '' || Number.isNaN(m) || m < 0 || m > Number(a.max_marks)) {
+      toast(`Enter a mark between 0 and ${fmtNumber(a.max_marks)}.`, 'error');
+      return;
+    }
+    if (customSplit) {
+      for (const p of peers) {
+        const raw = memberMarks[p.index_no];
+        const pm = raw === undefined || raw === '' ? m : Number(raw);
+        if (Number.isNaN(pm) || pm < 0 || pm > Number(a.max_marks)) {
+          toast(`Invalid mark for ${p.index_no} (0 to ${fmtNumber(a.max_marks)}).`, 'error');
+          return;
+        }
+      }
+    }
+    setBusy(true);
+    try {
+      const profiles = await run(
+        supabase.from('profiles').select('id, index_no').in('index_no', syndicate.members)
+      );
+      const profileByIdx = new Map((profiles || []).map((pr) => [normalizeIndexNo(pr.index_no), pr.id]));
+      const nowIso = new Date().toISOString();
+      const upsertRows = [];
+      const unactivated = [];
+
+      for (const p of peers) {
+        const studentId = profileByIdx.get(normalizeIndexNo(p.index_no));
+        if (!studentId) {
+          unactivated.push(p.index_no);
+          continue;
+        }
+        const raw = customSplit ? memberMarks[p.index_no] : undefined;
+        const memberScore = raw !== undefined && raw !== '' ? Number(raw) : m;
+        upsertRows.push({
+          assignment_id: a.id,
+          student_id: studentId,
+          file_path: p.sub?.file_path || 'presentation:in-class',
+          file_name: p.sub?.file_name || 'In-class presentation',
+          note: p.sub?.note || 'Graded live in class',
+          is_late: p.sub?.is_late || false,
+          marks: memberScore,
+          feedback,
+          marked_at: nowIso,
+        });
+      }
+
+      if (upsertRows.length === 0) {
+        toast(`None of the students in ${syndicate.name} have activated their portal accounts yet.`, 'error');
+        return;
+      }
+
+      await run(supabase.from('submissions').upsert(upsertRows, { onConflict: 'assignment_id,student_id' }));
+      if (unactivated.length > 0) {
+        toast(`Saved ${syndicate.name} (${upsertRows.length} marked). ${unactivated.length} not activated yet: ${unactivated.join(', ')}`);
+      } else {
+        toast(`Saved live presentation · ${syndicate.name} (${upsertRows.length} members)`);
+      }
+      onSaved?.();
+      if (advance && hasNext) setGroupIdx((i) => i + 1);
+      else onClose();
+    } catch (e) {
+      toast(e.message || 'Could not save presentation marks.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const saveRef = useRef(null);
+  saveRef.current = () => { if (!busy) save(hasNext); };
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        saveRef.current?.();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  if (!syndicate) return null;
+
+  return (
+    <Modal
+      title="Grade live syndicate presentation"
+      wide
+      onClose={onClose}
+      footer={
+        <>
+          <span className="tiny muted hide-sm" style={{ marginRight: 'auto' }}>Tip: Ctrl/Cmd + ↵ to save{hasNext ? ' & next group' : ''}</span>
+          <button type="button" className="btn" onClick={onClose}>Close</button>
+          <button type="button" className="btn btn-primary" onClick={() => save(hasNext)} disabled={busy}>
+            {busy ? 'Saving…' : hasNext ? 'Save & next group →' : 'Save presentation marks'}
+          </button>
+        </>
+      }
+    >
+      <div className="between" style={{ flexWrap: 'wrap', gap: 10 }}>
+        <Field label="Select syndicate group" style={{ flex: 1, minWidth: 240 }}>
+          <select className="select" value={groupIdx} onChange={(e) => setGroupIdx(Number(e.target.value))}>
+            {groups.map((g, idx) => {
+              const markedMembers = g.members.filter((m) => {
+                const st = byNorm.get(m);
+                return st?.sub?.marks !== null && st?.sub?.marks !== undefined;
+              }).length;
+              return (
+                <option key={g.id || idx} value={idx}>
+                  {g.name} ({markedMembers}/{g.members.length} marked)
+                </option>
+              );
+            })}
+          </select>
+        </Field>
+        <div className="row" style={{ gap: 6, alignSelf: 'flex-end' }}>
+          <button type="button" className="btn btn-sm" disabled={groupIdx === 0} onClick={() => setGroupIdx((i) => Math.max(0, i - 1))}>← Prev</button>
+          <button type="button" className="btn btn-sm" disabled={!hasNext} onClick={() => setGroupIdx((i) => Math.min(groups.length - 1, i + 1))}>Next →</button>
+        </div>
+      </div>
+
+      <div className="stack-sm" style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--teal-50)', border: '1px solid var(--teal)' }}>
+        <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <strong className="small" style={{ color: 'var(--teal-dark)' }}>{syndicate.name} · {peers.length} members</strong>
+          <label className="check" style={{ gap: 6 }}>
+            <input type="checkbox" checked={customSplit} onChange={(e) => setCustomSplit(e.target.checked)} />
+            <span className="tiny strong">Adjust individual member marks</span>
+          </label>
+        </div>
+        <div className="stack-sm" style={{ gap: 6 }}>
+          {peers.map((p) => (
+            <div key={p.index_no} className="between" style={{ padding: '6px 10px', borderRadius: 8, background: 'var(--surface)', border: '1px solid var(--line-2)', gap: 8 }}>
+              <span className="small">
+                <strong>{p.full_name}</strong> <span className="mono tiny muted">{p.index_no}</span>
+                {p.activated === false && <span className="badge badge-amber" style={{ marginLeft: 6 }}>Not activated</span>}
+              </span>
+              {customSplit ? (
+                <input
+                  className="input mono"
+                  type="number"
+                  min="0"
+                  max={a.max_marks}
+                  step="0.5"
+                  style={{ width: 92, minHeight: 32 }}
+                  value={memberMarks[p.index_no] ?? marks}
+                  onChange={(e) => setMemberMarks((mMap) => ({ ...mMap, [p.index_no]: e.target.value }))}
+                />
+              ) : (
+                <span className="tiny muted mono">
+                  {p.sub?.marks !== null && p.sub?.marks !== undefined ? `Current: ${fmtNumber(p.sub.marks)}` : 'Unmarked'}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <RubricGrader
+        criteria={assignMeta.rubric}
+        maxMarks={Number(a.max_marks)}
+        currentFeedback={feedback}
+        onApply={(total, mergedFeedback) => {
+          if (total !== null) setMarks(total);
+          setFeedback(mergedFeedback);
+        }}
+      />
+
+      <Field label={`Group presentation mark out of ${fmtNumber(a.max_marks)}`}>
+        <input className="input mono" type="number" min="0" max={a.max_marks} step="0.5" style={{ maxWidth: 160 }} value={marks} onChange={(e) => setMarks(e.target.value)} autoFocus />
+      </Field>
+      <Field label="Feedback for group" hint="shown when marks are released">
+        <textarea className="textarea" rows={3} value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="Strong analytical structure and clear delivery…" />
       </Field>
     </Modal>
   );

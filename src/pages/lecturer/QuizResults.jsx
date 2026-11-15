@@ -834,13 +834,13 @@ function MarkGroupCard({ group, rubric = [], onMarked }) {
         <label className="field" style={{ width: 120 }}>
           <span>Marks / {fmtNumber(max)}</span>
           <input className="input mono" type="number" min="0" max={max} step="0.5" value={marks} onChange={(e) => setMarks(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && saveAll()} />
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveAll(); } }} />
         </label>
         <label className="field" style={{ flex: 1, minWidth: 200 }}>
-          <span>Feedback for all {group.items.length} <span className="hint">· optional</span></span>
-          <input className="input" value={feedback} onChange={(e) => setFeedback(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && saveAll()} />
+          <span>Feedback for all {group.items.length} <span className="hint">· Ctrl+Enter to save</span></span>
+          <input className="input" value={feedback} onChange={(e) => setFeedback(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveAll(); } }} />
         </label>
-        <button type="button" className="btn btn-primary" onClick={() => saveAll()} disabled={busy}>
+        <button type="button" className="btn btn-primary" onClick={() => saveAll()} disabled={busy} title="Shortcut: Ctrl/Cmd + Enter">
           {busy ? 'Saving…' : `Save all (${group.items.length})`}
         </button>
       </div>
@@ -899,10 +899,10 @@ function MarkCard({ r, rubric = [], onMarked }) {
             onKeyDown={(e) => e.key === 'Enter' && save()} />
         </label>
         <label className="field" style={{ flex: 1, minWidth: 200 }}>
-          <span>Feedback <span className="hint">· optional</span></span>
-          <input className="input" value={feedback} onChange={(e) => setFeedback(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && save()} />
+          <span>Feedback <span className="hint">· Ctrl+Enter to save</span></span>
+          <input className="input" value={feedback} onChange={(e) => setFeedback(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } }} />
         </label>
-        <button type="button" className="btn btn-primary" onClick={save} disabled={busy}>Save</button>
+        <button type="button" className="btn btn-primary" onClick={save} disabled={busy} title="Shortcut: Ctrl/Cmd + Enter">Save</button>
       </div>
     </article>
   );

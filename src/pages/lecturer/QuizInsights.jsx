@@ -23,6 +23,28 @@ export function ItemAnalysis({ quiz }) {
   if (!data.length) return <div className="card"><Empty icon="chart" title="No questions" /></div>;
   const anyAnswers = data.some((r) => r.answered > 0);
   const streams = [...new Set(data.flatMap((r) => Object.keys(r.by_stream || {})))].sort();
+  const hasAnyTopics = data.some((r) => String(r.topic || '').trim().length > 0);
+  const topicSummary = (() => {
+    const map = new Map();
+    for (const r of data) {
+      const key = String(r.topic || '').trim() || 'General / Untagged';
+      if (!map.has(key)) map.set(key, { topic: key, count: 0, answeredCount: 0, pctSum: 0, weakCount: 0 });
+      const t = map.get(key);
+      t.count += 1;
+      if (r.answered > 0 && r.avg_pct !== null) {
+        const val = Number(r.avg_pct);
+        t.answeredCount += 1;
+        t.pctSum += val;
+        if (val < 50) t.weakCount += 1;
+      }
+    }
+    return [...map.values()]
+      .map((t) => ({
+        ...t,
+        avgPct: t.answeredCount ? Math.round(t.pctSum / t.answeredCount) : null,
+      }))
+      .sort((a, b) => (a.avgPct ?? 999) - (b.avgPct ?? 999));
+  })();
 
   function exportXlsx() {
     downloadWorkbook(`${quiz.courses.code} - ${quiz.title} - question analysis.xlsx`, [{
@@ -31,6 +53,11 @@ export function ItemAnalysis({ quiz }) {
         ...data.map((r, i) => [i + 1, r.prompt, KIND[r.kind], r.topic || '', r.answered, r.avg_pct === null ? '' : Number(r.avg_pct),
           r.discrimination === null ? '' : Number(r.discrimination), verdict(r).label, ...streams.map((s) => r.by_stream?.[s] ?? '')])],
       widths: [5, 60, 16, 18, 10, 10, 13, 18, ...streams.map(() => 10)],
+    }, {
+      name: 'By Topic (PDCA)',
+      rows: [['Topic', 'Questions', 'Mastery %', 'Questions < 50%', 'PDCA Action'],
+        ...topicSummary.map((t) => [t.topic, t.count, t.avgPct ?? '', t.weakCount, t.avgPct === null ? '' : t.avgPct < 50 ? 'Re-teach / Review' : t.avgPct < 75 ? 'Reinforce' : 'Mastered'])],
+      widths: [28, 12, 12, 16, 22],
     }]);
   }
 
@@ -45,6 +72,49 @@ export function ItemAnalysis({ quiz }) {
         <button type="button" className="btn btn-sm" onClick={exportXlsx} disabled={!anyAnswers}><Icon name="download" size={16} /> Export</button>
       </div>
       {!anyAnswers && <div className="card"><Empty icon="chart" title="No submissions yet">Analysis appears once students submit.</Empty></div>}
+      {anyAnswers && (
+        <section className="card stack-sm" aria-label="Topic mastery diagnostic">
+          <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <div>
+              <h2 style={{ margin: 0 }}>Topic mastery diagnostic (PDCA)</h2>
+              <span className="tiny muted">Weakest topics appear first so you can target revision in your next lecture.</span>
+            </div>
+            {!hasAnyTopics && (
+              <span className="tiny muted">Tip: tag questions with a <strong>Topic</strong> in Quiz Builder to split by syllabus area.</span>
+            )}
+          </div>
+          <div className="stack-sm" style={{ gap: 10, marginTop: 4 }}>
+            {topicSummary.map((t) => {
+              const p = t.avgPct ?? 0;
+              const status = t.avgPct === null
+                ? { label: 'Pending', cls: '', color: 'var(--field)' }
+                : p < 50
+                  ? { label: 'Re-teach / Review', cls: 'badge-red', color: 'var(--red-ink)' }
+                  : p < 75
+                    ? { label: 'Reinforce', cls: 'badge-amber', color: 'var(--amber-ink)' }
+                    : { label: 'Mastered', cls: 'badge-teal', color: 'var(--teal)' };
+              return (
+                <div key={t.topic} className="stack-sm" style={{ gap: 5 }}>
+                  <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                    <div className="row-wrap" style={{ gap: 8 }}>
+                      <strong className="small">{t.topic}</strong>
+                      <span className="tiny muted">{t.count} question{t.count === 1 ? '' : 's'}</span>
+                      {t.weakCount > 0 && <span className="tiny" style={{ color: 'var(--red-ink)' }}>· {t.weakCount} below 50%</span>}
+                    </div>
+                    <div className="row" style={{ gap: 8 }}>
+                      <span className={`badge ${status.cls}`}>{status.label}</span>
+                      <span className="mono strong small" style={{ minWidth: 42, textAlign: 'right' }}>{t.avgPct === null ? '—' : `${p}%`}</span>
+                    </div>
+                  </div>
+                  <div className="bar-track" style={{ height: 8 }}>
+                    <div className="bar-fill" style={{ height: 8, width: `${p}%`, background: status.color }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
       {anyAnswers && data.map((r, i) => {
         const v = verdict(r);
         const opts = r.options && (r.kind === 'mcq' || r.kind === 'truefalse') ? r.options : null;

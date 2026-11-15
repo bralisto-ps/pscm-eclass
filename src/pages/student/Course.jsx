@@ -587,7 +587,11 @@ function AssignmentCard({ a, reload }) {
           <span style={{ flex: 1 }}>
             <strong>{s.file_name}</strong> · submitted {fmtFull(s.submitted_at)}
           </span>
-          <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('submissions', s.file_path))}>View</button>
+          {s.file_path && s.file_path !== 'presentation:in-class' ? (
+            <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('submissions', s.file_path))}>View</button>
+          ) : (
+            <span className="badge badge-teal">Graded live</span>
+          )}
         </div>
       )}
 

@@ -18,6 +18,7 @@ import CATab from './course/CATab.jsx';
 import Forum from '../../components/Forum.jsx';
 import CloneCourseModal from '../../components/CloneCourseModal.jsx';
 import AuditLogPanel from '../../components/AuditLogPanel.jsx';
+import StudentPreview from '../../components/StudentPreview.jsx';
 
 const TABS = [
   { id: 'materials', label: 'Materials' },
@@ -38,6 +39,7 @@ export default function ManageCourse() {
   const { courseId } = useParams();
   const { isTA } = useAuth();
   const [params, setParams] = useSearchParams();
+  const [previewStudent, setPreviewStudent] = useState(false);
   const tabs = isTA ? TABS.filter((t) => TA_TABS.includes(t.id)) : TABS;
   const asked = params.get('tab');
   const tab = tabs.some((t) => t.id === asked) ? asked : tabs[0].id;
@@ -59,15 +61,21 @@ export default function ManageCourse() {
             {isTA && <span className="band-chip">Teaching assistant</span>}
             {course.semester && <span className="band-chip">{course.semester}</span>}
             {course.archived && <span className="band-chip">Archived</span>}
+            <button type="button" className="btn btn-sm" style={{ background: previewStudent ? '#fff' : 'rgba(0,0,0,0.22)', color: previewStudent ? '#090e17' : '#fff', borderColor: 'transparent' }} onClick={() => setPreviewStudent((v) => !v)}>
+              <Icon name="eye" size={15} /> {previewStudent ? 'Exit student preview' : 'Preview as student'}
+            </button>
           </div>
         </div>
         <div style={{ marginTop: 12 }}>
           <div className="code">{course.code}</div>
           <h1>{course.title}</h1>
         </div>
-        <Tabs dark tabs={tabs} value={tab} onChange={(t) => setParams({ tab: t }, { replace: true })} />
+        {!previewStudent && <Tabs dark tabs={tabs} value={tab} onChange={(t) => setParams({ tab: t }, { replace: true })} />}
       </header>
       <div className="page">
+        {previewStudent ? (
+          <StudentPreview course={course} onExit={() => setPreviewStudent(false)} />
+        ) : (
         <ErrorBoundary key={tab}>
           {tab === 'materials' && <MaterialsTab course={course} />}
           {tab === 'quizzes' && <QuizzesTab course={course} ta={isTA} />}
@@ -80,6 +88,7 @@ export default function ManageCourse() {
           {tab === 'announcements' && <AnnouncementsTab course={course} ta={isTA} />}
           {tab === 'settings' && !isTA && <SettingsTab course={course} reload={reload} />}
         </ErrorBoundary>
+        )}
       </div>
     </>
   );
