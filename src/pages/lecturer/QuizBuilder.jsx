@@ -242,6 +242,96 @@ function Summary({ q }) {
   return <span className="small muted">Marked by you{q.explanation ? ' · marking guide added' : ''}</span>;
 }
 
+const PSCM_FORMULA_PRESETS = [
+  {
+    id: 'eoq',
+    label: 'Economic Order Quantity (EOQ)',
+    topic: 'Inventory Management',
+    prompt: 'A warehouse faces annual demand of {D} units. Ordering cost is GH₵ {S} per order and annual holding cost is GH₵ {H} per unit. Calculate the Economic Order Quantity (EOQ).',
+    explanation: 'EOQ = sqrt((2 × D × S) / H).',
+    formula: 'sqrt(2*D*S/H)',
+    unit: 'units',
+    decimals: 0,
+    tolerance: 2,
+    tolerance_type: 'pct',
+    vars: [
+      { name: 'D', min: 1200, max: 4800, step: 200 },
+      { name: 'S', min: 40, max: 120, step: 10 },
+      { name: 'H', min: 2, max: 10, step: 1 },
+    ],
+  },
+  {
+    id: 'rop',
+    label: 'Reorder Point with Safety Stock (ROP)',
+    topic: 'Inventory Control',
+    prompt: 'Average daily demand for a critical spare part is {d} units/day with a supplier lead time of {L} days. Management maintains a safety stock of {SS} units. What is the Reorder Point (ROP)?',
+    explanation: 'ROP = (Daily Demand × Lead Time) + Safety Stock = d × L + SS.',
+    formula: 'd*L + SS',
+    unit: 'units',
+    decimals: 0,
+    tolerance: 1,
+    tolerance_type: 'abs',
+    vars: [
+      { name: 'd', min: 25, max: 80, step: 5 },
+      { name: 'L', min: 4, max: 14, step: 1 },
+      { name: 'SS', min: 30, max: 120, step: 10 },
+    ],
+  },
+  {
+    id: 'total_inv',
+    label: 'Total Annual Inventory Cost (at EOQ)',
+    topic: 'Inventory Costing',
+    prompt: 'Annual demand is {D} units, ordering cost is GH₵ {S} per order, and holding cost is GH₵ {H} per unit per year. Assuming optimal EOQ ordering, calculate the total annual ordering plus holding cost.',
+    explanation: 'At EOQ, Total Annual Cost = sqrt(2 × D × S × H).',
+    formula: 'sqrt(2*D*S*H)',
+    unit: 'GH₵',
+    decimals: 2,
+    tolerance: 1,
+    tolerance_type: 'pct',
+    vars: [
+      { name: 'D', min: 1000, max: 3600, step: 200 },
+      { name: 'S', min: 50, max: 150, step: 10 },
+      { name: 'H', min: 4, max: 12, step: 1 },
+    ],
+  },
+  {
+    id: 'landed',
+    label: 'Landed Unit Cost (CIF + Import Duty)',
+    topic: 'Global Sourcing & Incoterms',
+    prompt: 'A procurement officer imports {Qty} units with an FOB value of GH₵ {FOB}, ocean freight of GH₵ {Freight}, and marine insurance of GH₵ {Ins}. Import duty is {Duty}% on CIF value. Calculate the landed cost per unit.',
+    explanation: 'Landed Unit Cost = ((FOB + Freight + Insurance) × (1 + Duty/100)) / Quantity.',
+    formula: '(FOB + Freight + Ins)*(1 + Duty/100)/Qty',
+    unit: 'GH₵',
+    decimals: 2,
+    tolerance: 1,
+    tolerance_type: 'pct',
+    vars: [
+      { name: 'FOB', min: 8000, max: 20000, step: 500 },
+      { name: 'Freight', min: 800, max: 2400, step: 100 },
+      { name: 'Ins', min: 150, max: 450, step: 50 },
+      { name: 'Duty', min: 10, max: 25, step: 5 },
+      { name: 'Qty', min: 200, max: 600, step: 50 },
+    ],
+  },
+  {
+    id: 'breakeven',
+    label: 'Make-or-Buy Break-Even Volume',
+    topic: 'Strategic Sourcing',
+    prompt: 'Producing a component in-house requires fixed tooling cost of GH₵ {FC} and variable cost of GH₵ {V} per unit, compared to outsourcing at GH₵ {P} per unit. What is the break-even volume?',
+    explanation: 'Break-even volume = Fixed Cost / (Outsource Price − Variable Cost) = FC / (P − V).',
+    formula: 'FC/(P-V)',
+    unit: 'units',
+    decimals: 0,
+    tolerance: 2,
+    tolerance_type: 'pct',
+    vars: [
+      { name: 'FC', min: 15000, max: 45000, step: 2500 },
+      { name: 'P', min: 45, max: 80, step: 5 },
+      { name: 'V', min: 20, max: 35, step: 5 },
+    ],
+  },
+];
+
 // ---------------- question editor ----------------
 function QuestionEditor({ number, initial, quizId, courseId, isNew, onCancel, onSaved }) {
   const toast = useToast();
@@ -325,6 +415,25 @@ function QuestionEditor({ number, initial, quizId, courseId, isNew, onCancel, on
       row.answer = { accepted };
     }
     return row;
+  }
+
+  function applyFormulaPreset(presetId) {
+    const preset = PSCM_FORMULA_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+    setVars(preset.vars.map((v) => ({ ...v })));
+    setQ((x) => ({
+      ...x,
+      formula: preset.formula,
+      unit: preset.unit,
+      decimals: preset.decimals,
+      tolerance: preset.tolerance,
+      tolerance_type: preset.tolerance_type,
+      topic: x.topic?.trim() ? x.topic : preset.topic,
+      prompt: x.prompt?.trim() ? x.prompt : preset.prompt,
+      explanation: x.explanation?.trim() ? x.explanation : preset.explanation,
+    }));
+    setTest(null);
+    toast(`Loaded ${preset.label} preset.`);
   }
 
   async function runTest() {
@@ -542,8 +651,24 @@ function QuestionEditor({ number, initial, quizId, courseId, isNew, onCancel, on
                 <input className="input mono" style={{ maxWidth: 220 }} inputMode="decimal" value={q.answer.value ?? ''} onChange={(e) => set('answer', { value: e.target.value })} />
               </Field>
             ) : (
-              <div className="stack-sm" style={{ background: 'var(--surface-2)', padding: 14, borderRadius: 10 }}>
-                <span className="field-label">Figures that change for each student</span>
+              <div className="stack-sm" style={{ background: 'var(--surface-2)', padding: 14, borderRadius: 10, border: '1px solid var(--line)' }}>
+                <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                  <span className="field-label">Figures that change for each student</span>
+                  <select
+                    aria-label="Load PSCM formula preset"
+                    className="select"
+                    style={{ width: 'auto', minHeight: 34, fontSize: 13 }}
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value) applyFormulaPreset(e.target.value);
+                    }}
+                  >
+                    <option value="">Load PSCM formula preset…</option>
+                    {PSCM_FORMULA_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id}>{p.label}</option>
+                    ))}
+                  </select>
+                </div>
                 <div className="var-grid tiny muted"><span>Name</span><span>Lowest</span><span>Highest</span><span>Step</span><span /></div>
                 {vars.map((v, i) => (
                   <div key={i} className="var-grid">

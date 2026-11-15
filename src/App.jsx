@@ -1,20 +1,22 @@
+import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { isConfigured } from './lib/supabase.js';
 import { AuthProvider, useAuth } from './lib/auth.jsx';
 import { ToastProvider, Loading, ErrorBoundary } from './components/ui.jsx';
 import Layout from './components/Layout.jsx';
-import Login from './pages/Login.jsx';
-import Account from './pages/Account.jsx';
-import StudentHome from './pages/student/Home.jsx';
-import StudentCourse from './pages/student/Course.jsx';
-import TakeQuiz from './pages/student/TakeQuiz.jsx';
-import ReviewQuiz from './pages/student/ReviewQuiz.jsx';
-import Grades from './pages/student/Grades.jsx';
-import Dashboard from './pages/lecturer/Dashboard.jsx';
-import ManageCourse from './pages/lecturer/ManageCourse.jsx';
-import QuizBuilder from './pages/lecturer/QuizBuilder.jsx';
-import QuizResults from './pages/lecturer/QuizResults.jsx';
-import AssignmentMarking from './pages/lecturer/AssignmentMarking.jsx';
+
+const Login = lazy(() => import('./pages/Login.jsx'));
+const Account = lazy(() => import('./pages/Account.jsx'));
+const StudentHome = lazy(() => import('./pages/student/Home.jsx'));
+const StudentCourse = lazy(() => import('./pages/student/Course.jsx'));
+const TakeQuiz = lazy(() => import('./pages/student/TakeQuiz.jsx'));
+const ReviewQuiz = lazy(() => import('./pages/student/ReviewQuiz.jsx'));
+const Grades = lazy(() => import('./pages/student/Grades.jsx'));
+const Dashboard = lazy(() => import('./pages/lecturer/Dashboard.jsx'));
+const ManageCourse = lazy(() => import('./pages/lecturer/ManageCourse.jsx'));
+const QuizBuilder = lazy(() => import('./pages/lecturer/QuizBuilder.jsx'));
+const QuizResults = lazy(() => import('./pages/lecturer/QuizResults.jsx'));
+const AssignmentMarking = lazy(() => import('./pages/lecturer/AssignmentMarking.jsx'));
 
 function NotConfigured() {
   return (
@@ -37,12 +39,14 @@ function Gate() {
 
   if (!session) {
     return (
-      <Routes>
-        <Route path="/login" element={<Login mode="signin" />} />
-        <Route path="/activate" element={<Login mode="activate" />} />
-        <Route path="/staff" element={<Login mode="staff" />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
+      <Suspense fallback={<Loading label="Opening PSCM E-class…" />}>
+        <Routes>
+          <Route path="/login" element={<Login mode="signin" />} />
+          <Route path="/activate" element={<Login mode="activate" />} />
+          <Route path="/staff" element={<Login mode="staff" />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      </Suspense>
     );
   }
 
@@ -62,30 +66,32 @@ function Gate() {
 
   return (
     <ErrorBoundary>
-      <Routes>
-        {!isStaff && <Route path="/quiz/:attemptId" element={<ErrorBoundary><TakeQuiz /></ErrorBoundary>} />}
-        <Route element={<Layout />}>
-        {isStaff ? (
-          <>
-            <Route index element={<Dashboard />} />
-            <Route path="teach/course/:courseId" element={<ManageCourse />} />
-            {isLecturer && <Route path="teach/quiz/:quizId" element={<QuizBuilder />} />}
-            <Route path="teach/quiz/:quizId/results" element={<QuizResults />} />
-            <Route path="teach/assignment/:assignmentId" element={<AssignmentMarking />} />
-          </>
-        ) : (
-          <>
-            <Route index element={<StudentHome />} />
-            <Route path="course/:courseId" element={<StudentCourse />} />
-            <Route path="review/:attemptId" element={<ReviewQuiz />} />
-            <Route path="grades" element={<Grades />} />
-          </>
-        )}
-        <Route path="account" element={<Account />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Route>
-    </Routes>
-  </ErrorBoundary>
+      <Suspense fallback={<Loading label="Loading page…" />}>
+        <Routes>
+          {!isStaff && <Route path="/quiz/:attemptId" element={<ErrorBoundary><TakeQuiz /></ErrorBoundary>} />}
+          <Route element={<Layout />}>
+            {isStaff ? (
+              <>
+                <Route index element={<Dashboard />} />
+                <Route path="teach/course/:courseId" element={<ManageCourse />} />
+                {isLecturer && <Route path="teach/quiz/:quizId" element={<QuizBuilder />} />}
+                <Route path="teach/quiz/:quizId/results" element={<QuizResults />} />
+                <Route path="teach/assignment/:assignmentId" element={<AssignmentMarking />} />
+              </>
+            ) : (
+              <>
+                <Route index element={<StudentHome />} />
+                <Route path="course/:courseId" element={<StudentCourse />} />
+                <Route path="review/:attemptId" element={<ReviewQuiz />} />
+                <Route path="grades" element={<Grades />} />
+              </>
+            )}
+            <Route path="account" element={<Account />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </Suspense>
+    </ErrorBoundary>
   );
 }
 

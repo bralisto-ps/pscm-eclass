@@ -85,15 +85,8 @@ function QuizList({ course, ta }) {
               type="button"
               className="btn btn-primary"
               onClick={() => setAiModal(true)}
-              style={{
-                background: "linear-gradient(135deg, #0d9488 0%, #6366f1 100%)",
-                borderColor: "transparent",
-                color: "#fff",
-                fontWeight: 600,
-                boxShadow: "0 2px 8px rgba(99, 102, 241, 0.25)",
-              }}
             >
-              <Icon name="sparkles" size={16} /> Generate Quiz with AI ✨
+              <Icon name="quiz" size={16} /> Generate Quiz from Notes
             </button>
             <button type="button" className="btn" onClick={create} disabled={busy}>
               <Icon name="plus" /> New manual quiz
@@ -104,8 +97,8 @@ function QuizList({ course, ta }) {
 
       {data.length === 0 ? (
         <div className="card stack" style={{ textAlign: "center", padding: "36px 20px", alignItems: "center" }}>
-          <div style={{ width: 54, height: 54, borderRadius: "50%", background: "var(--teal-50)", display: "grid", placeItems: "center", color: "var(--teal)" }}>
-            <Icon name="sparkles" size={28} />
+          <div style={{ width: 54, height: 54, borderRadius: "50%", background: "var(--teal-50)", display: "grid", placeItems: "center", color: "var(--teal-dark)" }}>
+            <Icon name="quiz" size={26} />
           </div>
           <h2>No quizzes yet in {course.code}</h2>
           <p className="muted small" style={{ maxWidth: 460 }}>
@@ -116,15 +109,8 @@ function QuizList({ course, ta }) {
               type="button"
               className="btn btn-primary"
               onClick={() => setAiModal(true)}
-              style={{
-                background: "linear-gradient(135deg, #0d9488 0%, #6366f1 100%)",
-                borderColor: "transparent",
-                color: "#fff",
-                fontWeight: 600,
-                boxShadow: "0 2px 8px rgba(99, 102, 241, 0.25)",
-              }}
             >
-              <Icon name="sparkles" size={16} /> Generate Quiz with AI ✨
+              <Icon name="quiz" size={16} /> Generate Quiz from Notes
             </button>
             <button type="button" className="btn" onClick={create} disabled={busy}>
               <Icon name="plus" /> New manual quiz

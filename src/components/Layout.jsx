@@ -10,13 +10,25 @@ import { OfflineIndicator, PWAInstallButton } from './PWABanner.jsx';
 import QuickJumpModal from './QuickJumpModal.jsx';
 
 export function Topbar({ title, sub, children }) {
+  const [theme, , toggleTheme] = useTheme();
   return (
     <header className="topbar">
       <div className="topbar-title">
         <h1>{title}</h1>
         {sub && <span className="muted small">{sub}</span>}
       </div>
-      {children && <div className="row-wrap">{children}</div>}
+      <div className="row-wrap">
+        {children}
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={toggleTheme}
+          aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to night study mode'}
+          title={theme === 'dark' ? 'Light mode' : 'Night study mode'}
+        >
+          <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
+        </button>
+      </div>
     </header>
   );
 }

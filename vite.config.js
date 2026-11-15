@@ -99,6 +99,15 @@ export default defineConfig({
     }),
   ],
   build: {
-    chunkSizeWarningLimit: 900,
+    chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'supabase-vendor': ['@supabase/supabase-js'],
+          'excel-vendor': ['read-excel-file', 'write-excel-file'],
+        },
+      },
+    },
   },
 });

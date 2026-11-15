@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { useBranding } from '../lib/branding.js';
+import { useTheme } from '../lib/theme.js';
 import Icon, { BrandMark } from '../components/Icon.jsx';
 import { Field } from '../components/ui.jsx';
 import { OfflineIndicator, PWAInstallButton } from '../components/PWABanner.jsx';
@@ -9,6 +10,7 @@ import { OfflineIndicator, PWAInstallButton } from '../components/PWABanner.jsx'
 export default function Login({ mode }) {
   const { signIn, activate, activateStaff } = useAuth();
   const [brand] = useBranding();
+  const [theme, , toggleTheme] = useTheme();
   const navigate = useNavigate();
   const [id, setId] = useState('');
   const [password, setPassword] = useState('');
@@ -94,7 +96,17 @@ export default function Login({ mode }) {
         </div>
       </aside>
 
-      <main className="auth-main">
+      <main className="auth-main" style={{ position: 'relative' }}>
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={toggleTheme}
+          aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to night study mode'}
+          title={theme === 'dark' ? 'Light mode' : 'Night study mode'}
+          style={{ position: 'absolute', top: 18, right: 18 }}
+        >
+          <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
+        </button>
         <form className="auth-card" onSubmit={submit} noValidate>
           <div className="auth-mobile-head stack-sm" style={{ marginBottom: 4 }}>
             <div className="row" style={{ gap: 10 }}>
