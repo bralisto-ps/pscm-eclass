@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import CheckInModal from '../../components/CheckIn.jsx';
 import { useAuth } from '../../lib/auth.jsx';
 import { buildDeadlinesIcs, googleCalendarUrl } from '../../lib/calendar.js';
+import { assignmentMatchesStudent, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
 import { downloadText } from '../../lib/sheets.js';
 import { rpc, run, supabase } from '../../lib/supabase.js';
 import { dayChip, fmtDateTime, greeting, relative } from '../../lib/format.js';
@@ -32,13 +33,29 @@ export default function StudentHome() {
   const { profile } = useAuth();
   const toast = useToast();
   const { data, error, loading, reload } = useLoad(async () => {
-    const [courses, upcoming, news, openAtt] = await Promise.all([
+    const [courses, upcoming, news, openAtt, cohort] = await Promise.all([
       run(supabase.from('courses').select('id, code, title, color, semester, description').eq('archived', false).order('code')),
       rpc('my_upcoming'),
       run(supabase.from('announcements').select('id, title, body, created_at, courses(code, color)').order('created_at', { ascending: false }).limit(5)),
       rpc('my_open_attendance'),
+      rpc('my_cohort').catch(() => null),
     ]);
-    return { courses, upcoming: upcoming || [], news, openAtt: openAtt || [] };
+    let filteredUpcoming = upcoming || [];
+    if (cohort) {
+      const assignIds = filteredUpcoming.filter((u) => u.kind === 'assignment').map((u) => u.id);
+      if (assignIds.length > 0) {
+        const rows = await supabase.from('assignments').select('id, instructions').in('id', assignIds).then((r) => r.data || [], () => []);
+        if (rows.length > 0) {
+          const metaById = new Map(rows.map((r) => [r.id, parseAssignmentMeta(r)]));
+          filteredUpcoming = filteredUpcoming.filter((u) => {
+            if (u.kind !== 'assignment') return true;
+            const m = metaById.get(u.id);
+            return !m || assignmentMatchesStudent(m, cohort);
+          });
+        }
+      }
+    }
+    return { courses, upcoming: filteredUpcoming, news, openAtt: openAtt || [] };
   }, []);
 
   const firstName = (profile.full_name || '').split(' ')[0];

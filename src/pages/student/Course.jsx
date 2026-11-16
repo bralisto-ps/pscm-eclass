@@ -1,13 +1,13 @@
 import { parseCourseMeta } from '../../lib/courseMeta.js';
 import { cleanText } from '../../lib/quizMeta.js';
-import { findStudentSyndicate, normalizeIndexNo, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
+import { assignmentMatchesStudent, findStudentSyndicate, normalizeIndexNo, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
 import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
 import { getLetter, getRemarks, GradesTable, TargetGradeCalculator } from './Grades.jsx';
 import Messages from '../../components/Messages.jsx';
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { rpc, run, supabase, safeFileName } from '../../lib/supabase.js';
-import { isViewOnlyPath, openStoredFile, uploadFile, SUBMISSION_ACCEPT } from '../../lib/files.js';
+import { isViewOnlyPath, openStoredFile, setViewOnlyFlag, uploadFile, SUBMISSION_ACCEPT } from '../../lib/files.js';
 const SecureSlideViewer = lazy(() => import('../../components/SecureSlideViewer.jsx'));
 import CheckInModal from '../../components/CheckIn.jsx';
 import Forum from '../../components/Forum.jsx';
@@ -38,7 +38,7 @@ export default function StudentCourse() {
   const [checkingIn, setCheckingIn] = useState(false);
 
   const { data, error, loading, reload } = useLoad(async () => {
-    const [course, modules, materials, news, quizzes, assignments, attendance, ca, viewsRes] = await Promise.all([
+    const [course, modules, materials, news, quizzes, assignments, attendance, ca, viewsRes, cohort] = await Promise.all([
       run(supabase.from('courses').select('*').eq('id', courseId).maybeSingle()),
       run(supabase.from('modules').select('*').eq('course_id', courseId).order('week_no', { nullsFirst: false }).order('position')),
       run(supabase.from('materials').select('*').eq('course_id', courseId).order('position').order('created_at')),
@@ -48,9 +48,16 @@ export default function StudentCourse() {
       rpc('my_attendance', { p_course: courseId }),
       rpc('my_ca', { p_course: courseId }),
       supabase.from('material_views').select('material_id').eq('course_id', courseId).then((r) => r.data || [], () => []),
+      rpc('my_cohort').catch(() => null),
     ]);
-    return { course, modules, materials, news, quizzes: quizzes || [], assignments: assignments || [], attendance, ca, viewedIds: (viewsRes || []).map((v) => v.material_id) };
+    return { course, modules, materials, news, quizzes: quizzes || [], assignments: assignments || [], attendance, ca, viewedIds: (viewsRes || []).map((v) => v.material_id), cohort };
   }, [courseId]);
+
+  const visibleAssignments = useMemo(() => {
+    const list = data?.assignments || [];
+    if (!data?.cohort) return list;
+    return list.filter((a) => Boolean(a.submission) || assignmentMatchesStudent(parseAssignmentMeta(a), data.cohort));
+  }, [data?.assignments, data?.cohort]);
 
   if (loading) return <CourseSkeleton />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
@@ -89,15 +96,15 @@ export default function StudentCourse() {
         <ErrorBoundary key={tab}>
           {tab === 'materials' && <Materials data={data} course={course} profile={profile} onQuizzes={() => setTab('quizzes')} graded={graded} />}
           {tab === 'quizzes' && <Quizzes quizzes={data.quizzes} reload={reload} />}
-          {tab === 'assignments' && <Assignments assignments={data.assignments} reload={reload} />}
+          {tab === 'assignments' && <Assignments assignments={visibleAssignments} course={course} profile={profile} reload={reload} />}
           {tab === 'attendance' && (
             <StudentAttendanceView attendance={data.attendance} course={course} onCheckIn={() => setCheckingIn(true)} />
           )}
           {tab === 'grades' && (
             <div className="stack-lg" style={{ maxWidth: 900 }}>
               {data.ca && <CACard ca={data.ca} course={course} profile={profile} />}
-              <GradesTable quizzes={graded} assignments={data.assignments} />
-              <TargetGradeCalculator course={course} quizzes={graded} assignments={data.assignments} />
+              <GradesTable quizzes={graded} assignments={visibleAssignments} />
+              <TargetGradeCalculator course={course} quizzes={graded} assignments={visibleAssignments} />
               <AttendanceCard attendance={data.attendance} />
             </div>
           )}
@@ -466,18 +473,49 @@ function Quizzes({ quizzes }) {
 }
 
 // ---------------- assignments ----------------
-function Assignments({ assignments, reload }) {
+function Assignments({ assignments, course, profile, reload }) {
+  const toast = useToast();
+  const [readingDoc, setReadingDoc] = useState(null);
   if (!assignments.length) return <div className="card"><Empty icon="clipboard" title="No assignments yet">Assignments will appear here when your lecturer posts them.</Empty></div>;
   return (
     <div className="stack" style={{ maxWidth: 900 }}>
-      {assignments.map((a) => <AssignmentCard key={a.id} a={a} reload={reload} />)}
+      {assignments.map((a) => (
+        <AssignmentCard
+          key={a.id}
+          a={a}
+          onReadDoc={(doc, item) => setReadingDoc({
+            id: item.id,
+            title: doc.name || item.title,
+            storage_path: setViewOnlyFlag(doc.path, true),
+          })}
+          reload={reload}
+        />
+      ))}
+      {readingDoc && (
+        <Suspense fallback={<div className="secure-reader-backdrop" style={{ alignItems: 'center', justifyContent: 'center' }}><div className="spinner" /></div>}>
+          <SecureSlideViewer
+            material={readingDoc}
+            courseCode={course?.code}
+            watermarkText={[profile?.full_name, profile?.index_no].filter(Boolean).join(' · ')}
+            onAskSlide={async (slideNo, qText, anonymous) => {
+              await rpc('forum_post', {
+                p_course: course.id,
+                p_body: `[${readingDoc.title} · Page ${slideNo}]\n${qText}`,
+                p_anonymous: anonymous,
+              });
+              toast('Question posted to Course Q&A.');
+            }}
+            onClose={() => setReadingDoc(null)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
 
 const MAX_BYTES = 5 * 1024 * 1024;
 
-function AssignmentCard({ a, reload }) {
+function AssignmentCard({ a, onReadDoc, reload }) {
   const { session, profile } = useAuth();
   const toast = useToast();
   const [act] = useAction();
@@ -572,6 +610,33 @@ function AssignmentCard({ a, reload }) {
       )}
 
       {assignMeta.cleanInstructions && <p className="pre small" style={{ color: 'var(--text-2)' }}>{assignMeta.cleanInstructions}</p>}
+      {assignMeta.doc?.path && (
+        <div className="notice row-wrap" style={{ justifyContent: 'space-between', gap: 10, padding: '10px 14px', background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+          <div className="row" style={{ gap: 10, minWidth: 0, flex: 1 }}>
+            <Icon name={assignMeta.doc.viewOnly || isViewOnlyPath(assignMeta.doc.path) ? 'lock' : 'file'} size={16} />
+            <div style={{ minWidth: 0 }}>
+              <div className="small strong" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {assignMeta.doc.name || 'Assignment brief'}
+              </div>
+              <div className="tiny muted">
+                {assignMeta.doc.sizeBytes ? `${fmtBytes(assignMeta.doc.sizeBytes)} · ` : ''}
+                {assignMeta.doc.viewOnly || isViewOnlyPath(assignMeta.doc.path)
+                  ? 'Read online only (watermarked · download disabled)'
+                  : 'Assignment brief document'}
+              </div>
+            </div>
+          </div>
+          {assignMeta.doc.viewOnly || isViewOnlyPath(assignMeta.doc.path) ? (
+            <button type="button" className="btn btn-sm btn-primary" onClick={() => onReadDoc(assignMeta.doc, a)}>
+              <Icon name="eye" size={14} /> Read online
+            </button>
+          ) : (
+            <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('materials', assignMeta.doc.path))}>
+              <Icon name="download" size={14} /> Download brief
+            </button>
+          )}
+        </div>
+      )}
       {assignMeta.rubric.length > 0 && (
         <div className="row-wrap tiny muted" style={{ gap: 6 }}>
           <span className="eyebrow">Marking criteria:</span>

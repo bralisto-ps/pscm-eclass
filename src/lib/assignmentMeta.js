@@ -1,7 +1,7 @@
-// Encodes optional assignment rubric criteria & syndicate group configuration
+// Encodes optional assignment rubric criteria, syndicate group configuration,
+// cohort targeting (programmes / streams / classes), and brief document metadata
 // inside assignments.instructions via a hidden HTML comment tag so existing
 // tables require zero breaking migrations.
-
 const ASSIGN_META_RE = /\n?\s*<!--\s*ASSIGN_META:(\{[\s\S]*?\})\s*-->\s*$/;
 
 export const RUBRIC_PRESETS = [
@@ -67,6 +67,42 @@ export function normalizeIndexNo(v) {
   return String(v || '').trim().toUpperCase();
 }
 
+export function cleanCohortPart(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+export function classKey(programme, stream) {
+  return `${cleanCohortPart(programme)}|${cleanCohortPart(stream)}`;
+}
+
+function normClassKey(programme, stream) {
+  return `${cleanCohortPart(programme).toLowerCase()}|${cleanCohortPart(stream).toLowerCase()}`;
+}
+
+function normalizeStringArray(arr) {
+  if (!Array.isArray(arr)) return [];
+  return [...new Set(arr.map((x) => cleanCohortPart(x)).filter(Boolean))];
+}
+
+function normalizeClassesArray(arr) {
+  if (!Array.isArray(arr)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const item of arr) {
+    const [p = '', s = ''] = String(item || '').split('|');
+    const cleaned = classKey(p, s);
+    const norm = cleaned.toLowerCase();
+    if (!seen.has(norm) && cleaned !== '|') {
+      seen.add(norm);
+      out.push(cleaned);
+    } else if (!seen.has(norm) && String(item || '').includes('|')) {
+      seen.add(norm);
+      out.push('|');
+    }
+  }
+  return out;
+}
+
 export function cleanAssignmentInstructions(raw) {
   return String(raw || '').replace(ASSIGN_META_RE, '').trim();
 }
@@ -77,12 +113,18 @@ export function parseAssignmentMeta(assignment) {
   const cleanInstructions = cleanAssignmentInstructions(raw);
   const empty = {
     cleanInstructions,
-    rubric: [], // [{ id, title, maxMarks }]
+    rubric: [],
     syndicate: {
       enabled: false,
       peerCheck: true,
-      groups: [], // [{ id, name, members: ['PSCM/...'] }]
+      groups: [],
     },
+    audience: {
+      classes: [],
+      programmes: [],
+      streams: [],
+    },
+    doc: null,
   };
   if (!match) return empty;
   try {
@@ -105,6 +147,21 @@ export function parseAssignmentMeta(assignment) {
             members: [...new Set((Array.isArray(g.members) ? g.members : []).map(normalizeIndexNo).filter(Boolean))],
           }))
       : [];
+    const audience = {
+      classes: normalizeClassesArray(parsed.audience?.classes),
+      programmes: normalizeStringArray(parsed.audience?.programmes),
+      streams: normalizeStringArray(parsed.audience?.streams),
+    };
+    const rawDoc = parsed.doc;
+    const doc = rawDoc && String(rawDoc.path || '').trim()
+      ? {
+          path: String(rawDoc.path).trim(),
+          name: String(rawDoc.name || 'Assignment brief').trim(),
+          sizeBytes: Number(rawDoc.sizeBytes) || 0,
+          viewOnly: Boolean(rawDoc.viewOnly || String(rawDoc.path).startsWith('viewonly:')),
+        }
+      : null;
+
     return {
       cleanInstructions,
       rubric,
@@ -113,6 +170,8 @@ export function parseAssignmentMeta(assignment) {
         peerCheck: parsed.syndicate?.peerCheck !== false,
         groups,
       },
+      audience,
+      doc,
     };
   } catch {
     return empty;
@@ -135,8 +194,23 @@ export function serializeAssignmentMeta(cleanInstructions, meta = {}) {
       name: String(g.name).trim(),
       members: [...new Set((Array.isArray(g.members) ? g.members : []).map(normalizeIndexNo).filter(Boolean))],
     }));
+  const audience = {
+    classes: normalizeClassesArray(meta.audience?.classes),
+    programmes: normalizeStringArray(meta.audience?.programmes),
+    streams: normalizeStringArray(meta.audience?.streams),
+  };
+  const hasAudience = audience.classes.length > 0 || audience.programmes.length > 0 || audience.streams.length > 0;
+  const doc = meta.doc && String(meta.doc.path || '').trim()
+    ? {
+        path: String(meta.doc.path).trim(),
+        name: String(meta.doc.name || 'Assignment brief').trim(),
+        sizeBytes: Number(meta.doc.sizeBytes) || 0,
+        viewOnly: Boolean(meta.doc.viewOnly || String(meta.doc.path).startsWith('viewonly:')),
+      }
+    : null;
   const hasSyndicate = Boolean(meta.syndicate?.enabled) || groups.length > 0;
-  if (rubric.length === 0 && !hasSyndicate) return base;
+  if (rubric.length === 0 && !hasSyndicate && !hasAudience && !doc) return base;
+
   const payload = {
     rubric,
     syndicate: {
@@ -144,8 +218,66 @@ export function serializeAssignmentMeta(cleanInstructions, meta = {}) {
       peerCheck: meta.syndicate?.peerCheck !== false,
       groups,
     },
+    ...(hasAudience ? { audience } : {}),
+    ...(doc ? { doc } : {}),
   };
   return `${base}\n\n<!-- ASSIGN_META:${JSON.stringify(payload)} -->`.trim();
+}
+
+export function hasAudienceFilter(metaOrAudience) {
+  const aud = metaOrAudience?.audience || metaOrAudience;
+  if (!aud) return false;
+  return Boolean(
+    (aud.classes && aud.classes.length > 0) ||
+    (aud.programmes && aud.programmes.length > 0) ||
+    (aud.streams && aud.streams.length > 0)
+  );
+}
+
+export function assignmentMatchesStudent(metaOrAudience, student) {
+  const aud = metaOrAudience?.audience || metaOrAudience;
+  if (!aud || !hasAudienceFilter(aud)) return true;
+  if (!student) return true;
+
+  const sProg = cleanCohortPart(student.programme).toLowerCase();
+  const sStream = cleanCohortPart(student.stream).toLowerCase();
+  const sKey = `${sProg}|${sStream}`;
+
+  if (aud.classes && aud.classes.length > 0) {
+    return aud.classes.some((c) => {
+      const [p = '', st = ''] = String(c || '').split('|');
+      return normClassKey(p, st) === sKey;
+    });
+  }
+  if (aud.programmes && aud.programmes.length > 0) {
+    if (!aud.programmes.some((p) => cleanCohortPart(p).toLowerCase() === sProg)) return false;
+  }
+  if (aud.streams && aud.streams.length > 0) {
+    if (!aud.streams.some((st) => cleanCohortPart(st).toLowerCase() === sStream)) return false;
+  }
+  return true;
+}
+
+export function filterStudentsForAssignment(students = [], metaOrAudience) {
+  if (!hasAudienceFilter(metaOrAudience)) return students;
+  return students.filter((s) => assignmentMatchesStudent(metaOrAudience, s));
+}
+
+export function formatAssignmentAudience(metaOrAudience) {
+  const aud = metaOrAudience?.audience || metaOrAudience;
+  if (!aud || !hasAudienceFilter(aud)) return 'All enrolled classes';
+  if (aud.classes && aud.classes.length > 0) {
+    const labels = aud.classes.map((c) => {
+      const [p, st] = String(c || '').split('|');
+      return [cleanCohortPart(p), cleanCohortPart(st)].filter(Boolean).join(' · ') || 'Unassigned';
+    });
+    if (labels.length <= 2) return labels.join(', ');
+    return `${labels.slice(0, 2).join(', ')} +${labels.length - 2} more`;
+  }
+  const parts = [];
+  if (aud.programmes?.length) parts.push(aud.programmes.join(', '));
+  if (aud.streams?.length) parts.push(aud.streams.join(', '));
+  return parts.join(' · ') || 'Selected cohorts';
 }
 
 export function findStudentSyndicate(meta, indexNo) {
@@ -154,40 +286,36 @@ export function findStudentSyndicate(meta, indexNo) {
   return (meta.syndicate.groups || []).find((g) => (g.members || []).includes(norm)) || null;
 }
 
-const indexCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
-
-function cleanCohortPart(value) {
-  return String(value || "").trim().replace(/\s+/g, " ");
-}
+const indexCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
 function cohortBucket(student, cohortMode) {
   const prog = cleanCohortPart(student.programme);
   const stream = cleanCohortPart(student.stream);
-  if (cohortMode === "mix") return { key: "all", label: "" };
-  if (cohortMode === "stream") {
+  if (cohortMode === 'mix') return { key: 'all', label: '' };
+  if (cohortMode === 'stream') {
     return {
-      key: stream.toLowerCase() || "__none__",
-      label: stream || "Unassigned stream",
+      key: stream.toLowerCase() || '__none__',
+      label: stream || 'Unassigned stream',
     };
   }
-  if (cohortMode === "programme") {
+  if (cohortMode === 'programme') {
     return {
-      key: prog.toLowerCase() || "__none__",
-      label: prog || "Unassigned programme",
+      key: prog.toLowerCase() || '__none__',
+      label: prog || 'Unassigned programme',
     };
   }
-  // Default: "both" — strictly keep students with the same programme AND stream together
-  const label = [prog, stream].filter(Boolean).join(" · ") || "Unassigned";
+  const label = [prog, stream].filter(Boolean).join(' · ') || 'Unassigned';
   return {
     key: `${prog.toLowerCase()}||${stream.toLowerCase()}`,
     label,
   };
 }
 
-export function autoBuildSyndicateGroups(students = [], groupSize = 4, cohortMode = "both") {
+export function autoBuildSyndicateGroups(students = [], groupSize = 4, cohortMode = 'both', audience = null) {
+  const eligible = audience ? filterStudentsForAssignment(students, audience) : students;
   const size = Math.max(2, Math.min(15, Number(groupSize) || 4));
   const bucketsMap = new Map();
-  for (const s of students) {
+  for (const s of eligible) {
     const idxNo = normalizeIndexNo(s.index_no);
     if (!idxNo) continue;
     const { key, label } = cohortBucket(s, cohortMode);
@@ -198,20 +326,19 @@ export function autoBuildSyndicateGroups(students = [], groupSize = 4, cohortMod
   const buckets = [...bucketsMap.values()].sort((a, b) =>
     indexCollator.compare(a.label, b.label)
   );
-  const showCohortInName = cohortMode !== "mix" && buckets.length > 1;
+  const showCohortInName = cohortMode !== 'mix' && buckets.length > 1;
   const stamp = Date.now().toString(36);
   const groups = [];
 
   for (const bucket of buckets) {
     bucket.members.sort((a, b) =>
       indexCollator.compare(a._normIndex, b._normIndex) ||
-      indexCollator.compare(a.full_name || "", b.full_name || "")
+      indexCollator.compare(a.full_name || '', b.full_name || '')
     );
     const bucketSlices = [];
     for (let i = 0; i < bucket.members.length; i += size) {
       bucketSlices.push(bucket.members.slice(i, i + size).map((s) => s._normIndex));
     }
-    // Avoid leaving a single isolated student when this same cohort has >= 2 groups
     if (bucketSlices.length >= 2 && bucketSlices[bucketSlices.length - 1].length === 1) {
       const lone = bucketSlices.pop()[0];
       bucketSlices[bucketSlices.length - 1].push(lone);

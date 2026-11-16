@@ -1,10 +1,13 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import { run, supabase } from '../lib/supabase.js';
-import { cleanAssignmentInstructions, parseAssignmentMeta } from '../lib/assignmentMeta.js';
-import { isViewOnlyPath } from '../lib/files.js';
-import { fmtDateTime, fmtNumber, relative } from '../lib/format.js';
+import { cleanAssignmentInstructions, formatAssignmentAudience, hasAudienceFilter, parseAssignmentMeta } from '../lib/assignmentMeta.js';
+import { isViewOnlyPath, openStoredFile, setViewOnlyFlag } from '../lib/files.js';
+import { useAuth } from '../lib/auth.jsx';
+import { fmtBytes, fmtDateTime, fmtNumber, relative } from '../lib/format.js';
 import Icon from './Icon.jsx';
-import { Empty, ErrorNote, KindTag, Loading, Tabs, useLoad } from './ui.jsx';
+import { Empty, ErrorNote, KindTag, Loading, Tabs, useAction, useLoad } from './ui.jsx';
+
+const SecureSlideViewer = lazy(() => import('./SecureSlideViewer.jsx'));
 
 const PREVIEW_TABS = [
   { id: 'materials', label: 'Materials' },
@@ -14,7 +17,10 @@ const PREVIEW_TABS = [
 ];
 
 export default function StudentPreview({ course, onExit }) {
+  const { profile } = useAuth();
+  const [act] = useAction();
   const [tab, setTab] = useState('materials');
+  const [previewDoc, setPreviewDoc] = useState(null);
   const { data, error, loading, reload } = useLoad(async () => {
     const [modules, materials, quizzes, assignments, news] = await Promise.all([
       run(supabase.from('modules').select('*').eq('course_id', course.id).order('week_no', { nullsFirst: false }).order('position')),
@@ -174,11 +180,14 @@ export default function StudentPreview({ course, onExit }) {
                 {pubAssignments.map((a) => {
                   const meta = parseAssignmentMeta(a);
                   const clean = cleanAssignmentInstructions(a.instructions);
+                  const restricted = hasAudienceFilter(meta);
+                  const docViewOnly = Boolean(meta.doc && (meta.doc.viewOnly || isViewOnlyPath(meta.doc.path)));
                   return (
                     <article key={a.id} className="card stack-sm">
                       <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
                         <div className="row-wrap" style={{ gap: 8 }}>
                           <strong style={{ fontSize: 16 }}>{a.title}</strong>
+                          {restricted && <span className="badge badge-plum">For: {formatAssignmentAudience(meta)}</span>}
                           {meta.syndicate.enabled && <span className="badge badge-teal">Syndicate group</span>}
                           {meta.rubric.length > 0 && <span className="badge badge-blue">{meta.rubric.length}-criteria rubric</span>}
                         </div>
@@ -189,6 +198,28 @@ export default function StudentPreview({ course, onExit }) {
                         {a.allow_late ? ' · Late submissions allowed' : ' · Strict deadline'}
                       </div>
                       {clean && <p className="pre small" style={{ margin: '4px 0 0' }}>{clean}</p>}
+                      {meta.doc?.path && (
+                        <div className="notice row-wrap" style={{ justifyContent: 'space-between', gap: 8, padding: '8px 12px', marginTop: 4, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+                          <div className="row" style={{ gap: 8, minWidth: 0, flex: 1 }}>
+                            <Icon name={docViewOnly ? 'lock' : 'file'} size={15} />
+                            <span className="small" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              <strong>{meta.doc.name}</strong>
+                              {meta.doc.sizeBytes ? <span className="tiny muted"> ({fmtBytes(meta.doc.sizeBytes)})</span> : null}
+                              {' · '}
+                              <span className="tiny muted">{docViewOnly ? 'Read-only online viewer' : 'Downloadable'}</span>
+                            </span>
+                          </div>
+                          {docViewOnly ? (
+                            <button type="button" className="btn btn-sm btn-primary" onClick={() => setPreviewDoc({ id: a.id, title: meta.doc.name || a.title, storage_path: setViewOnlyFlag(meta.doc.path, true) })}>
+                              <Icon name="eye" size={14} /> Read online
+                            </button>
+                          ) : (
+                            <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('materials', meta.doc.path))}>
+                              <Icon name="download" size={14} /> Download
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </article>
                   );
                 })}
@@ -214,6 +245,16 @@ export default function StudentPreview({ course, onExit }) {
             )
           )}
         </>
+      )}
+      {previewDoc && (
+        <Suspense fallback={<div className="secure-reader-backdrop" style={{ alignItems: 'center', justifyContent: 'center' }}><div className="spinner" /></div>}>
+          <SecureSlideViewer
+            material={previewDoc}
+            courseCode={course?.code}
+            watermarkText={profile?.full_name || 'Student Preview'}
+            onClose={() => setPreviewDoc(null)}
+          />
+        </Suspense>
       )}
     </div>
   );

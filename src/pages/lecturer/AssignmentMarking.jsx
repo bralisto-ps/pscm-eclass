@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
 import { useAuth } from '../../lib/auth.jsx';
-import { openStoredFile } from '../../lib/files.js';
+import { isViewOnlyPath, openStoredFile, setViewOnlyFlag } from '../../lib/files.js';
 import { fmtFull, fmtNumber, pct, relative } from '../../lib/format.js';
 import { downloadWorkbook } from '../../lib/sheets.js';
-import { findStudentSyndicate, normalizeIndexNo, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
+import { assignmentMatchesStudent, findStudentSyndicate, formatAssignmentAudience, hasAudienceFilter, normalizeIndexNo, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
 import { ALL_NEW_FEATURES_SQL } from '../../lib/allFeaturesSql.js';
 import { ALL_GROUPS, GroupFilters, GroupSummaryTable, groupLabel, groupSummary, matchesGroup } from '../../components/Groups.jsx';
 import { SortSelect, SortTh } from '../../components/SortBar.jsx';
@@ -15,6 +15,8 @@ import { Topbar } from '../../components/Layout.jsx';
 import RubricGrader from '../../components/RubricGrader.jsx';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { AssignmentForm } from './course/AssignmentsTab.jsx';
+
+const SecureSlideViewer = lazy(() => import('../../components/SecureSlideViewer.jsx'));
 
 async function allSubmissions(assignmentId) {
   let all = [];
@@ -28,7 +30,7 @@ async function allSubmissions(assignmentId) {
 
 export default function AssignmentMarking() {
   const { assignmentId } = useParams();
-  const { isTA } = useAuth();
+  const { isTA, profile } = useAuth();
   const { data, error, loading, reload, setData } = useLoad(async () => {
     const a = await run(supabase.from('assignments').select('*, courses(id, code, title)').eq('id', assignmentId).single());
     const [students, subs, peerData] = await Promise.all([
@@ -50,6 +52,7 @@ export default function AssignmentMarking() {
   const [marking, setMarking] = useState(null);
   const [gradingPres, setGradingPres] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [previewingDoc, setPreviewingDoc] = useState(null);
   const [showSql, setShowSql] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
   const [act, busy] = useAction();
@@ -93,11 +96,15 @@ export default function AssignmentMarking() {
     return out;
   }, [data?.peerReviews]);
 
-  // Attach syndicate group, peer check stats & fallback teammate upload reference when syndicate mode is active
+  // Filter by target programme/stream/class & attach syndicate group, peer check stats & fallback teammate upload
   const enrichedRows = useMemo(() => {
     if (!data) return [];
-    const byNorm = new Map(data.rows.map((r) => [normalizeIndexNo(r.index_no), r]));
-    return data.rows.map((r) => {
+    const restricted = hasAudienceFilter(assignMeta);
+    const eligibleRows = restricted
+      ? data.rows.filter((r) => assignmentMatchesStudent(assignMeta, r) || Boolean(r.sub))
+      : data.rows;
+    const byNorm = new Map(eligibleRows.map((r) => [normalizeIndexNo(r.index_no), r]));
+    return eligibleRows.map((r) => {
       const syn = findStudentSyndicate(assignMeta, r.index_no);
       let synLeaderSub = null;
       if (syn && !r.sub) {
@@ -153,7 +160,7 @@ export default function AssignmentMarking() {
 
   const { a } = data;
   const rows = enrichedRows.filter((r) => matchesGroup(r, group));
-  const summary = groupSummary(data.rows, (r) => !!r.sub && r.sub.marks !== null, (r) => pct(r.sub.marks, a.max_marks));
+  const summary = groupSummary(enrichedRows, (r) => !!r.sub && r.sub.marks !== null, (r) => pct(r.sub.marks, a.max_marks));
   const submitted = rows.filter((r) => r.sub || r._synLeaderSub);
   const marked = rows.filter((r) => r.sub && r.sub.marks !== null);
   const late = submitted.filter((r) => (r.sub || r._synLeaderSub)?.is_late);
@@ -183,13 +190,28 @@ export default function AssignmentMarking() {
       { name: 'Summary', rows: [['Programme', 'Stream', 'Students', 'Marked', 'Average %'],
         ...summary.map((g) => [groupLabel(g.programme), groupLabel(g.stream), g.students, g.submitted, g.average ?? ''])], widths: [22, 14, 10, 10, 10] },
     ];
-    const streams = [...new Set(data.rows.map((r) => r.stream || ''))];
+    const streams = [...new Set(enrichedRows.map((r) => r.stream || ''))];
     if (streams.length > 1) streams.sort().forEach((st) => sheets.push({ name: groupLabel(st), rows: [header, ...enrichedRows.filter((r) => (r.stream || '') === st).map(line)], widths }));
     downloadWorkbook(`${a.courses.code} - ${a.title}.xlsx`, sheets);
   }
 
   function updateSub(id, patch) {
     setData((d) => ({ ...d, rows: d.rows.map((r) => (r.sub?.id === id ? { ...r, sub: { ...r.sub, ...patch } } : r)) }));
+  }
+
+  function openBriefDoc() {
+    const doc = assignMeta.doc;
+    if (!doc?.path) return;
+    const isPdf = /\.pdf$/i.test(doc.name || doc.path);
+    if (isPdf && (doc.viewOnly || isViewOnlyPath(doc.path))) {
+      setPreviewingDoc({
+        id: a.id,
+        title: doc.name || a.title,
+        storage_path: setViewOnlyFlag(doc.path, true),
+      });
+      return;
+    }
+    act(() => openStoredFile('materials', doc.path));
   }
 
   function copySql() {
@@ -232,9 +254,12 @@ export default function AssignmentMarking() {
           </div>
         </div>
 
-        {(assignMeta.rubric.length > 0 || assignMeta.syndicate.enabled) && (
+        {(assignMeta.rubric.length > 0 || assignMeta.syndicate.enabled || hasAudienceFilter(assignMeta) || assignMeta.doc?.path) && (
           <div className="notice notice-info row-wrap" style={{ justifyContent: 'space-between', gap: 10 }}>
             <div className="row-wrap" style={{ gap: 8 }}>
+              {hasAudienceFilter(assignMeta) && (
+                <span className="badge badge-plum"><Icon name="users" size={13} /> Target: {formatAssignmentAudience(assignMeta)}</span>
+              )}
               {assignMeta.syndicate.enabled && (
                 <span className="badge badge-teal"><Icon name="users" size={13} /> Syndicate Mode ({assignMeta.syndicate.groups.length} groups)</span>
               )}
@@ -246,7 +271,14 @@ export default function AssignmentMarking() {
               )}
             </div>
             <div className="row-wrap" style={{ gap: 8 }}>
-              <span className="tiny muted">Marking one group submission can apply scores across every member in that syndicate.</span>
+              {assignMeta.doc?.path && (
+                <button type="button" className="btn btn-sm" onClick={openBriefDoc}>
+                  <Icon name={assignMeta.doc.viewOnly ? 'lock' : 'file'} size={14} /> {assignMeta.doc.name} ({assignMeta.doc.viewOnly ? 'Read-only' : 'Download'})
+                </button>
+              )}
+              {assignMeta.syndicate.enabled && (
+                <span className="tiny muted">Marking one group submission can apply scores across every member in that syndicate.</span>
+              )}
               {!isTA && assignMeta.syndicate.enabled && assignMeta.syndicate.groups.length > 0 && (
                 <button type="button" className="btn btn-sm btn-primary" onClick={() => setGradingPres(true)}>
                   <Icon name="award" size={14} /> Grade live presentation
@@ -256,7 +288,7 @@ export default function AssignmentMarking() {
           </div>
         )}
 
-        <GroupFilters rows={data.rows} value={group} onChange={setGroup} />
+        <GroupFilters rows={enrichedRows} value={group} onChange={setGroup} />
         <GroupSummaryTable summary={summary} doneLabel="Marked" />
 
         {!a.results_released && marked.length > 0 && (
@@ -396,7 +428,17 @@ export default function AssignmentMarking() {
         />
       )}
 
-      {editing && <AssignmentForm course={{ id: a.course_id }} a={a} onClose={() => setEditing(false)} onSaved={reload} />}
+      {editing && <AssignmentForm course={{ id: a.course_id, code: a.courses?.code }} a={a} onClose={() => setEditing(false)} onSaved={reload} />}
+      {previewingDoc && (
+        <Suspense fallback={<div className="secure-reader-backdrop" style={{ alignItems: 'center', justifyContent: 'center' }}><div className="spinner" /></div>}>
+          <SecureSlideViewer
+            material={previewingDoc}
+            courseCode={a.courses?.code}
+            watermarkText={profile?.full_name || 'Faculty Preview'}
+            onClose={() => setPreviewingDoc(null)}
+          />
+        </Suspense>
+      )}
 
       {gradingPres && (
         <PresentationModal
