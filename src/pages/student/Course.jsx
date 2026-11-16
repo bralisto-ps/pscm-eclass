@@ -1,6 +1,7 @@
 import { parseCourseMeta } from '../../lib/courseMeta.js';
 import { cleanText } from '../../lib/quizMeta.js';
-import { assignmentMatchesStudent, findStudentSyndicate, normalizeIndexNo, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
+import { SUBMISSION_FORMATS, assignmentMatchesStudent, findStudentSyndicate, formatSubmissionRules, normalizeIndexNo, parseAssignmentMeta, validateSubmissionFile } from '../../lib/assignmentMeta.js';
+import { buildTypedResponsePdfBlob } from '../../lib/textPdf.js';
 import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
 import { getLetter, getRemarks, GradesTable, TargetGradeCalculator } from './Grades.jsx';
 import Messages from '../../components/Messages.jsx';
@@ -520,48 +521,226 @@ function AssignmentCard({ a, onReadDoc, reload }) {
   const toast = useToast();
   const [act] = useAction();
   const fileRef = useRef(null);
-  const [file, setFile] = useState(null);
-  const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
   const assignMeta = useMemo(() => parseAssignmentMeta(a), [a]);
   const mySyndicate = useMemo(() => findStudentSyndicate(assignMeta, profile?.index_no), [assignMeta, profile?.index_no]);
+  const subCfg = assignMeta.submission || { mode: 'file', fileFormat: 'all', allowPaste: true };
+  const needsTyped = subCfg.mode === 'typed' || subCfg.mode === 'both';
+  const needsFile = subCfg.mode === 'file' || subCfg.mode === 'both';
+  const formatPreset = SUBMISSION_FORMATS[subCfg.fileFormat] || SUBMISSION_FORMATS.all;
+  const subRuleLabel = formatSubmissionRules(assignMeta);
   const s = a.submission;
+  const draftKey = `assign_draft:${a.id}:${session?.user?.id || 'anon'}`;
+
+  const [file, setFile] = useState(null);
+  const [note, setNote] = useState('');
+  const [typedText, setTypedText] = useState(() => {
+    try {
+      const savedDraft = localStorage.getItem(draftKey);
+      if (savedDraft) return savedDraft;
+    } catch { /* ignore */ }
+    return s?.response_text || '';
+  });
+  const [pasteNotice, setPasteNotice] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const typingRef = useRef({
+    firstAt: Date.now(),
+    lastAt: Date.now(),
+    lastLen: typedText.length,
+    activeMs: 0,
+    maxBurstChars: 0,
+    burstEvents: 0,
+    pasteAttempts: 0,
+    editCount: 0,
+  });
+
+  useEffect(() => {
+    if (!needsTyped) return;
+    try {
+      if (typedText) localStorage.setItem(draftKey, typedText);
+      else localStorage.removeItem(draftKey);
+    } catch { /* ignore */ }
+  }, [draftKey, needsTyped, typedText]);
+
   const now = Date.now();
   const overdue = a.due_at && new Date(a.due_at).getTime() < now;
   const canSubmit = (!overdue || a.allow_late) && !(s && s.marked);
+  const wordCount = typedText.trim() ? typedText.trim().split(/\s+/).length : 0;
 
-  async function upload() {
-    if (!file) return;
-    if (file.size > MAX_BYTES) {
-      toast('That file is larger than 5 MB. Save it as a PDF or compress it, then try again.', 'error');
+  function onTypedChange(val) {
+    const nowTs = Date.now();
+    const prev = typingRef.current;
+    const dt = Math.max(0, nowTs - prev.lastAt);
+    const delta = Math.max(0, val.length - prev.lastLen);
+    const isBurst = dt <= 1400 && delta >= 35;
+    typingRef.current = {
+      ...prev,
+      lastAt: nowTs,
+      lastLen: val.length,
+      activeMs: prev.activeMs + (prev.editCount === 0 ? 0 : Math.min(12000, dt)),
+      maxBurstChars: Math.max(prev.maxBurstChars, isBurst ? delta : 0),
+      burstEvents: prev.burstEvents + (isBurst ? 1 : 0),
+      editCount: prev.editCount + 1,
+    };
+    setTypedText(val);
+  }
+
+  function handleBlockedClipboard(e) {
+    if (subCfg.allowPaste) return;
+    e.preventDefault();
+    typingRef.current = {
+      ...typingRef.current,
+      pasteAttempts: (typingRef.current.pasteAttempts || 0) + 1,
+    };
+    setPasteNotice('Copy & paste is disabled for this assignment. Please type your response directly.');
+  }
+
+  function onPickFile(e) {
+    const picked = e.target.files?.[0] || null;
+    if (!picked) {
+      setFile(null);
       return;
     }
+    const fmtErr = validateSubmissionFile(picked.name, subCfg.fileFormat);
+    if (fmtErr) {
+      toast(fmtErr, 'error');
+      if (fileRef.current) fileRef.current.value = '';
+      setFile(null);
+      return;
+    }
+    if (picked.size > MAX_BYTES) {
+      toast('That file is larger than 5 MB. Compress it, then try again.', 'error');
+      if (fileRef.current) fileRef.current.value = '';
+      setFile(null);
+      return;
+    }
+    setFile(picked);
+  }
+
+  async function callSubmitRpc({ path, name, responseText, typingMeta }) {
+    const useGroup = Boolean(mySyndicate?.members?.length);
+    const baseArgs = {
+      p_assignment: a.id,
+      p_path: path,
+      p_name: name,
+      p_note: note,
+    };
+    const extendedArgs = {
+      ...baseArgs,
+      p_response_text: responseText || '',
+      p_typing_meta: typingMeta || {},
+    };
+    try {
+      if (useGroup) {
+        await rpc('submit_group_assignment', { ...extendedArgs, p_member_indexes: mySyndicate.members });
+      } else {
+        await rpc('submit_assignment', extendedArgs);
+      }
+      return true;
+    } catch (err) {
+      const msg = err?.message || '';
+      if (/p_response_text|p_typing_meta|Could not find|does not exist|schema cache/i.test(msg)) {
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  async function upload() {
+    if (needsTyped && !typedText.trim()) {
+      toast('Please type your response before submitting.', 'error');
+      return;
+    }
+    if (needsFile) {
+      if (!file) {
+        toast('Please select a file to upload.', 'error');
+        return;
+      }
+      const fmtErr = validateSubmissionFile(file.name, subCfg.fileFormat);
+      if (fmtErr) {
+        toast(fmtErr, 'error');
+        return;
+      }
+      if (file.size > MAX_BYTES) {
+        toast('That file is larger than 5 MB. Save it as a PDF or compress it, then try again.', 'error');
+        return;
+      }
+    }
+
     setBusy(true);
     try {
-      const path = `${a.id}/${session.user.id}/${Date.now()}-${safeFileName(file.name)}`;
-      const stored = await uploadFile('submissions', path, file);
-      if (mySyndicate?.members?.length) {
-        try {
-          await rpc('submit_group_assignment', {
-            p_assignment: a.id,
-            p_path: stored,
-            p_name: file.name,
-            p_note: note,
-            p_member_indexes: mySyndicate.members,
-          });
-        } catch (groupErr) {
-          if (/submit_group_assignment|Could not find|does not exist|schema cache/i.test(groupErr.message || '')) {
-            await rpc('submit_assignment', { p_assignment: a.id, p_path: stored, p_name: file.name, p_note: note });
-          } else {
-            throw groupErr;
-          }
-        }
-      } else {
-        await rpc('submit_assignment', { p_assignment: a.id, p_path: stored, p_name: file.name, p_note: note });
+      let storedPath = 'typed:online';
+      let uploadName = 'Typed online response';
+
+      if (needsFile && file) {
+        const path = `${a.id}/${session.user.id}/${Date.now()}-${safeFileName(file.name)}`;
+        storedPath = await uploadFile('submissions', path, file);
+        uploadName = file.name;
       }
+
+      const typingMeta = needsTyped ? {
+        words: wordCount,
+        chars: typedText.length,
+        activeMs: typingRef.current.activeMs,
+        burstEvents: typingRef.current.burstEvents,
+        pasteAttempts: typingRef.current.pasteAttempts,
+        allowPaste: subCfg.allowPaste,
+      } : {};
+
+      const okExtended = await callSubmitRpc({
+        path: storedPath,
+        name: uploadName,
+        responseText: needsTyped ? typedText.trim() : '',
+        typingMeta,
+      });
+
+      if (!okExtended) {
+        // Legacy DB fallback: if pure typed mode, convert typed response to a clean PDF so it saves cleanly
+        let legacyPath = storedPath;
+        let legacyName = uploadName;
+        let legacyNote = note;
+        if (subCfg.mode === 'typed') {
+          const pdfBlob = buildTypedResponsePdfBlob({
+            title: a.title,
+            studentLine: [profile?.full_name, profile?.index_no].filter(Boolean).join(' · '),
+            submittedAt: new Date().toLocaleString(),
+            body: typedText.trim(),
+          });
+          const pdfFile = new File([pdfBlob], 'typed-response.pdf', { type: 'application/pdf' });
+          const fallbackPath = `${a.id}/${session.user.id}/${Date.now()}-typed-response.pdf`;
+          legacyPath = await uploadFile('submissions', fallbackPath, pdfFile);
+          legacyName = 'typed-response.pdf';
+          legacyNote = note || typedText.trim().slice(0, 280);
+        } else if (!legacyNote && needsTyped) {
+          legacyNote = typedText.trim().slice(0, 280);
+        }
+
+        if (mySyndicate?.members?.length) {
+          try {
+            await rpc('submit_group_assignment', {
+              p_assignment: a.id,
+              p_path: legacyPath,
+              p_name: legacyName,
+              p_note: legacyNote,
+              p_member_indexes: mySyndicate.members,
+            });
+          } catch (groupErr) {
+            if (/submit_group_assignment|Could not find|does not exist|schema cache/i.test(groupErr.message || '')) {
+              await rpc('submit_assignment', { p_assignment: a.id, p_path: legacyPath, p_name: legacyName, p_note: legacyNote });
+            } else {
+              throw groupErr;
+            }
+          }
+        } else {
+          await rpc('submit_assignment', { p_assignment: a.id, p_path: legacyPath, p_name: legacyName, p_note: legacyNote });
+        }
+      }
+
+      try { localStorage.removeItem(draftKey); } catch { /* ignore */ }
       toast('Submitted. Well done!');
       setFile(null);
       setNote('');
+      setPasteNotice('');
       if (fileRef.current) fileRef.current.value = '';
       reload();
     } catch (e) {
@@ -571,11 +750,16 @@ function AssignmentCard({ a, onReadDoc, reload }) {
     }
   }
 
+  const submitDisabled = busy || (needsTyped && !typedText.trim()) || (needsFile && !file);
+
   return (
     <div className="card stack">
-      <div className="between" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+      <div className="between" style={{ alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }}>
         <div className="stack-sm" style={{ flex: 1, minWidth: 240 }}>
-          <h2>{a.title}</h2>
+          <div className="row-wrap" style={{ gap: 8, alignItems: 'center' }}>
+            <h2 style={{ margin: 0 }}>{a.title}</h2>
+            {subRuleLabel && <span className="badge">{subRuleLabel}</span>}
+          </div>
           <span className="small muted">
             {a.due_at ? `Due ${fmtFull(a.due_at)} (${relative(a.due_at)})` : 'No deadline'} · {fmtNumber(a.max_marks)} marks
             {a.allow_late ? ' · late work accepted' : ''}
@@ -605,7 +789,7 @@ function AssignmentCard({ a, onReadDoc, reload }) {
               <span className="muted"> ({mySyndicate.members.length} members: <span className="mono">{mySyndicate.members.join(', ')}</span>)</span>
             </span>
           </div>
-          <span className="tiny muted">One upload &amp; mark applies to your group</span>
+          <span className="tiny muted">One submission &amp; mark applies to your group</span>
         </div>
       )}
 
@@ -647,15 +831,22 @@ function AssignmentCard({ a, onReadDoc, reload }) {
       )}
 
       {s && (
-        <div className="notice notice-info row-wrap">
-          <Icon name="file" />
-          <span style={{ flex: 1 }}>
-            <strong>{s.file_name}</strong> · submitted {fmtFull(s.submitted_at)}
-          </span>
-          {s.file_path && s.file_path !== 'presentation:in-class' ? (
-            <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('submissions', s.file_path))}>View</button>
-          ) : (
-            <span className="badge badge-teal">Graded live</span>
+        <div className="stack-sm" style={{ padding: '10px 14px', borderRadius: 10, background: 'var(--teal-50)', border: '1px solid var(--teal)' }}>
+          <div className="row-wrap" style={{ gap: 10 }}>
+            <Icon name={s.file_path === 'typed:online' ? 'edit' : 'file'} />
+            <span style={{ flex: 1 }}>
+              <strong>{s.file_path === 'typed:online' ? 'Typed online response' : s.file_name}</strong> · submitted {fmtFull(s.submitted_at)}
+            </span>
+            {s.file_path === 'presentation:in-class' ? (
+              <span className="badge badge-teal">Graded live</span>
+            ) : s.file_path && s.file_path !== 'typed:online' ? (
+              <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('submissions', s.file_path))}>View file</button>
+            ) : null}
+          </div>
+          {s.response_text && (
+            <div className="pre small" style={{ maxHeight: 180, overflowY: 'auto', padding: '8px 10px', background: 'var(--surface)', borderRadius: 8, border: '1px solid var(--line-2)' }}>
+              {s.response_text}
+            </div>
           )}
         </div>
       )}
@@ -670,15 +861,59 @@ function AssignmentCard({ a, onReadDoc, reload }) {
 
       {canSubmit && (
         <div className="stack" style={{ borderTop: '1px solid var(--line-2)', paddingTop: 16 }}>
-          <Field label={s ? 'Replace your submission' : 'Your file'} hint="PDF, Word, Excel, PowerPoint, ZIP or image · max 5 MB">
-            <input ref={fileRef} type="file" accept={SUBMISSION_ACCEPT} className="input" style={{ paddingTop: 9 }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
-          </Field>
+          {needsTyped && (
+            <div className="stack-sm">
+              {!subCfg.allowPaste && (
+                <div className="notice notice-warn small row" style={{ gap: 8 }}>
+                  <Icon name="shield" size={16} />
+                  <span>
+                    <strong>Copy &amp; paste is blocked</strong> — type your response directly in the editor below.
+                  </span>
+                </div>
+              )}
+              <Field
+                label={s ? 'Update your typed response' : 'Your typed response'}
+                hint={`${wordCount} word${wordCount === 1 ? '' : 's'} · auto-saved locally`}
+              >
+                <textarea
+                  className="textarea"
+                  style={{ minHeight: 200 }}
+                  value={typedText}
+                  onChange={(e) => onTypedChange(e.target.value)}
+                  onPaste={handleBlockedClipboard}
+                  onDrop={handleBlockedClipboard}
+                  onCopy={handleBlockedClipboard}
+                  onCut={handleBlockedClipboard}
+                  onContextMenu={handleBlockedClipboard}
+                  placeholder={subCfg.allowPaste ? 'Type or paste your assignment response here…' : 'Type your assignment response directly here (copy & paste is disabled)…'}
+                />
+              </Field>
+              {pasteNotice && <span className="tiny" style={{ color: 'var(--amber-ink)' }}>{pasteNotice}</span>}
+            </div>
+          )}
+
+          {needsFile && (
+            <Field
+              label={s ? 'Replace your file' : 'Your file'}
+              hint={`${formatPreset.shortLabel} · max 5 MB`}
+            >
+              <input
+                ref={fileRef}
+                type="file"
+                accept={formatPreset.accept || SUBMISSION_ACCEPT}
+                className="input"
+                style={{ paddingTop: 9 }}
+                onChange={onPickFile}
+              />
+            </Field>
+          )}
+
           <Field label="Note to your lecturer" hint="optional">
             <input className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} />
           </Field>
           <div>
-            <button type="button" className="btn btn-primary" disabled={!file || busy} onClick={upload}>
-              <Icon name="upload" /> {busy ? 'Uploading…' : s ? 'Replace submission' : 'Submit assignment'}
+            <button type="button" className="btn btn-primary" disabled={submitDisabled} onClick={upload}>
+              <Icon name="upload" /> {busy ? 'Submitting…' : s ? 'Update submission' : 'Submit assignment'}
             </button>
           </div>
         </div>

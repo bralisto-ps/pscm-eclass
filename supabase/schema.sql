@@ -4491,3 +4491,245 @@ begin
     execute format('grant execute on function public.%s to authenticated', f);
   end loop;
 end $$;
+
+-- ---------------------------------------------------------------------
+-- 14. Typed Assignment Responses & Strict File-Format Enforcement
+-- ---------------------------------------------------------------------
+alter table public.submissions add column if not exists response_text text not null default '';
+alter table public.submissions add column if not exists typing_meta jsonb not null default '{}'::jsonb;
+
+create or replace function public.assignment_allowed_file(
+  p_instructions text,
+  p_file_name text
+) returns text
+language plpgsql immutable as $$
+declare
+  v_match text[];
+  v_meta jsonb;
+  v_fmt text;
+  v_name text := lower(btrim(coalesce(p_file_name, '')));
+begin
+  if p_instructions is null or position('ASSIGN_META:' in p_instructions) = 0 then
+    return null;
+  end if;
+  v_match := regexp_match(p_instructions, '<!--\s*ASSIGN_META:(\{.*?\})\s*-->\s*$');
+  if v_match is null or array_length(v_match, 1) < 1 then
+    return null;
+  end if;
+  begin
+    v_meta := v_match[1]::jsonb;
+  exception when others then
+    return null;
+  end;
+  v_fmt := coalesce(v_meta -> 'submission' ->> 'fileFormat', 'all');
+  if v_fmt = 'pdf' and v_name !~ '\.pdf$' then
+    return 'Only PDF files (.pdf) are accepted for this assignment.';
+  end if;
+  if v_fmt = 'docs' and v_name !~ '\.(pdf|doc|docx)$' then
+    return 'Only PDF or Word documents (.pdf, .doc, .docx) are accepted for this assignment.';
+  end if;
+  return null;
+end;
+$$;
+
+drop function if exists public.submit_assignment(uuid, text, text, text);
+create or replace function public.submit_assignment(
+  p_assignment uuid,
+  p_path text,
+  p_name text,
+  p_note text,
+  p_response_text text default '',
+  p_typing_meta jsonb default '{}'::jsonb
+) returns timestamptz
+language plpgsql security definer set search_path = public as $$
+declare
+  x public.assignments;
+  v_fmt_err text;
+  v_is_typed_only boolean := (p_path = 'typed:online');
+begin
+  if not public.can_submit(p_assignment) then
+    raise exception 'This assignment is closed or has already been marked.';
+  end if;
+  select * into x from public.assignments where id = p_assignment;
+
+  if v_is_typed_only then
+    if coalesce(btrim(p_response_text), '') = '' then
+      raise exception 'Please type your response before submitting.';
+    end if;
+  else
+    if p_path is null or regexp_replace(p_path, '^r2:', '') not like p_assignment::text || '/' || auth.uid()::text || '/%' then
+      raise exception 'Upload location is not valid.';
+    end if;
+    v_fmt_err := public.assignment_allowed_file(x.instructions, p_name);
+    if v_fmt_err is not null then
+      raise exception '%', v_fmt_err;
+    end if;
+  end if;
+
+  insert into public.submissions (
+    assignment_id, student_id, file_path, file_name, note, response_text, typing_meta, submitted_at, is_late
+  )
+  values (
+    p_assignment, auth.uid(), p_path, coalesce(p_name, ''), coalesce(p_note, ''),
+    coalesce(p_response_text, ''), coalesce(p_typing_meta, '{}'::jsonb),
+    now(), x.due_at is not null and now() > x.due_at
+  )
+  on conflict (assignment_id, student_id) do update
+     set file_path = excluded.file_path,
+         file_name = excluded.file_name,
+         note = excluded.note,
+         response_text = excluded.response_text,
+         typing_meta = excluded.typing_meta,
+         submitted_at = now(),
+         is_late = excluded.is_late;
+  return now();
+end;
+$$;
+
+drop function if exists public.submit_group_assignment(uuid, text, text, text, text[]);
+create or replace function public.submit_group_assignment(
+  p_assignment uuid,
+  p_path text,
+  p_name text,
+  p_note text,
+  p_member_indexes text[] default '{}',
+  p_response_text text default '',
+  p_typing_meta jsonb default '{}'::jsonb
+) returns timestamptz
+language plpgsql security definer set search_path = public as $$
+declare
+  x public.assignments;
+  v_late boolean;
+  v_member_uid uuid;
+  v_idx text;
+  v_fmt_err text;
+  v_is_typed_only boolean := (p_path = 'typed:online');
+begin
+  if not public.can_submit(p_assignment) then
+    raise exception 'This assignment is closed or has already been marked.';
+  end if;
+  select * into x from public.assignments where id = p_assignment;
+
+  if v_is_typed_only then
+    if coalesce(btrim(p_response_text), '') = '' then
+      raise exception 'Please type your response before submitting.';
+    end if;
+  else
+    if p_path is null or regexp_replace(p_path, '^r2:', '') not like p_assignment::text || '/' || auth.uid()::text || '/%' then
+      raise exception 'Upload location is not valid.';
+    end if;
+    v_fmt_err := public.assignment_allowed_file(x.instructions, p_name);
+    if v_fmt_err is not null then
+      raise exception '%', v_fmt_err;
+    end if;
+  end if;
+
+  v_late := x.due_at is not null and now() > x.due_at;
+
+  insert into public.submissions (
+    assignment_id, student_id, file_path, file_name, note, response_text, typing_meta, submitted_at, is_late
+  )
+  values (
+    p_assignment, auth.uid(), p_path, coalesce(p_name, ''), coalesce(p_note, ''),
+    coalesce(p_response_text, ''), coalesce(p_typing_meta, '{}'::jsonb), now(), v_late
+  )
+  on conflict (assignment_id, student_id) do update
+     set file_path = excluded.file_path,
+         file_name = excluded.file_name,
+         note = excluded.note,
+         response_text = excluded.response_text,
+         typing_meta = excluded.typing_meta,
+         submitted_at = now(),
+         is_late = excluded.is_late;
+
+  if p_member_indexes is not null and coalesce(array_length(p_member_indexes, 1), 0) > 0 then
+    foreach v_idx in array p_member_indexes loop
+      select p.id into v_member_uid
+        from public.profiles p
+        join public.enrollments e on e.index_no = p.index_no
+       where e.course_id = x.course_id
+         and upper(trim(p.index_no)) = upper(trim(v_idx))
+         and p.id <> auth.uid()
+       limit 1;
+      if v_member_uid is not null then
+        insert into public.submissions (
+          assignment_id, student_id, file_path, file_name, note, response_text, typing_meta, submitted_at, is_late
+        )
+        values (
+          p_assignment, v_member_uid, p_path, coalesce(p_name, ''), coalesce(p_note, ''),
+          coalesce(p_response_text, ''), coalesce(p_typing_meta, '{}'::jsonb), now(), v_late
+        )
+        on conflict (assignment_id, student_id) do update
+           set file_path = excluded.file_path,
+               file_name = excluded.file_name,
+               note = excluded.note,
+               response_text = excluded.response_text,
+               typing_meta = excluded.typing_meta,
+               submitted_at = now(),
+               is_late = excluded.is_late
+         where public.submissions.marks is null;
+      end if;
+    end loop;
+  end if;
+  return now();
+end;
+$$;
+
+create or replace function public.my_assignments(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  r jsonb;
+  v_prog text;
+  v_stream text;
+begin
+  if not public.is_enrolled(p_course) then return '[]'::jsonb; end if;
+  select r0.programme, r0.stream into v_prog, v_stream
+    from public.profiles p0
+    left join public.roster r0 on upper(trim(r0.index_no)) = upper(trim(p0.index_no))
+   where p0.id = auth.uid()
+   limit 1;
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'id', x.id, 'title', x.title, 'instructions', x.instructions, 'due_at', x.due_at,
+           'max_marks', x.max_marks, 'allow_late', x.allow_late,
+           'released', x.results_released,
+           'submission', (select jsonb_build_object(
+                                 'file_name', s.file_name, 'file_path', s.file_path,
+                                 'note', s.note,
+                                 'response_text', s.response_text,
+                                 'typing_meta', s.typing_meta,
+                                 'submitted_at', s.submitted_at, 'is_late', s.is_late,
+                                 'marked', s.marks is not null,
+                                 'marks', case when x.results_released then s.marks end,
+                                 'feedback', case when x.results_released then s.feedback end)
+                            from public.submissions s
+                           where s.assignment_id = x.id and s.student_id = auth.uid()))
+         order by x.due_at nulls last, x.created_at), '[]'::jsonb)
+    into r
+    from public.assignments x
+   where x.course_id = p_course
+     and x.published
+     and (
+       public.assignment_for(x.instructions, v_prog, v_stream)
+       or exists (
+         select 1 from public.submissions s0
+         where s0.assignment_id = x.id and s0.student_id = auth.uid()
+       )
+     );
+  return r;
+end;
+$$;
+
+do $$
+declare f text;
+begin
+  foreach f in array array[
+    'assignment_allowed_file(text, text)',
+    'submit_assignment(uuid, text, text, text, text, jsonb)',
+    'submit_group_assignment(uuid, text, text, text, text[], text, jsonb)',
+    'my_assignments(uuid)'
+  ]
+  loop
+    execute format('revoke execute on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated', f);
+  end loop;
+end $$;

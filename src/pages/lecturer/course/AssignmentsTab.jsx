@@ -13,7 +13,9 @@ import {
 import { shareWhatsApp } from '../../../lib/share.js';
 import { fmtBytes, fmtDateTime, fmtNumber, fromLocalInput, relative, toLocalInput } from '../../../lib/format.js';
 import {
+  SUBMISSION_FORMATS,
   autoBuildSyndicateGroups,
+  formatSubmissionRules,
   classKey,
   cleanCohortPart,
   filterStudentsForAssignment,
@@ -86,6 +88,7 @@ export default function AssignmentsTab({ course, ta }) {
                 const past = a.due_at && new Date(a.due_at) < new Date();
                 const meta = parseAssignmentMeta(a);
                 const hasFilter = hasAudienceFilter(meta);
+                const subRuleLabel = formatSubmissionRules(meta);
                 const targetTotal = hasFilter && data.classes.length
                   ? filterStudentsForAssignment(data.classes, meta).reduce((sum, c) => sum + (Number(c.students) || 0), 0)
                   : data.enrolled;
@@ -100,11 +103,16 @@ export default function AssignmentsTab({ course, ta }) {
                         {meta.rubric.length > 0 ? ` · ${meta.rubric.length}-criterion rubric` : ''}
                         {meta.syndicate.enabled ? ` · Syndicate (${meta.syndicate.groups.length} groups)` : ''}
                       </div>
-                      {(hasFilter || meta.doc?.path) && (
+                      {(hasFilter || meta.doc?.path || subRuleLabel) && (
                         <div className="row-wrap" style={{ gap: 6, marginTop: 4 }}>
                           {hasFilter && (
                             <span className="badge badge-plum">
                               <Icon name="users" size={11} /> {formatAssignmentAudience(meta)}
+                            </span>
+                          )}
+                          {subRuleLabel && (
+                            <span className="badge">
+                              <Icon name={meta.submission?.mode === 'typed' ? 'edit' : 'file'} size={11} /> {subRuleLabel}
                             </span>
                           )}
                           {meta.doc?.path && (
@@ -194,6 +202,9 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
     return true;
   });
   const [previewingDoc, setPreviewingDoc] = useState(null);
+  const [subMode, setSubMode] = useState(initialMeta.submission?.mode || 'file');
+  const [subFileFormat, setSubFileFormat] = useState(initialMeta.submission?.fileFormat || 'all');
+  const [subAllowPaste, setSubAllowPaste] = useState(initialMeta.submission?.allowPaste !== false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -421,6 +432,11 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
         },
         audience: effectiveAudience,
         doc: nextDoc,
+        submission: {
+          mode: subMode,
+          fileFormat: subFileFormat,
+          allowPaste: subAllowPaste,
+        },
       });
 
       const row = {
@@ -695,6 +711,68 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
             style={{ display: 'none' }}
             onChange={onPickBrief}
           />
+        </div>
+
+{/* Student Response Mode & Format Rules */}
+        <div className="stack-sm" style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+          <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <div>
+              <strong className="small">How students submit their response</strong>
+              <div className="tiny muted">
+                Require typed answers in the browser (with or without copy/paste), file attachments (PDF or Word only), or both.
+              </div>
+            </div>
+            {formatSubmissionRules({ mode: subMode, fileFormat: subFileFormat, allowPaste: subAllowPaste }) && (
+              <span className="badge badge-teal">
+                {formatSubmissionRules({ mode: subMode, fileFormat: subFileFormat, allowPaste: subAllowPaste })}
+              </span>
+            )}
+          </div>
+
+          <div className="row-wrap" style={{ gap: 14, paddingTop: 4 }}>
+            <label className="row small" style={{ gap: 6, cursor: 'pointer' }}>
+              <input type="radio" name="sub-mode" checked={subMode === 'file'} onChange={() => setSubMode('file')} />
+              <span>File upload only</span>
+            </label>
+            <label className="row small" style={{ gap: 6, cursor: 'pointer' }}>
+              <input type="radio" name="sub-mode" checked={subMode === 'typed'} onChange={() => setSubMode('typed')} />
+              <span>Typed online response</span>
+            </label>
+            <label className="row small" style={{ gap: 6, cursor: 'pointer' }}>
+              <input type="radio" name="sub-mode" checked={subMode === 'both'} onChange={() => setSubMode('both')} />
+              <span>Both (typed response + file)</span>
+            </label>
+          </div>
+
+          {(subMode === 'file' || subMode === 'both') && (
+            <div className="stack-sm" style={{ padding: '8px 10px', borderRadius: 8, background: 'var(--surface)', border: '1px solid var(--line-2)' }}>
+              <span className="tiny muted">Allowed student upload formats:</span>
+              <div className="row-wrap" style={{ gap: 14 }}>
+                {Object.values(SUBMISSION_FORMATS).map((fmt) => (
+                  <label key={fmt.id} className="row small" style={{ gap: 6, cursor: 'pointer' }}>
+                    <input type="radio" name="sub-file-fmt" checked={subFileFormat === fmt.id} onChange={() => setSubFileFormat(fmt.id)} />
+                    <span>{fmt.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {(subMode === 'typed' || subMode === 'both') && (
+            <div className="stack-sm" style={{ padding: '8px 10px', borderRadius: 8, background: 'var(--surface)', border: '1px solid var(--line-2)' }}>
+              <span className="tiny muted">Copy &amp; paste inside the student response editor:</span>
+              <div className="row-wrap" style={{ gap: 14 }}>
+                <label className="row small" style={{ gap: 6, cursor: 'pointer' }}>
+                  <input type="radio" name="sub-paste" checked={subAllowPaste} onChange={() => setSubAllowPaste(true)} />
+                  <span><strong>Allow copy &amp; paste</strong> (students can draft in Word/Notes and paste)</span>
+                </label>
+                <label className="row small" style={{ gap: 6, cursor: 'pointer' }}>
+                  <input type="radio" name="sub-paste" checked={!subAllowPaste} onChange={() => setSubAllowPaste(false)} />
+                  <span><strong>Block copy &amp; paste</strong> (must type directly; blocks paste/drop &amp; flags bursts)</span>
+                </label>
+              </div>
+            </div>
+          )}
         </div>
 
         <RubricEditor criteria={rubric} maxMarks={Number(f.max_marks) || 100} onChange={setRubric} />

@@ -5,7 +5,7 @@ import { useAuth } from '../../lib/auth.jsx';
 import { isViewOnlyPath, openStoredFile, setViewOnlyFlag } from '../../lib/files.js';
 import { fmtFull, fmtNumber, pct, relative } from '../../lib/format.js';
 import { downloadWorkbook } from '../../lib/sheets.js';
-import { assignmentMatchesStudent, findStudentSyndicate, formatAssignmentAudience, hasAudienceFilter, normalizeIndexNo, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
+import { assignmentMatchesStudent, findStudentSyndicate, formatAssignmentAudience, formatSubmissionRules, hasAudienceFilter, normalizeIndexNo, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
 import { ALL_NEW_FEATURES_SQL } from '../../lib/allFeaturesSql.js';
 import { ALL_GROUPS, GroupFilters, GroupSummaryTable, groupLabel, groupSummary, matchesGroup } from '../../components/Groups.jsx';
 import { SortSelect, SortTh } from '../../components/SortBar.jsx';
@@ -166,6 +166,7 @@ export default function AssignmentMarking() {
   const late = submitted.filter((r) => (r.sub || r._synLeaderSub)?.is_late);
   const showPeerCol = assignMeta.syndicate.enabled && assignMeta.syndicate.peerCheck !== false;
   const flaggedPeerCount = showPeerCol ? rows.filter((r) => r._peer?.flagged).length : 0;
+  const subRuleLabel = formatSubmissionRules(assignMeta);
   const avg = marked.length ? Math.round(marked.reduce((s, r) => s + pct(r.sub.marks, a.max_marks), 0) / marked.length) : null;
 
   async function toggleRelease() {
@@ -176,15 +177,16 @@ export default function AssignmentMarking() {
   }
 
   function exportXlsx() {
-    const header = ['Index number', 'Name', 'Programme', 'Stream', ...(assignMeta.syndicate.enabled ? ['Syndicate Group'] : []), 'Submitted', 'Late', 'File', 'Marks', 'Out of', 'Percent', 'Feedback'];
+    const includeTypedCol = assignMeta.submission?.mode !== 'file' || enrichedRows.some((r) => Boolean(r.sub?.response_text));
+    const header = ['Index number', 'Name', 'Programme', 'Stream', ...(assignMeta.syndicate.enabled ? ['Syndicate Group'] : []), 'Submitted', 'Late', 'File', ...(includeTypedCol ? ['Typed Response'] : []), 'Marks', 'Out of', 'Percent', 'Feedback'];
     const line = (r) => [
       r.index_no, r.full_name, r.programme || '', r.stream || '',
       ...(assignMeta.syndicate.enabled ? [r._syn?.name || ''] : []),
       r.sub ? fmtFull(r.sub.submitted_at) : 'Not submitted', r.sub?.is_late ? 'Yes' : '',
-      r.sub?.file_name || '', r.sub?.marks !== null && r.sub?.marks !== undefined ? Number(r.sub.marks) : '', Number(a.max_marks),
+      r.sub?.file_name || '', ...(includeTypedCol ? [r.sub?.response_text || ''] : []), r.sub?.marks !== null && r.sub?.marks !== undefined ? Number(r.sub.marks) : '', Number(a.max_marks),
       r.sub?.marks !== null && r.sub?.marks !== undefined ? pct(r.sub.marks, a.max_marks) : '', r.sub?.feedback || '',
     ];
-    const widths = [16, 30, 18, 12, ...(assignMeta.syndicate.enabled ? [16] : []), 22, 8, 30, 10, 10, 10, 50];
+    const widths = [16, 30, 18, 12, ...(assignMeta.syndicate.enabled ? [16] : []), 22, 8, 30, ...(includeTypedCol ? [60] : []), 10, 10, 10, 50];
     const sheets = [
       { name: 'All students', rows: [header, ...enrichedRows.map(line)], widths },
       { name: 'Summary', rows: [['Programme', 'Stream', 'Students', 'Marked', 'Average %'],
@@ -254,11 +256,14 @@ export default function AssignmentMarking() {
           </div>
         </div>
 
-        {(assignMeta.rubric.length > 0 || assignMeta.syndicate.enabled || hasAudienceFilter(assignMeta) || assignMeta.doc?.path) && (
+        {(assignMeta.rubric.length > 0 || assignMeta.syndicate.enabled || hasAudienceFilter(assignMeta) || assignMeta.doc?.path || subRuleLabel) && (
           <div className="notice notice-info row-wrap" style={{ justifyContent: 'space-between', gap: 10 }}>
             <div className="row-wrap" style={{ gap: 8 }}>
               {hasAudienceFilter(assignMeta) && (
                 <span className="badge badge-plum"><Icon name="users" size={13} /> Target: {formatAssignmentAudience(assignMeta)}</span>
+              )}
+              {subRuleLabel && (
+                <span className="badge"><Icon name={assignMeta.submission?.mode === 'typed' ? 'edit' : 'file'} size={13} /> {subRuleLabel}</span>
               )}
               {assignMeta.syndicate.enabled && (
                 <span className="badge badge-teal"><Icon name="users" size={13} /> Syndicate Mode ({assignMeta.syndicate.groups.length} groups)</span>
@@ -375,7 +380,11 @@ export default function AssignmentMarking() {
                             <>
                               {relative(effectiveSub.submitted_at)} {effectiveSub.is_late && <span className="badge badge-amber">Late</span>}
                               {!r.sub && r._synLeaderSub && <span className="badge" style={{ marginLeft: 4 }}>Group file</span>}
-                              <div className="tiny muted" style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{effectiveSub.file_name}</div>
+                              <div className="tiny muted" style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {effectiveSub.response_text
+                                  ? `Typed (${effectiveSub.response_text.trim().split(/\s+/).filter(Boolean).length} words)${effectiveSub.file_path && effectiveSub.file_path !== 'typed:online' ? ` + ${effectiveSub.file_name}` : ''}`
+                                  : effectiveSub.file_name}
+                              </div>
                             </>
                           ) : <span className="muted">Not submitted</span>}
                         </td>
@@ -383,11 +392,13 @@ export default function AssignmentMarking() {
                         <td>
                           {effectiveSub && (
                             <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
-                              {effectiveSub.file_path && effectiveSub.file_path !== 'presentation:in-class' ? (
-                                <button type="button" className="icon-btn plain" aria-label="Open file" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}><Icon name="eye" /></button>
-                              ) : (
+                              {effectiveSub.file_path === 'presentation:in-class' ? (
                                 <span className="badge badge-teal" title="Graded live in class">In-class</span>
-                              )}
+                              ) : effectiveSub.file_path === 'typed:online' ? (
+                                <button type="button" className="icon-btn plain" aria-label="Read typed response" title="Read typed response" onClick={() => setMarking(i)}><Icon name="eye" /></button>
+                              ) : effectiveSub.file_path ? (
+                                <button type="button" className="icon-btn plain" aria-label="Open file" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}><Icon name="eye" /></button>
+                              ) : null}
                               <button type="button" className="btn btn-sm btn-primary" onClick={() => setMarking(i)}>
                                 {r.sub?.marks !== null && r.sub?.marks !== undefined ? 'Edit mark' : 'Mark'}
                               </button>
@@ -614,6 +625,10 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
   }, []);
 
   const isInClass = effectiveSub.file_path === 'presentation:in-class';
+  const isTypedOnly = effectiveSub.file_path === 'typed:online';
+  const typedText = effectiveSub.response_text || '';
+  const typedWords = typedText.trim() ? typedText.trim().split(/\s+/).length : 0;
+  const tMeta = effectiveSub.typing_meta || {};
 
   return (
     <Modal
@@ -642,13 +657,36 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
       }
     >
       <div className="notice notice-info row-wrap">
-        <Icon name="file" />
+        <Icon name={isTypedOnly ? 'edit' : 'file'} />
         <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
-          <strong>{effectiveSub.file_name}</strong><br />
+          <strong>{isTypedOnly ? `Typed online response (${typedWords} words)` : effectiveSub.file_name}</strong><br />
           <span className="small">Submitted {fmtFull(effectiveSub.submitted_at)}{effectiveSub.is_late ? ' · LATE' : ''}</span>
         </span>
-        {!isInClass && <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}>Open file</button>}
+        {!isInClass && !isTypedOnly && effectiveSub.file_path && (
+          <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}>Open file</button>
+        )}
       </div>
+
+      {typedText && (
+        <div className="stack-sm" style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+          <div className="between" style={{ flexWrap: 'wrap', gap: 6 }}>
+            <strong className="small">Student Typed Response · {typedWords} word{typedWords === 1 ? '' : 's'}</strong>
+            <div className="row-wrap" style={{ gap: 6 }}>
+              {(tMeta.pasteAttempts > 0 || tMeta.burstEvents > 0) && (
+                <span className="badge badge-amber">
+                  {tMeta.pasteAttempts > 0 ? `${tMeta.pasteAttempts} blocked paste attempt${tMeta.pasteAttempts === 1 ? '' : 's'}` : `${tMeta.burstEvents} rapid burst${tMeta.burstEvents === 1 ? '' : 's'}`}
+                </span>
+              )}
+              {tMeta.activeMs > 0 && (
+                <span className="tiny muted">{Math.max(1, Math.round(tMeta.activeMs / 60000))} min active typing</span>
+              )}
+            </div>
+          </div>
+          <div className="pre small" style={{ maxHeight: 260, overflowY: 'auto', padding: '10px 12px', background: 'var(--surface)', borderRadius: 8, border: '1px solid var(--line-2)', lineHeight: 1.55 }}>
+            {typedText}
+          </div>
+        </div>
+      )}
 
       {syndicate && (
         <div className="stack-sm" style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--teal-50)', border: '1px solid var(--teal)' }}>

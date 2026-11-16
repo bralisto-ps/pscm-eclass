@@ -103,6 +103,62 @@ function normalizeClassesArray(arr) {
   return out;
 }
 
+export const SUBMISSION_FORMATS = {
+  all: {
+    id: 'all',
+    label: 'Any supported file (PDF, Word, Excel, PowerPoint, ZIP, image)',
+    shortLabel: 'Any supported file',
+    accept: '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.jpg,.jpeg,.png',
+    exts: null,
+  },
+  pdf: {
+    id: 'pdf',
+    label: 'PDF only (.pdf)',
+    shortLabel: 'PDF only',
+    accept: '.pdf,application/pdf',
+    exts: ['pdf'],
+  },
+  docs: {
+    id: 'docs',
+    label: 'PDF or Word document (.pdf, .doc, .docx)',
+    shortLabel: 'PDF or Word',
+    accept: '.pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    exts: ['pdf', 'doc', 'docx'],
+  },
+};
+
+export function normalizeSubmissionConfig(sub) {
+  const mode = sub?.mode === 'typed' || sub?.mode === 'both' ? sub.mode : 'file';
+  const fileFormat = sub?.fileFormat === 'pdf' || sub?.fileFormat === 'docs' ? sub.fileFormat : 'all';
+  const allowPaste = sub?.allowPaste !== false;
+  return { mode, fileFormat, allowPaste };
+}
+
+export function validateSubmissionFile(fileName, fileFormat = 'all') {
+  const preset = SUBMISSION_FORMATS[fileFormat] || SUBMISSION_FORMATS.all;
+  if (!preset.exts) return null;
+  const ext = String(fileName || '').split('.').pop()?.toLowerCase() || '';
+  if (preset.exts.includes(ext)) return null;
+  if (preset.id === 'pdf') return 'Only PDF files (.pdf) are accepted for this assignment.';
+  if (preset.id === 'docs') return 'Only PDF or Word documents (.pdf, .doc, .docx) are accepted for this assignment.';
+  return 'That file type is not accepted for this assignment.';
+}
+
+export function formatSubmissionRules(metaOrSub) {
+  const sub = normalizeSubmissionConfig(metaOrSub?.submission || metaOrSub);
+  const fmt = SUBMISSION_FORMATS[sub.fileFormat] || SUBMISSION_FORMATS.all;
+  if (sub.mode === 'typed') {
+    return sub.allowPaste ? 'Typed online response' : 'Typed online (copy & paste blocked)';
+  }
+  if (sub.mode === 'both') {
+    const pastePart = sub.allowPaste ? '' : ', no copy/paste';
+    const filePart = sub.fileFormat === 'all' ? 'file attachment' : fmt.shortLabel;
+    return `Typed + ${filePart}${pastePart}`;
+  }
+  if (sub.fileFormat !== 'all') return fmt.shortLabel;
+  return '';
+}
+
 export function cleanAssignmentInstructions(raw) {
   return String(raw || '').replace(ASSIGN_META_RE, '').trim();
 }
@@ -125,6 +181,7 @@ export function parseAssignmentMeta(assignment) {
       streams: [],
     },
     doc: null,
+    submission: { mode: 'file', fileFormat: 'all', allowPaste: true },
   };
   if (!match) return empty;
   try {
@@ -172,6 +229,7 @@ export function parseAssignmentMeta(assignment) {
       },
       audience,
       doc,
+      submission: normalizeSubmissionConfig(parsed.submission),
     };
   } catch {
     return empty;
@@ -208,8 +266,10 @@ export function serializeAssignmentMeta(cleanInstructions, meta = {}) {
         viewOnly: Boolean(meta.doc.viewOnly || String(meta.doc.path).startsWith('viewonly:')),
       }
     : null;
+  const submission = normalizeSubmissionConfig(meta.submission);
+  const hasCustomSubmission = submission.mode !== 'file' || submission.fileFormat !== 'all' || !submission.allowPaste;
   const hasSyndicate = Boolean(meta.syndicate?.enabled) || groups.length > 0;
-  if (rubric.length === 0 && !hasSyndicate && !hasAudience && !doc) return base;
+  if (rubric.length === 0 && !hasSyndicate && !hasAudience && !doc && !hasCustomSubmission) return base;
 
   const payload = {
     rubric,
@@ -220,6 +280,7 @@ export function serializeAssignmentMeta(cleanInstructions, meta = {}) {
     },
     ...(hasAudience ? { audience } : {}),
     ...(doc ? { doc } : {}),
+    ...(hasCustomSubmission ? { submission } : {}),
   };
   return `${base}\n\n<!-- ASSIGN_META:${JSON.stringify(payload)} -->`.trim();
 }
