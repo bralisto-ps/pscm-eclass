@@ -966,9 +966,9 @@ function Runner({ initial }) {
     return () => window.removeEventListener('beforeunload', onLeave);
   }, []);
 
+  const answeredCount = questions.filter((x) => isAnswered(answers[x.id])).length;
   if (finished) return <Done quiz={quiz} attempt={attempt} answeredCount={answeredCount} totalQuestions={questions.length} status={finished.status} autoSubmitted={finished.auto} />;
   const q = questions[current] || questions[0] || {};
-  const answeredCount = questions.filter((x) => isAnswered(answers[x.id])).length;
   const unsaved = Object.values(saveState).some((s) => s === 'error');
   const low = remaining < 5 * 60 * 1000;
   const st = q?.id ? saveState[q.id] : undefined;

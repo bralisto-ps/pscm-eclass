@@ -817,11 +817,11 @@ function Settings({ quiz, count, questions = [], windows, streams, classes, onSa
     });
   });
 
+  const [dirty, setDirty] = useState(false);
   const setC = (i, k, v) => {
     setCwin(cwin.map((w, j) => (j === i ? { ...w, [k]: v } : w)));
     setDirty(true);
   };
-  const [dirty, setDirty] = useState(false);
   const set = (k) => (e) => {
     setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
     setDirty(true);

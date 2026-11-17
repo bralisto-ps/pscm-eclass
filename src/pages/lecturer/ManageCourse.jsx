@@ -43,6 +43,18 @@ export default function ManageCourse() {
   const { isTA } = useAuth();
   const [params, setParams] = useSearchParams();
   const [previewStudent, setPreviewStudent] = useState(false);
+  const { data: loaded, error, loading, reload } = useLoad(async () => {
+    const [courseRow, countsRow] = await Promise.all([
+      run(supabase.from('courses').select('*').eq('id', courseId).maybeSingle()),
+      rpc('course_attention_counts', { p_course: courseId }).catch(() => null),
+    ]);
+    return {
+      course: courseRow,
+      counts: countsRow || { unreplied_messages: 0, unanswered_qa: 0, pending_excuses: 0, pending_reviews: 0 },
+    };
+  }, [courseId]);
+  const course = loaded?.course;
+  const counts = loaded?.counts || { unreplied_messages: 0, unanswered_qa: 0, pending_excuses: 0, pending_reviews: 0 };
   const rawTabs = isTA ? TABS.filter((t) => TA_TABS.includes(t.id)) : TABS;
   const tabs = rawTabs.map((t) => {
     if (t.id === 'attendance' && counts.pending_excuses > 0) return { ...t, count: counts.pending_excuses };
@@ -52,18 +64,6 @@ export default function ManageCourse() {
   });
   const asked = params.get('tab');
   const tab = tabs.some((t) => t.id === asked) ? asked : tabs[0].id;
-  const { data: loaded, error, loading, reload } = useLoad(async () => {
-    const [course, counts] = await Promise.all([
-      run(supabase.from('courses').select('*').eq('id', courseId).maybeSingle()),
-      rpc('course_attention_counts', { p_course: courseId }).catch(() => null),
-    ]);
-    return {
-      course,
-      counts: counts || { unreplied_messages: 0, unanswered_qa: 0, pending_excuses: 0, pending_reviews: 0 },
-    };
-  }, [courseId]);
-  const course = loaded?.course;
-  const counts = loaded?.counts || { unreplied_messages: 0, unanswered_qa: 0, pending_excuses: 0, pending_reviews: 0 };
 
   if (loading) return <CourseSkeleton />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
