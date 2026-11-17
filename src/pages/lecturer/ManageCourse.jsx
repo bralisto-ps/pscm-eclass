@@ -21,12 +21,14 @@ import Forum from '../../components/Forum.jsx';
 import CloneCourseModal from '../../components/CloneCourseModal.jsx';
 import AuditLogPanel from '../../components/AuditLogPanel.jsx';
 import StudentPreview from '../../components/StudentPreview.jsx';
+import SlotsPanel from '../../components/SlotsPanel.jsx';
 
 const TABS = [
   { id: 'materials', label: 'Materials' },
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'assignments', label: 'Assignments' },
   { id: 'attendance', label: 'Attendance' },
+  { id: 'slots', label: 'Slots' },
   { id: 'polls', label: 'Polls & Feedback' },
   { id: 'ca', label: 'CA' },
   { id: 'students', label: 'Students' },
@@ -36,7 +38,7 @@ const TABS = [
   { id: 'settings', label: 'Settings' },
 ];
 // What a teaching assistant sees.
-const TA_TABS = ['quizzes', 'assignments', 'attendance', 'polls', 'students', 'qa', 'messages', 'announcements'];
+const TA_TABS = ['quizzes', 'assignments', 'attendance', 'slots', 'polls', 'students', 'qa', 'messages', 'announcements'];
 
 export default function ManageCourse() {
   const { courseId } = useParams();
@@ -112,6 +114,7 @@ export default function ManageCourse() {
           {tab === 'quizzes' && <QuizzesTab course={course} ta={isTA} />}
           {tab === 'assignments' && <AssignmentsTab course={course} ta={isTA} />}
           {tab === 'attendance' && <AttendanceTab course={course} />}
+          {tab === 'slots' && <SlotsPanel course={course} staff />}
           {tab === 'polls' && <PollsFeedbackTab course={course} ta={isTA} />}
           {tab === 'ca' && <CATab course={course} onCourseChanged={reload} />}
           {tab === 'students' && <StudentsTab course={course} ta={isTA} />}

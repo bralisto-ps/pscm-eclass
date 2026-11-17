@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { getSignedFileUrl } from '../lib/files.js';
 import Icon from './Icon.jsx';
 
-export default function SecureSlideViewer({ material, watermarkText, courseCode, onAskSlide, onClose }) {
+export default function SecureSlideViewer({ material, bucket = 'materials', watermarkText, courseCode, onAskSlide, onClose }) {
   const canvasRef = useRef(null);
   const pdfRef = useRef(null);
   const renderTaskRef = useRef(null);
@@ -74,7 +74,7 @@ export default function SecureSlideViewer({ material, watermarkText, courseCode,
         const [pdfjs, workerMod, signedUrl] = await Promise.all([
           import('pdfjs-dist'),
           import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
-          getSignedFileUrl('materials', material.storage_path),
+          getSignedFileUrl(material.bucket || bucket, material.storage_path),
         ]);
         pdfjs.GlobalWorkerOptions.workerSrc = workerMod.default;
 

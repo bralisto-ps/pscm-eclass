@@ -5,6 +5,8 @@ import { cleanText } from '../../lib/quizMeta.js';
 import { SUBMISSION_FORMATS, assignmentMatchesStudent, findStudentSyndicate, formatSubmissionRules, normalizeIndexNo, parseAssignmentMeta, resolveEffectiveDue, validateSubmissionFile } from '../../lib/assignmentMeta.js';
 import { buildTypedResponsePdfBlob } from '../../lib/textPdf.js';
 import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
+import PscmToolkitModal from '../../components/PscmToolkit.jsx';
+import SlotsPanel from '../../components/SlotsPanel.jsx';
 import { getLetter, getRemarks, GradesTable, TargetGradeCalculator } from './Grades.jsx';
 import Messages from '../../components/Messages.jsx';
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
@@ -26,6 +28,7 @@ const TABS = [
   { id: 'materials', label: 'Materials' },
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'assignments', label: 'Assignments' },
+  { id: 'slots', label: 'Slots' },
   { id: 'attendance', label: 'Attendance' },
   { id: 'polls', label: 'Polls & Feedback' },
   { id: 'grades', label: 'My grades' },
@@ -43,7 +46,7 @@ export default function StudentCourse() {
   const [checkingIn, setCheckingIn] = useState(false);
 
   const { data, error, loading, reload } = useLoad(async () => {
-    const [course, modules, materials, news, quizzes, assignments, attendance, ca, viewsRes, cohort, excuses, reviews, annReads, attCounts] = await Promise.all([
+    const [course, modules, materials, news, quizzes, assignments, attendance, ca, viewsRes, cohort, excuses, reviews, annReads, attCounts, exemplars, seats] = await Promise.all([
       run(supabase.from('courses').select('*').eq('id', courseId).maybeSingle()),
       run(supabase.from('modules').select('*').eq('course_id', courseId).order('week_no', { nullsFirst: false }).order('position')),
       run(supabase.from('materials').select('*').eq('course_id', courseId).order('position').order('created_at')),
@@ -58,6 +61,8 @@ export default function StudentCourse() {
       rpc('my_mark_reviews', { p_course: courseId }).catch(() => []),
       rpc('my_announcement_reads', { p_course: courseId }).catch(() => []),
       rpc('student_attention_counts', { p_course: courseId }).catch(() => null),
+      rpc('course_assignment_exemplars', { p_course: courseId }).catch(() => []),
+      rpc('course_exam_seating', { p_course: courseId }).catch(() => []),
     ]);
     return {
       course,
@@ -74,6 +79,8 @@ export default function StudentCourse() {
       reviews: Array.isArray(reviews) ? reviews : [],
       readAnnIds: new Set(Array.isArray(annReads) ? annReads.map((r) => r.announcement_id) : []),
       attCounts: attCounts || { unread_announcements: 0, open_polls: 0 },
+      exemplars: Array.isArray(exemplars) ? exemplars : [],
+      seats: Array.isArray(seats) ? seats : [],
     };
   }, [courseId]);
 
@@ -149,8 +156,9 @@ export default function StudentCourse() {
         {tab !== 'polls' && <LivePollBanner courseId={course.id} onOpenTab={() => setTab('polls')} />}
         <ErrorBoundary key={tab}>
           {tab === 'materials' && <Materials data={data} course={course} profile={profile} onQuizzes={() => setTab('quizzes')} graded={graded} />}
-          {tab === 'quizzes' && <Quizzes quizzes={data.quizzes} reload={reload} />}
-          {tab === 'assignments' && <Assignments assignments={visibleAssignments} course={course} profile={profile} cohort={data.cohort} reviewBySubmission={reviewBySubmission} reload={reload} />}
+          {tab === 'quizzes' && <Quizzes quizzes={data.quizzes} seats={data.seats} reload={reload} />}
+          {tab === 'assignments' && <Assignments assignments={visibleAssignments} exemplars={data.exemplars} course={course} profile={profile} cohort={data.cohort} reviewBySubmission={reviewBySubmission} reload={reload} />}
+          {tab === 'slots' && <SlotsPanel course={course} />}
           {tab === 'attendance' && (
             <StudentAttendanceView attendance={data.attendance} course={course} excuses={data.excuses} onCheckIn={() => setCheckingIn(true)} reload={reload} />
           )}
@@ -179,6 +187,7 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
   const [act] = useAction();
   const [viewedSet, setViewedSet] = useState(() => new Set(data.viewedIds || []));
   const [reading, setReading] = useState(null);
+  const [toolkitOpen, setToolkitOpen] = useState(false);
   const groups = useMemo(() => {
     const g = data.modules.map((m) => ({ ...m, items: data.materials.filter((x) => x.module_id === m.id) }));
     const loose = data.materials.filter((x) => !x.module_id);
@@ -203,7 +212,22 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
   }
 
   if (!groups.length) {
-    return <div className="card"><Empty icon="book" title="No materials yet">Your lecturer has not posted anything for this course yet.</Empty></div>;
+    return (
+      <div className="stack">
+        <div className="card"><Empty icon="book" title="No materials yet">Your lecturer has not posted anything for this course yet.</Empty></div>
+        <div className="card between" style={{ flexWrap: 'wrap', gap: 12 }}>
+          <div className="row" style={{ gap: 10 }}>
+            <Icon name="calculator" size={18} style={{ color: 'var(--teal)' }} />
+            <div>
+              <strong>PSCM Formula &amp; Scenario Toolkit</strong>
+              <p className="tiny muted" style={{ margin: 0 }}>Practice EOQ, Reorder Point, ABC Pareto, Total Landed Cost &amp; Cash Cycle calculations.</p>
+            </div>
+          </div>
+          <button type="button" className="btn btn-sm btn-primary" onClick={() => setToolkitOpen(true)}>Open PSCM Toolkit</button>
+        </div>
+        {toolkitOpen && <PscmToolkitModal courseCode={course?.code} onClose={() => setToolkitOpen(false)} />}
+      </div>
+    );
   }
 
   return (
@@ -303,6 +327,16 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
 
       <aside className="stack">
         <CourseInfoCard course={course} />
+        <div className="card stack-sm" style={{ borderColor: 'var(--teal)' }}>
+          <div className="row" style={{ gap: 8 }}>
+            <Icon name="calculator" size={17} style={{ color: 'var(--teal)' }} />
+            <strong>PSCM Formula &amp; Scenario Toolkit</strong>
+          </div>
+          <span className="tiny muted">Interactive EOQ, Safety Stock, ABC Pareto, Landed Cost &amp; Cash Cycle calculators.</span>
+          <button type="button" className="btn btn-sm btn-primary" onClick={() => setToolkitOpen(true)}>
+            <Icon name="calculator" size={14} /> Open PSCM Toolkit
+          </button>
+        </div>
         {nextQuiz && (
           <div className="card stack-sm">
             <span className="badge badge-amber" style={{ alignSelf: 'flex-start' }}>
@@ -330,6 +364,7 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
           ))}
         </div>
       </aside>
+      {toolkitOpen && <PscmToolkitModal courseCode={course?.code} onClose={() => setToolkitOpen(false)} />}
       {reading && (
         <Suspense fallback={<div className="secure-reader-backdrop" style={{ alignItems: 'center', justifyContent: 'center' }}><div className="spinner" /></div>}>
           <SecureSlideViewer
@@ -373,7 +408,7 @@ function quizState(q) {
   return 'open';
 }
 
-function Quizzes({ quizzes }) {
+function Quizzes({ quizzes, seats = [] }) {
   const navigate = useNavigate();
   const [act, busy] = useAction();
   const [starting, setStarting] = useState(null);
@@ -435,9 +470,21 @@ function Quizzes({ quizzes }) {
           </button>
         </div>
       )}
+      {seats.filter((st) => !st.quiz_id).map((st) => (
+        <div key={st.plan_id || st.room_name} className="notice notice-info row-wrap" style={{ justifyContent: 'space-between', gap: 10 }}>
+          <div className="row" style={{ gap: 8 }}>
+            <Icon name="grid" size={16} />
+            <span className="small">
+              <strong>{st.title || 'Course Exam Venue'}:</strong> {st.room_name} · Seat <strong className="mono">#{st.seat_no}</strong>
+              {st.exam_date ? ` · ${fmtFull(st.exam_date)}` : ''}
+            </span>
+          </div>
+        </div>
+      ))}
       {quizzes.map((q) => {
         const st = quizState(q);
         const released = q.released;
+        const mySeat = seats.find((x) => x.quiz_id === q.id);
         return (
           <div key={q.id} className="card">
             <div className="between" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -456,6 +503,13 @@ function Quizzes({ quizzes }) {
                   {q.opens_at ? `Opens ${fmtFull(q.opens_at)}` : 'Open now'}
                   {q.closes_at ? ` · closes ${fmtFull(q.closes_at)}` : ''}
                 </span>
+                {mySeat && (
+                  <div className="row-wrap" style={{ gap: 6, marginTop: 4 }}>
+                    <span className="badge badge-plum">
+                      <Icon name="grid" size={12} /> Exam Venue: {mySeat.room_name} · Seat #{mySeat.seat_no}
+                    </span>
+                  </div>
+                )}
               </div>
               <div className="stack-sm" style={{ alignItems: 'flex-end' }}>
                 {st === 'in_progress' && (
@@ -556,7 +610,7 @@ function Quizzes({ quizzes }) {
 }
 
 // ---------------- assignments ----------------
-function Assignments({ assignments, course, profile, cohort, reviewBySubmission, reload }) {
+function Assignments({ assignments, exemplars = [], course, profile, cohort, reviewBySubmission, reload }) {
   const toast = useToast();
   const [readingDoc, setReadingDoc] = useState(null);
   if (!assignments.length) return <div className="card"><Empty icon="clipboard" title="No assignments yet">Assignments will appear here when your lecturer posts them.</Empty></div>;
@@ -566,12 +620,14 @@ function Assignments({ assignments, course, profile, cohort, reviewBySubmission,
         <AssignmentCard
           key={a.id}
           a={a}
+          exemplars={exemplars.filter((ex) => ex.assignment_id === a.id)}
           cohort={cohort}
           review={a.submission?.id ? reviewBySubmission?.get(a.submission.id) : null}
-          onReadDoc={(doc, item) => setReadingDoc({
+          onReadDoc={(doc, item, bucket = 'materials') => setReadingDoc({
             id: item.id,
             title: doc.name || item.title,
             storage_path: setViewOnlyFlag(doc.path, true),
+            bucket,
           })}
           reload={reload}
         />
@@ -600,7 +656,7 @@ function Assignments({ assignments, course, profile, cohort, reviewBySubmission,
 
 const MAX_BYTES = 5 * 1024 * 1024;
 
-function AssignmentCard({ a, cohort, review, onReadDoc, reload }) {
+function AssignmentCard({ a, exemplars = [], cohort, review, onReadDoc, reload }) {
   const { session, profile } = useAuth();
   const toast = useToast();
   const [act] = useAction();
@@ -954,6 +1010,54 @@ function AssignmentCard({ a, cohort, review, onReadDoc, reload }) {
         </div>
       )}
       {s?.marked && !a.released && <p className="small muted">Your work has been marked. Marks will show here when your lecturer releases them.</p>}
+      {a.released && exemplars.length > 0 && (
+        <div className="stack-sm" style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+          <div className="row" style={{ gap: 8 }}>
+            <Icon name="award" size={16} style={{ color: 'var(--teal)' }} />
+            <strong className="small">Anonymized Model Answer Exemplar{exemplars.length === 1 ? '' : 's'}</strong>
+          </div>
+          {exemplars.map((ex) => (
+            <div key={ex.id} className="stack-sm" style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--surface)', border: '1px solid var(--line-2)' }}>
+              <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                <div className="row-wrap" style={{ gap: 6 }}>
+                  <strong className="small">{ex.title}</strong>
+                  {ex.marks !== null && ex.marks !== undefined && (
+                    <span className="badge badge-teal mono">{fmtNumber(ex.marks)} / {fmtNumber(ex.max_marks || a.max_marks)}</span>
+                  )}
+                </div>
+                {ex.file_path && (
+                  isViewOnlyPath(ex.file_path) ? (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => onReadDoc({ path: ex.file_path, name: ex.title }, a, 'submissions')}
+                    >
+                      <Icon name="eye" size={14} /> Read exemplar
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => act(() => openStoredFile('submissions', ex.file_path))}
+                    >
+                      <Icon name="download" size={14} /> {ex.file_name || 'Open exemplar file'}
+                    </button>
+                  )
+                )}
+              </div>
+              {ex.note && <p className="tiny muted" style={{ margin: 0 }}>{ex.note}</p>}
+              {ex.response_text && (
+                <details className="small">
+                  <summary style={{ cursor: 'pointer', color: 'var(--teal-dark)', fontWeight: 500 }}>Read anonymized response text</summary>
+                  <div className="pre small" style={{ marginTop: 8, maxHeight: 240, overflowY: 'auto', padding: '10px 12px', background: 'var(--surface-2)', borderRadius: 8, border: '1px solid var(--line-2)' }}>
+                    {ex.response_text}
+                  </div>
+                </details>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {s?.marked && a.released && (
         <div className="between" style={{ paddingTop: 8, borderTop: '1px solid var(--line-2)', flexWrap: 'wrap', gap: 8 }}>
           {review ? (

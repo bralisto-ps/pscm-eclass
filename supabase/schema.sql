@@ -6255,3 +6255,952 @@ begin
     execute format('grant execute on function public.%s to authenticated', f);
   end loop;
 end $$;
+
+
+-- =====================================================================
+-- 17. PSCM E-Class Feature Pack III:
+--     Cross-Course Question Bank & Past-Question Importer,
+--     Quick Feedback Snippets & Anonymized Assignment Exemplars,
+--     Bookable Presentation / Viva / Consultation Slots,
+--     Exam Hall & Seat Allocator,
+--     Direct Manual Roll-Call Sessions
+-- =====================================================================
+
+-- 17A. Cross-Course Question Bank & Past-Question Importer
+create table if not exists public.question_bank (
+  id             uuid primary key default gen_random_uuid(),
+  owner_id       uuid not null references public.profiles(id) on delete cascade,
+  course_id      uuid references public.courses(id) on delete set null,
+  course_code    text not null default '',
+  topic          text not null default '',
+  difficulty     text not null default 'medium' check (difficulty in ('easy', 'medium', 'hard')),
+  kind           text not null check (kind in ('mcq', 'truefalse', 'numeric', 'short', 'essay', 'multiselect')),
+  prompt         text not null,
+  options        jsonb not null default '[]'::jsonb,
+  answer         jsonb not null default '{}'::jsonb,
+  params         jsonb not null default '{}'::jsonb,
+  formula        text,
+  unit           text not null default '',
+  decimals       int not null default 2,
+  tolerance      numeric not null default 0,
+  tolerance_type text not null default 'abs',
+  marks          numeric not null default 1,
+  explanation    text not null default '',
+  image_path     text,
+  created_at     timestamptz not null default now()
+);
+create index if not exists question_bank_owner_idx on public.question_bank (owner_id, created_at desc);
+
+alter table public.question_bank enable row level security;
+
+drop policy if exists "Staff manage own question bank" on public.question_bank;
+create policy "Staff manage own question bank" on public.question_bank
+  for all to authenticated
+  using (owner_id = auth.uid() and (public.is_lecturer() or exists (select 1 from public.course_staff cs where cs.user_id = auth.uid())))
+  with check (owner_id = auth.uid() and (public.is_lecturer() or exists (select 1 from public.course_staff cs where cs.user_id = auth.uid())));
+
+create or replace function public.save_to_question_bank(
+  p_question   uuid,
+  p_difficulty text default 'medium'
+) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  v_q    public.questions;
+  v_c    public.courses;
+  v_diff text := case when p_difficulty in ('easy', 'medium', 'hard') then p_difficulty else 'medium' end;
+  v_id   uuid;
+begin
+  select q.* into v_q from public.questions q where q.id = p_question;
+  if v_q.id is null then raise exception 'Question not found.'; end if;
+  select c.* into v_c
+    from public.quizzes qz
+    join public.courses c on c.id = qz.course_id
+   where qz.id = v_q.quiz_id;
+  perform public.require_staff(v_c.id);
+
+  insert into public.question_bank (
+    owner_id, course_id, course_code, topic, difficulty, kind, prompt,
+    options, answer, params, formula, unit, decimals, tolerance, tolerance_type,
+    marks, explanation, image_path
+  ) values (
+    auth.uid(), v_c.id, coalesce(v_c.code, ''), coalesce(v_q.topic, ''), v_diff,
+    v_q.kind, v_q.prompt, v_q.options, v_q.answer, v_q.params, v_q.formula,
+    coalesce(v_q.unit, ''), coalesce(v_q.decimals, 2), coalesce(v_q.tolerance, 0),
+    coalesce(v_q.tolerance_type, 'abs'), coalesce(v_q.marks, 1),
+    coalesce(v_q.explanation, ''), v_q.image_path
+  ) returning id into v_id;
+
+  return v_id;
+end;
+$$;
+
+create or replace function public.list_reusable_questions(p_course uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_bank jsonb;
+  v_past jsonb;
+begin
+  if p_course is not null then
+    perform public.require_staff(p_course);
+  elsif not (public.is_lecturer() or exists (select 1 from public.course_staff cs where cs.user_id = auth.uid())) then
+    raise exception 'Only staff may access the question bank.';
+  end if;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', qb.id,
+    'source', 'bank',
+    'course_id', qb.course_id,
+    'course_code', qb.course_code,
+    'topic', qb.topic,
+    'difficulty', qb.difficulty,
+    'kind', qb.kind,
+    'prompt', qb.prompt,
+    'options', qb.options,
+    'answer', qb.answer,
+    'params', qb.params,
+    'formula', qb.formula,
+    'unit', qb.unit,
+    'decimals', qb.decimals,
+    'tolerance', qb.tolerance,
+    'tolerance_type', qb.tolerance_type,
+    'marks', qb.marks,
+    'explanation', qb.explanation,
+    'image_path', qb.image_path,
+    'created_at', qb.created_at
+  ) order by qb.created_at desc), '[]'::jsonb)
+  into v_bank
+  from public.question_bank qb
+  where qb.owner_id = auth.uid();
+
+  select coalesce(jsonb_agg(row_to_json(t) order by t.created_at desc), '[]'::jsonb)
+  into v_past
+  from (
+    select
+      q.id,
+      'past'::text as source,
+      c.id as course_id,
+      c.code as course_code,
+      qz.id as quiz_id,
+      qz.title as quiz_title,
+      q.topic,
+      q.kind,
+      q.prompt,
+      q.options,
+      q.answer,
+      q.params,
+      q.formula,
+      q.unit,
+      q.decimals,
+      q.tolerance,
+      q.tolerance_type,
+      q.marks,
+      q.explanation,
+      q.image_path,
+      q.created_at,
+      coalesce(st.attempts_count, 0) as attempts_count,
+      st.avg_pct
+    from public.questions q
+    join public.quizzes qz on qz.id = q.quiz_id
+    join public.courses c on c.id = qz.course_id
+    left join lateral (
+      select
+        count(*)::int as attempts_count,
+        round(avg(
+          case
+            when q.marks > 0 then coalesce(r.marks_awarded, 0) / q.marks * 100
+            when r.is_correct then 100
+            else 0
+          end
+        ))::int as avg_pct
+      from public.responses r
+      join public.attempts a on a.id = r.attempt_id
+      where r.question_id = q.id
+        and a.status <> 'in_progress'
+    ) st on true
+    where public.is_staff(c.id)
+    order by q.created_at desc
+    limit 400
+  ) t;
+
+  return jsonb_build_object('bank', v_bank, 'past', v_past);
+end;
+$$;
+
+create or replace function public.import_questions_to_quiz(
+  p_quiz  uuid,
+  p_items jsonb
+) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  v_course uuid;
+  v_pos    int;
+  v_item   jsonb;
+  v_count  int := 0;
+begin
+  select course_id into v_course from public.quizzes where id = p_quiz;
+  if v_course is null then raise exception 'Quiz not found.'; end if;
+  perform public.require_staff(v_course);
+
+  select coalesce(max(position), 0) into v_pos from public.questions where quiz_id = p_quiz;
+
+  for v_item in select * from jsonb_array_elements(coalesce(p_items, '[]'::jsonb))
+  loop
+    v_pos := v_pos + 1;
+    insert into public.questions (
+      quiz_id, position, kind, prompt, options, answer, params, formula,
+      unit, decimals, tolerance, tolerance_type, marks, explanation, topic, image_path
+    ) values (
+      p_quiz,
+      v_pos,
+      coalesce(v_item->>'kind', 'mcq'),
+      coalesce(v_item->>'prompt', ''),
+      coalesce(v_item->'options', '[]'::jsonb),
+      coalesce(v_item->'answer', '{}'::jsonb),
+      coalesce(v_item->'params', '{}'::jsonb),
+      nullif(v_item->>'formula', ''),
+      coalesce(v_item->>'unit', ''),
+      greatest(0, least(6, coalesce((v_item->>'decimals')::int, 2))),
+      greatest(0, coalesce((v_item->>'tolerance')::numeric, 0)),
+      case when (v_item->>'tolerance_type') = 'pct' then 'pct' else 'abs' end,
+      greatest(0, coalesce((v_item->>'marks')::numeric, 1)),
+      coalesce(v_item->>'explanation', ''),
+      coalesce(v_item->>'topic', ''),
+      nullif(v_item->>'image_path', '')
+    );
+    v_count := v_count + 1;
+  end loop;
+
+  perform public.log_course_audit(
+    v_course,
+    'quiz_import_bank',
+    format('Imported %s question(s) from Question Bank', v_count),
+    jsonb_build_object('quiz_id', p_quiz, 'count', v_count)
+  );
+  return v_count;
+end;
+$$;
+
+-- 17B. Quick Feedback Snippets & Anonymized Assignment Exemplars
+create table if not exists public.grading_snippets (
+  id         uuid primary key default gen_random_uuid(),
+  owner_id   uuid not null references public.profiles(id) on delete cascade,
+  label      text not null,
+  body       text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists grading_snippets_owner_idx on public.grading_snippets (owner_id, created_at desc);
+
+alter table public.grading_snippets enable row level security;
+
+drop policy if exists "Staff manage own grading snippets" on public.grading_snippets;
+create policy "Staff manage own grading snippets" on public.grading_snippets
+  for all to authenticated
+  using (owner_id = auth.uid())
+  with check (owner_id = auth.uid());
+
+create table if not exists public.assignment_exemplars (
+  id            uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references public.assignments(id) on delete cascade,
+  course_id     uuid not null references public.courses(id) on delete cascade,
+  submission_id uuid references public.submissions(id) on delete set null,
+  title         text not null,
+  note          text not null default '',
+  response_text text,
+  file_path     text,
+  file_name     text,
+  marks         numeric,
+  created_by    uuid references public.profiles(id) on delete set null,
+  created_at    timestamptz not null default now()
+);
+create index if not exists assignment_exemplars_assign_idx on public.assignment_exemplars (assignment_id, created_at desc);
+create index if not exists assignment_exemplars_course_idx on public.assignment_exemplars (course_id);
+
+alter table public.assignment_exemplars enable row level security;
+
+drop policy if exists "Staff manage assignment exemplars" on public.assignment_exemplars;
+create policy "Staff manage assignment exemplars" on public.assignment_exemplars
+  for all to authenticated
+  using (public.is_staff(course_id))
+  with check (public.is_staff(course_id));
+
+drop policy if exists "Students view released assignment exemplars" on public.assignment_exemplars;
+create policy "Students view released assignment exemplars" on public.assignment_exemplars
+  for select to authenticated
+  using (
+    public.is_enrolled(course_id)
+    and exists (
+      select 1 from public.assignments a
+       where a.id = assignment_id and a.results_released = true
+    )
+  );
+
+drop policy if exists "submissions exemplar read" on storage.objects;
+create policy "submissions exemplar read" on storage.objects
+  for select to authenticated
+  using (
+    bucket_id = 'submissions'
+    and exists (
+      select 1
+        from public.assignment_exemplars ex
+        join public.assignments a on a.id = ex.assignment_id
+       where (ex.file_path = name or ex.file_path = 'viewonly:' || name)
+         and a.results_released = true
+         and public.is_enrolled(ex.course_id)
+    )
+  );
+
+create or replace function public.promote_assignment_exemplar(
+  p_submission uuid,
+  p_title      text,
+  p_note       text default ''
+) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  v_sub    public.submissions;
+  v_assign public.assignments;
+  v_id     uuid;
+begin
+  select * into v_sub from public.submissions where id = p_submission;
+  if v_sub.id is null then raise exception 'Submission not found.'; end if;
+  select * into v_assign from public.assignments where id = v_sub.assignment_id;
+  if v_assign.id is null then raise exception 'Assignment not found.'; end if;
+  perform public.require_staff(v_assign.course_id);
+
+  insert into public.assignment_exemplars (
+    assignment_id, course_id, submission_id, title, note,
+    response_text, file_path, file_name, marks, created_by
+  ) values (
+    v_assign.id,
+    v_assign.course_id,
+    v_sub.id,
+    coalesce(nullif(btrim(p_title), ''), 'Model A-Grade Submission'),
+    coalesce(btrim(p_note), ''),
+    nullif(v_sub.response_text, ''),
+    case when v_sub.file_path in ('typed:online', 'presentation:in-class') then null else v_sub.file_path end,
+    case when v_sub.file_path in ('typed:online', 'presentation:in-class') then null else v_sub.file_name end,
+    v_sub.marks,
+    auth.uid()
+  ) returning id into v_id;
+
+  perform public.log_course_audit(
+    v_assign.course_id,
+    'assignment_exemplar_added',
+    format('Published anonymized exemplar "%s" for %s', coalesce(nullif(btrim(p_title), ''), 'Model Submission'), v_assign.title),
+    jsonb_build_object('assignment_id', v_assign.id, 'exemplar_id', v_id)
+  );
+  return v_id;
+end;
+$$;
+
+create or replace function public.remove_assignment_exemplar(p_exemplar uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_course uuid;
+begin
+  select course_id into v_course from public.assignment_exemplars where id = p_exemplar;
+  if v_course is null then return; end if;
+  perform public.require_staff(v_course);
+  delete from public.assignment_exemplars where id = p_exemplar;
+end;
+$$;
+
+create or replace function public.course_assignment_exemplars(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_staff boolean := public.is_staff(p_course);
+begin
+  if not v_staff and not public.is_enrolled(p_course) then
+    raise exception 'Access denied.';
+  end if;
+
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', ex.id,
+      'assignment_id', ex.assignment_id,
+      'submission_id', case when v_staff then ex.submission_id else null end,
+      'title', ex.title,
+      'note', ex.note,
+      'response_text', ex.response_text,
+      'file_path', ex.file_path,
+      'file_name', ex.file_name,
+      'marks', ex.marks,
+      'max_marks', a.max_marks,
+      'created_at', ex.created_at
+    ) order by ex.created_at desc)
+    from public.assignment_exemplars ex
+    join public.assignments a on a.id = ex.assignment_id
+    where ex.course_id = p_course
+      and (v_staff or a.results_released = true)
+  ), '[]'::jsonb);
+end;
+$$;
+
+-- 17C. Bookable Presentation, Viva & Consultation Slots
+create table if not exists public.booking_events (
+  id                uuid primary key default gen_random_uuid(),
+  course_id         uuid not null references public.courses(id) on delete cascade,
+  assignment_id     uuid references public.assignments(id) on delete set null,
+  title             text not null,
+  kind              text not null default 'presentation' check (kind in ('presentation', 'viva', 'consultation')),
+  location          text not null default '',
+  slot_minutes      int not null default 10,
+  allow_syndicate   boolean not null default false,
+  booking_closes_at timestamptz,
+  created_by        uuid references public.profiles(id) on delete set null,
+  created_at        timestamptz not null default now()
+);
+create index if not exists booking_events_course_idx on public.booking_events (course_id, created_at desc);
+
+create table if not exists public.booking_slots (
+  id                uuid primary key default gen_random_uuid(),
+  event_id          uuid not null references public.booking_events(id) on delete cascade,
+  course_id         uuid not null references public.courses(id) on delete cascade,
+  starts_at         timestamptz not null,
+  ends_at           timestamptz not null,
+  room              text not null default '',
+  booked_by_user    uuid references public.profiles(id) on delete set null,
+  booked_index_no   text,
+  booked_name       text,
+  syndicate_name    text,
+  syndicate_members jsonb,
+  booked_at         timestamptz
+);
+create index if not exists booking_slots_event_idx on public.booking_slots (event_id, starts_at);
+create index if not exists booking_slots_course_idx on public.booking_slots (course_id, starts_at);
+
+alter table public.booking_events enable row level security;
+alter table public.booking_slots enable row level security;
+
+drop policy if exists "Staff manage booking events" on public.booking_events;
+create policy "Staff manage booking events" on public.booking_events
+  for all to authenticated
+  using (public.is_staff(course_id))
+  with check (public.is_staff(course_id));
+
+drop policy if exists "Enrolled read booking events" on public.booking_events;
+create policy "Enrolled read booking events" on public.booking_events
+  for select to authenticated
+  using (public.is_enrolled(course_id));
+
+drop policy if exists "Staff manage booking slots" on public.booking_slots;
+create policy "Staff manage booking slots" on public.booking_slots
+  for all to authenticated
+  using (public.is_staff(course_id))
+  with check (public.is_staff(course_id));
+
+drop policy if exists "Enrolled read booking slots" on public.booking_slots;
+create policy "Enrolled read booking slots" on public.booking_slots
+  for select to authenticated
+  using (public.is_enrolled(course_id));
+
+create or replace function public.create_booking_event(
+  p_course          uuid,
+  p_title           text,
+  p_kind            text default 'presentation',
+  p_location        text default '',
+  p_assignment      uuid default null,
+  p_allow_syndicate boolean default false,
+  p_closes_at       timestamptz default null,
+  p_slots           jsonb default '[]'::jsonb
+) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  v_ev_id uuid;
+  v_item  jsonb;
+  v_kind  text := case when p_kind in ('presentation', 'viva', 'consultation') then p_kind else 'presentation' end;
+begin
+  perform public.require_staff(p_course);
+  if nullif(btrim(p_title), '') is null then raise exception 'Schedule title is required.'; end if;
+  if jsonb_array_length(coalesce(p_slots, '[]'::jsonb)) = 0 then
+    raise exception 'At least one time slot is required.';
+  end if;
+
+  insert into public.booking_events (
+    course_id, assignment_id, title, kind, location, allow_syndicate, booking_closes_at, created_by
+  ) values (
+    p_course, p_assignment, btrim(p_title), v_kind, coalesce(btrim(p_location), ''),
+    coalesce(p_allow_syndicate, false), p_closes_at, auth.uid()
+  ) returning id into v_ev_id;
+
+  for v_item in select * from jsonb_array_elements(p_slots)
+  loop
+    insert into public.booking_slots (event_id, course_id, starts_at, ends_at, room)
+    values (
+      v_ev_id,
+      p_course,
+      (v_item->>'starts_at')::timestamptz,
+      (v_item->>'ends_at')::timestamptz,
+      coalesce(nullif(btrim(v_item->>'room'), ''), coalesce(btrim(p_location), ''))
+    );
+  end loop;
+
+  perform public.log_course_audit(
+    p_course,
+    'booking_event_created',
+    format('Created %s slot schedule "%s" (%s slots)', v_kind, btrim(p_title), jsonb_array_length(p_slots)),
+    jsonb_build_object('event_id', v_ev_id, 'kind', v_kind)
+  );
+  return v_ev_id;
+end;
+$$;
+
+create or replace function public.delete_booking_event(p_event uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_course uuid;
+begin
+  select course_id into v_course from public.booking_events where id = p_event;
+  if v_course is null then return; end if;
+  perform public.require_staff(v_course);
+  delete from public.booking_events where id = p_event;
+end;
+$$;
+
+create or replace function public.course_booking_events(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.is_staff(p_course) and not public.is_enrolled(p_course) then
+    raise exception 'Access denied.';
+  end if;
+
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', ev.id,
+      'course_id', ev.course_id,
+      'assignment_id', ev.assignment_id,
+      'assignment_title', a.title,
+      'title', ev.title,
+      'kind', ev.kind,
+      'location', ev.location,
+      'allow_syndicate', ev.allow_syndicate,
+      'booking_closes_at', ev.booking_closes_at,
+      'created_at', ev.created_at,
+      'slots', coalesce((
+        select jsonb_agg(jsonb_build_object(
+          'id', sl.id,
+          'event_id', sl.event_id,
+          'starts_at', sl.starts_at,
+          'ends_at', sl.ends_at,
+          'room', sl.room,
+          'booked', (sl.booked_by_user is not null),
+          'booked_by_me', (sl.booked_by_user = auth.uid()),
+          'booked_index_no', sl.booked_index_no,
+          'booked_name', sl.booked_name,
+          'syndicate_name', sl.syndicate_name,
+          'syndicate_members', sl.syndicate_members,
+          'booked_at', sl.booked_at
+        ) order by sl.starts_at)
+        from public.booking_slots sl
+        where sl.event_id = ev.id
+      ), '[]'::jsonb)
+    ) order by ev.created_at desc)
+    from public.booking_events ev
+    left join public.assignments a on a.id = ev.assignment_id
+    where ev.course_id = p_course
+  ), '[]'::jsonb);
+end;
+$$;
+
+create or replace function public.book_slot(
+  p_slot              uuid,
+  p_syndicate_name    text default null,
+  p_syndicate_members jsonb default null
+) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_slot  public.booking_slots;
+  v_ev    public.booking_events;
+  v_prof  public.profiles;
+  v_norm  text;
+begin
+  select * into v_slot from public.booking_slots where id = p_slot for update;
+  if v_slot.id is null then raise exception 'Slot not found.'; end if;
+  select * into v_ev from public.booking_events where id = v_slot.event_id;
+  if not public.is_enrolled(v_ev.course_id) then raise exception 'Not enrolled in this course.'; end if;
+  if v_ev.booking_closes_at is not null and now() > v_ev.booking_closes_at then
+    raise exception 'Slot booking has closed for this schedule.';
+  end if;
+  if v_slot.booked_by_user is not null and v_slot.booked_by_user <> auth.uid() then
+    raise exception 'That slot was just booked by someone else. Please pick another open slot.';
+  end if;
+
+  select * into v_prof from public.profiles where id = auth.uid();
+  v_norm := public.norm_index(v_prof.index_no);
+
+  -- Release any previous booking by this student or syndicate in the same schedule (clean swap)
+  update public.booking_slots
+     set booked_by_user = null,
+         booked_index_no = null,
+         booked_name = null,
+         syndicate_name = null,
+         syndicate_members = null,
+         booked_at = null
+   where event_id = v_ev.id
+     and id <> p_slot
+     and (
+       booked_by_user = auth.uid()
+       or (nullif(btrim(p_syndicate_name), '') is not null and syndicate_name = btrim(p_syndicate_name))
+       or (v_norm <> '' and syndicate_members is not null and syndicate_members ? v_norm)
+     );
+
+  update public.booking_slots
+     set booked_by_user = auth.uid(),
+         booked_index_no = v_prof.index_no,
+         booked_name = v_prof.full_name,
+         syndicate_name = case when v_ev.allow_syndicate then nullif(btrim(p_syndicate_name), '') else null end,
+         syndicate_members = case when v_ev.allow_syndicate then p_syndicate_members else null end,
+         booked_at = now()
+   where id = p_slot;
+
+  return jsonb_build_object('ok', true, 'slot_id', p_slot);
+end;
+$$;
+
+create or replace function public.cancel_slot_booking(p_slot uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_slot public.booking_slots;
+  v_ev   public.booking_events;
+  v_norm text := public.norm_index(public.my_index());
+begin
+  select * into v_slot from public.booking_slots where id = p_slot;
+  if v_slot.id is null then return; end if;
+  select * into v_ev from public.booking_events where id = v_slot.event_id;
+
+  if not (
+    public.is_staff(v_slot.course_id)
+    or (
+      (v_ev.booking_closes_at is null or now() <= v_ev.booking_closes_at)
+      and (
+        v_slot.booked_by_user = auth.uid()
+        or (v_norm <> '' and v_slot.syndicate_members is not null and v_slot.syndicate_members ? v_norm)
+      )
+    )
+  ) then
+    raise exception 'Cannot cancel this slot.';
+  end if;
+
+  update public.booking_slots
+     set booked_by_user = null,
+         booked_index_no = null,
+         booked_name = null,
+         syndicate_name = null,
+         syndicate_members = null,
+         booked_at = null
+   where id = p_slot;
+end;
+$$;
+
+create or replace function public.my_upcoming_slots() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_norm text := public.norm_index(public.my_index());
+begin
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'slot_id', sl.id,
+      'event_id', ev.id,
+      'course_id', c.id,
+      'course_code', c.code,
+      'course_color', c.color,
+      'title', ev.title,
+      'kind', ev.kind,
+      'room', coalesce(nullif(sl.room, ''), ev.location),
+      'starts_at', sl.starts_at,
+      'ends_at', sl.ends_at,
+      'syndicate_name', sl.syndicate_name
+    ) order by sl.starts_at)
+    from public.booking_slots sl
+    join public.booking_events ev on ev.id = sl.event_id
+    join public.courses c on c.id = ev.course_id
+    where c.archived = false
+      and sl.ends_at >= now() - interval '2 hours'
+      and (
+        sl.booked_by_user = auth.uid()
+        or (v_norm <> '' and sl.syndicate_members is not null and sl.syndicate_members ? v_norm)
+      )
+  ), '[]'::jsonb);
+end;
+$$;
+
+-- 17D. Exam Hall & Seat Allocator
+create table if not exists public.exam_seating_plans (
+  id         uuid primary key default gen_random_uuid(),
+  course_id  uuid not null references public.courses(id) on delete cascade,
+  quiz_id    uuid references public.quizzes(id) on delete cascade,
+  title      text not null,
+  exam_date  timestamptz,
+  rooms      jsonb not null default '[]'::jsonb,
+  sort_mode  text not null default 'index',
+  published  boolean not null default false,
+  created_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+create index if not exists exam_seating_course_idx on public.exam_seating_plans (course_id, created_at desc);
+
+create table if not exists public.exam_seat_assignments (
+  id        uuid primary key default gen_random_uuid(),
+  plan_id   uuid not null references public.exam_seating_plans(id) on delete cascade,
+  course_id uuid not null references public.courses(id) on delete cascade,
+  quiz_id   uuid references public.quizzes(id) on delete cascade,
+  index_no  text not null,
+  full_name text not null default '',
+  programme text not null default '',
+  stream    text not null default '',
+  room_name text not null,
+  seat_no   int not null,
+  unique (plan_id, index_no)
+);
+create index if not exists exam_seat_plan_idx on public.exam_seat_assignments (plan_id, room_name, seat_no);
+create index if not exists exam_seat_index_idx on public.exam_seat_assignments (index_no);
+
+alter table public.exam_seating_plans enable row level security;
+alter table public.exam_seat_assignments enable row level security;
+
+drop policy if exists "Staff manage exam seating plans" on public.exam_seating_plans;
+create policy "Staff manage exam seating plans" on public.exam_seating_plans
+  for all to authenticated
+  using (public.is_staff(course_id))
+  with check (public.is_staff(course_id));
+
+drop policy if exists "Students read published exam seating plans" on public.exam_seating_plans;
+create policy "Students read published exam seating plans" on public.exam_seating_plans
+  for select to authenticated
+  using (published = true and public.is_enrolled(course_id));
+
+drop policy if exists "Staff manage exam seat assignments" on public.exam_seat_assignments;
+create policy "Staff manage exam seat assignments" on public.exam_seat_assignments
+  for all to authenticated
+  using (public.is_staff(course_id))
+  with check (public.is_staff(course_id));
+
+drop policy if exists "Students read own published seat" on public.exam_seat_assignments;
+create policy "Students read own published seat" on public.exam_seat_assignments
+  for select to authenticated
+  using (
+    public.norm_index(index_no) = public.norm_index(public.my_index())
+    and exists (
+      select 1 from public.exam_seating_plans p
+       where p.id = plan_id and p.published = true
+    )
+  );
+
+create or replace function public.save_exam_seating_plan(
+  p_course      uuid,
+  p_quiz        uuid default null,
+  p_title       text default 'Exam Seating',
+  p_exam_date   timestamptz default null,
+  p_rooms       jsonb default '[]'::jsonb,
+  p_sort_mode   text default 'index',
+  p_published   boolean default false,
+  p_assignments jsonb default '[]'::jsonb,
+  p_plan_id     uuid default null
+) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  v_plan_id uuid := p_plan_id;
+  v_item    jsonb;
+begin
+  perform public.require_staff(p_course);
+
+  if v_plan_id is null and p_quiz is not null then
+    select id into v_plan_id
+      from public.exam_seating_plans
+     where course_id = p_course and quiz_id = p_quiz
+     order by created_at desc limit 1;
+  end if;
+
+  if v_plan_id is not null then
+    update public.exam_seating_plans
+       set title = coalesce(nullif(btrim(p_title), ''), 'Exam Seating'),
+           exam_date = p_exam_date,
+           rooms = coalesce(p_rooms, '[]'::jsonb),
+           sort_mode = coalesce(nullif(p_sort_mode, ''), 'index'),
+           published = coalesce(p_published, false)
+     where id = v_plan_id and course_id = p_course;
+    delete from public.exam_seat_assignments where plan_id = v_plan_id;
+  else
+    insert into public.exam_seating_plans (
+      course_id, quiz_id, title, exam_date, rooms, sort_mode, published, created_by
+    ) values (
+      p_course, p_quiz, coalesce(nullif(btrim(p_title), ''), 'Exam Seating'),
+      p_exam_date, coalesce(p_rooms, '[]'::jsonb), coalesce(nullif(p_sort_mode, ''), 'index'),
+      coalesce(p_published, false), auth.uid()
+    ) returning id into v_plan_id;
+  end if;
+
+  for v_item in select * from jsonb_array_elements(coalesce(p_assignments, '[]'::jsonb))
+  loop
+    insert into public.exam_seat_assignments (
+      plan_id, course_id, quiz_id, index_no, full_name, programme, stream, room_name, seat_no
+    ) values (
+      v_plan_id, p_course, p_quiz,
+      v_item->>'index_no',
+      coalesce(v_item->>'full_name', ''),
+      coalesce(v_item->>'programme', ''),
+      coalesce(v_item->>'stream', ''),
+      v_item->>'room_name',
+      coalesce((v_item->>'seat_no')::int, 1)
+    );
+  end loop;
+
+  perform public.log_course_audit(
+    p_course,
+    'exam_seating_saved',
+    format('Saved exam seating "%s" (%s students, %s)', coalesce(nullif(btrim(p_title), ''), 'Exam Seating'), jsonb_array_length(coalesce(p_assignments, '[]'::jsonb)), case when p_published then 'published' else 'draft' end),
+    jsonb_build_object('plan_id', v_plan_id, 'quiz_id', p_quiz)
+  );
+  return v_plan_id;
+end;
+$$;
+
+create or replace function public.delete_exam_seating_plan(p_plan uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_course uuid;
+begin
+  select course_id into v_course from public.exam_seating_plans where id = p_plan;
+  if v_course is null then return; end if;
+  perform public.require_staff(v_course);
+  delete from public.exam_seating_plans where id = p_plan;
+end;
+$$;
+
+create or replace function public.course_exam_seating(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_staff boolean := public.is_staff(p_course);
+  v_norm  text := public.norm_index(public.my_index());
+begin
+  if not v_staff and not public.is_enrolled(p_course) then
+    raise exception 'Access denied.';
+  end if;
+
+  if v_staff then
+    return coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', p.id,
+        'course_id', p.course_id,
+        'quiz_id', p.quiz_id,
+        'title', p.title,
+        'exam_date', p.exam_date,
+        'rooms', p.rooms,
+        'sort_mode', p.sort_mode,
+        'published', p.published,
+        'created_at', p.created_at,
+        'assignments', coalesce((
+          select jsonb_agg(jsonb_build_object(
+            'index_no', sa.index_no,
+            'full_name', sa.full_name,
+            'programme', sa.programme,
+            'stream', sa.stream,
+            'room_name', sa.room_name,
+            'seat_no', sa.seat_no
+          ) order by sa.room_name, sa.seat_no)
+          from public.exam_seat_assignments sa
+          where sa.plan_id = p.id
+        ), '[]'::jsonb)
+      ) order by p.created_at desc)
+      from public.exam_seating_plans p
+      where p.course_id = p_course
+    ), '[]'::jsonb);
+  else
+    return coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'plan_id', p.id,
+        'quiz_id', p.quiz_id,
+        'title', p.title,
+        'exam_date', p.exam_date,
+        'room_name', sa.room_name,
+        'seat_no', sa.seat_no
+      ) order by p.created_at desc)
+      from public.exam_seating_plans p
+      join public.exam_seat_assignments sa on sa.plan_id = p.id
+      where p.course_id = p_course
+        and p.published = true
+        and public.norm_index(sa.index_no) = v_norm
+    ), '[]'::jsonb);
+  end if;
+end;
+$$;
+
+create or replace function public.my_exam_seats() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_norm text := public.norm_index(public.my_index());
+begin
+  if v_norm = '' then return '[]'::jsonb; end if;
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'plan_id', p.id,
+      'course_id', p.course_id,
+      'course_code', c.code,
+      'quiz_id', p.quiz_id,
+      'title', p.title,
+      'exam_date', p.exam_date,
+      'room_name', sa.room_name,
+      'seat_no', sa.seat_no
+    ) order by p.created_at desc)
+    from public.exam_seat_assignments sa
+    join public.exam_seating_plans p on p.id = sa.plan_id
+    join public.courses c on c.id = p.course_id
+    where p.published = true
+      and c.archived = false
+      and public.norm_index(sa.index_no) = v_norm
+  ), '[]'::jsonb);
+end;
+$$;
+
+-- 17E. Direct Manual Roll-Call Session (No Projector Code)
+create or replace function public.start_manual_rollcall(
+  p_course  uuid,
+  p_title   text,
+  p_streams text[] default '{}',
+  p_classes text[] default '{}'
+) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare v uuid;
+begin
+  perform public.require_staff(p_course);
+  insert into public.attendance_sessions (course_id, title, streams, opens_at, closes_at, ask_row, classes)
+  values (
+    p_course,
+    coalesce(nullif(btrim(p_title), ''), 'Roll-call — ' || to_char(now(), 'Dy DD Mon')),
+    case when cardinality(coalesce(p_classes, '{}')) > 0 then '{}' else coalesce(p_streams, '{}') end,
+    now(),
+    now(),
+    false,
+    coalesce(p_classes, '{}')
+  )
+  returning id into v;
+  perform public.log_course_audit(
+    p_course,
+    'attendance_manual_rollcall',
+    format('Started manual roll-call "%s"', coalesce(nullif(btrim(p_title), ''), 'Roll-call')),
+    jsonb_build_object('session_id', v)
+  );
+  return v;
+end;
+$$;
+
+do $$
+declare f text;
+begin
+  foreach f in array array[
+    'save_to_question_bank(uuid, text)',
+    'list_reusable_questions(uuid)',
+    'import_questions_to_quiz(uuid, jsonb)',
+    'promote_assignment_exemplar(uuid, text, text)',
+    'remove_assignment_exemplar(uuid)',
+    'course_assignment_exemplars(uuid)',
+    'create_booking_event(uuid, text, text, text, uuid, boolean, timestamptz, jsonb)',
+    'delete_booking_event(uuid)',
+    'course_booking_events(uuid)',
+    'book_slot(uuid, text, jsonb)',
+    'cancel_slot_booking(uuid)',
+    'my_upcoming_slots()',
+    'save_exam_seating_plan(uuid, uuid, text, timestamptz, jsonb, text, boolean, jsonb, uuid)',
+    'delete_exam_seating_plan(uuid)',
+    'course_exam_seating(uuid)',
+    'my_exam_seats()',
+    'start_manual_rollcall(uuid, text, text[], text[])'
+  ]
+  loop
+    execute format('revoke execute on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated', f);
+  end loop;
+end $$;

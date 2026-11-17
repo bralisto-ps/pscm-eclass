@@ -1,10 +1,11 @@
 import AIGeneratorModal from "../../../components/AIGeneratorModal.jsx";
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { run, supabase } from '../../../lib/supabase.js';
+import { rpc, run, supabase } from '../../../lib/supabase.js';
 import { fmtDateTime } from '../../../lib/format.js';
 import Icon from '../../../components/Icon.jsx';
-import { Confirm, Empty, ErrorNote, Loading, useAction, useLoad } from '../../../components/ui.jsx';
+import { Confirm, Empty, ErrorNote, Loading, useAction, useLoad, useToast } from '../../../components/ui.jsx';
+import ExamSeatingModal from '../../../components/ExamSeatingModal.jsx';
 import QuestionBank from './QuestionBank.jsx';
 import { shareWhatsApp } from '../../../lib/share.js';
 
@@ -32,14 +33,70 @@ export default function QuizzesTab({ course, ta }) {
 
 function QuizList({ course, ta }) {
   const navigate = useNavigate();
+  const toast = useToast();
   const [act, busy] = useAction();
   const [removing, setRemoving] = useState(null);
   const [aiModal, setAiModal] = useState(false);
+  const [seatingQuiz, setSeatingQuiz] = useState(null);
   const { data, error, loading, reload } = useLoad(
     () => run(supabase.from('quizzes').select(`*, ${ta ? '' : 'questions(count), '}attempts(count), quiz_windows(programme), quiz_access(count)`)
       .eq('course_id', course.id).order('created_at', { ascending: false })),
     [course.id],
   );
+
+  async function createWeakTopicsPractice() {
+    const created = await act(async () => {
+      const bank = await rpc('list_reusable_questions', { p_course: course.id });
+      const past = (bank?.past || []).filter((q) => q.course_id === course.id && q.attempts_count > 0);
+      let weak = past.filter((q) => Number(q.avg_pct) < 65);
+      if (!weak.length) weak = past.filter((q) => Number(q.avg_pct) < 75);
+      if (!weak.length) {
+        throw new Error('No low-scoring questions (<65% pass rate) found in submitted quizzes for this course yet.');
+      }
+      const picked = weak
+        .sort((a, b) => Number(a.avg_pct) - Number(b.avg_pct))
+        .slice(0, 15);
+      const quiz = await run(
+        supabase
+          .from('quizzes')
+          .insert({
+            course_id: course.id,
+            title: `Weak Topics Practice (${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })})`,
+            duration_minutes: Math.max(15, picked.length * 2),
+            is_practice: true,
+            lockdown: false,
+            shuffle_questions: true,
+            shuffle_options: true,
+          })
+          .select()
+          .single(),
+      );
+      await rpc('import_questions_to_quiz', {
+        p_quiz: quiz.id,
+        p_items: picked.map((it) => ({
+          kind: it.kind,
+          prompt: it.prompt,
+          options: it.options || [],
+          answer: it.answer || {},
+          params: it.params || {},
+          formula: it.formula || null,
+          unit: it.unit || '',
+          decimals: it.decimals ?? 2,
+          tolerance: it.tolerance ?? 0,
+          tolerance_type: it.tolerance_type || 'abs',
+          marks: it.marks ?? 1,
+          explanation: it.explanation || '',
+          topic: it.topic || '',
+          image_path: it.image_path || null,
+        })),
+      });
+      return { quiz, count: picked.length };
+    });
+    if (created?.quiz) {
+      toast(`Created practice quiz with ${created.count} weak-topic question${created.count === 1 ? '' : 's'}.`);
+      navigate(`/teach/quiz/${created.quiz.id}`);
+    }
+  }
 
   async function create() {
     const q = await act(() =>
@@ -87,6 +144,9 @@ function QuizList({ course, ta }) {
               onClick={() => setAiModal(true)}
             >
               <Icon name="quiz" size={16} /> Generate Quiz from Notes
+            </button>
+            <button type="button" className="btn" onClick={createWeakTopicsPractice} disabled={busy} title="Spin up an ungraded practice quiz from questions with <65% pass rate">
+              <Icon name="activity" size={16} /> Practice from weak topics
             </button>
             <button type="button" className="btn" onClick={create} disabled={busy}>
               <Icon name="plus" /> New manual quiz
@@ -155,6 +215,7 @@ function QuizList({ course, ta }) {
                       <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
                         <Link to={`/teach/quiz/${q.id}/results`} className="btn btn-sm">Results</Link>
                         {!ta && <Link to={`/teach/quiz/${q.id}`} className="btn btn-sm btn-ghost">Edit</Link>}
+                        <button type="button" className="btn btn-sm btn-ghost" title="Assign exam halls & seats" onClick={() => setSeatingQuiz(q)}><Icon name="grid" size={14} /> Seating</button>
                         {q.published && <button type="button" className="icon-btn plain" title="Share on WhatsApp" aria-label="Share on WhatsApp"
                           onClick={() => shareWhatsApp(`*${course.code}: ${q.title}*\n${q.opens_at ? `Opens ${fmtDateTime(q.opens_at)}` : 'Open now'}${q.closes_at ? `, closes ${fmtDateTime(q.closes_at)}` : ''} · ${q.duration_minutes} minutes`)}>
                           <Icon name="megaphone" /></button>}
@@ -170,6 +231,9 @@ function QuizList({ course, ta }) {
         </div>
       )}
 
+      {seatingQuiz && (
+        <ExamSeatingModal course={course} quiz={seatingQuiz} onClose={() => setSeatingQuiz(null)} />
+      )}
       {removing && (
         <Confirm
           title="Delete this quiz?"

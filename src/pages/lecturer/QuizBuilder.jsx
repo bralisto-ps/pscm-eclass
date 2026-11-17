@@ -1,4 +1,5 @@
 import AIGeneratorModal from "../../components/AIGeneratorModal.jsx";
+import QuestionBankModal from "../../components/QuestionBankModal.jsx";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
@@ -60,6 +61,7 @@ export default function QuizBuilder() {
   const [removing, setRemoving] = useState(null);
   const [pasting, setPasting] = useState(false);
   const [aiGenerating, setAiGenerating] = useState(false);
+  const [bankOpen, setBankOpen] = useState(false);
   const [act, busy] = useAction();
 
   if (loading) return <Loading />;
@@ -86,6 +88,14 @@ export default function QuizBuilder() {
       await run(supabase.from('questions').update({ position: pa }).eq('id', b.id));
     });
     reload();
+  }
+
+  async function saveToBank(q) {
+    const id = await act(
+      () => rpc('save_to_question_bank', { p_question: q.id, p_difficulty: 'medium' }),
+      'Question saved to your personal Question Bank.',
+    );
+    return id;
   }
 
   async function remove() {
@@ -147,6 +157,7 @@ export default function QuizBuilder() {
                     <span className="small muted nowrap">{fmtNumber(q.marks)} mark{Number(q.marks) === 1 ? '' : 's'}</span>
                     <button type="button" className="icon-btn plain" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}><Icon name="arrowUp" /></button>
                     <button type="button" className="icon-btn plain" aria-label="Move down" disabled={i === questions.length - 1} onClick={() => move(i, 1)}><Icon name="arrowDown" /></button>
+                    <button type="button" className="icon-btn plain" title="Save to Question Bank" aria-label="Save to Question Bank" onClick={() => saveToBank(q)} disabled={busy}><Icon name="bookmark" /></button>
                     <button type="button" className="icon-btn plain" aria-label="Edit question" onClick={() => setEditing(q.id)}><Icon name="edit" /></button>
                     <button type="button" className="icon-btn plain" aria-label="Delete question" onClick={() => setRemoving(q)}><Icon name="trash" /></button>
                   </div>
@@ -176,6 +187,7 @@ export default function QuizBuilder() {
                     </button>
                   ))}
                   <button type="button" className="btn btn-sm btn-secondary" onClick={() => setAiGenerating(true)}><Icon name="sparkles" size={16} /> Generate with AI…</button>
+                  <button type="button" className="btn btn-sm" onClick={() => setBankOpen(true)}><Icon name="bookmark" size={16} /> Import from Bank / Past Quizzes</button>
                   <button type="button" className="btn btn-sm btn-ghost" onClick={() => setPasting(true)}>
                     <Icon name="upload" size={16} /> Import / Paste from Word or Excel…
                   </button>
@@ -198,6 +210,15 @@ export default function QuizBuilder() {
       )}
       {pasting && <UniversalImportModal quizId={quiz.id} start={(questions.at(-1)?.position ?? 0) + 1} onClose={() => setPasting(false)} onDone={reload} />}
       {aiGenerating && <AIGeneratorModal quizId={quiz.id} start={(questions.at(-1)?.position ?? 0) + 1} onClose={() => setAiGenerating(false)} onDone={reload} />}
+      {bankOpen && (
+        <QuestionBankModal
+          quizId={quiz.id}
+          courseId={quiz.courses.id}
+          existingPrompts={questions.map((x) => x.prompt)}
+          onImported={reload}
+          onClose={() => setBankOpen(false)}
+        />
+      )}
     </>
   );
 }

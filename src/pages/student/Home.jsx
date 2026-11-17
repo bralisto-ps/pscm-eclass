@@ -34,12 +34,14 @@ export default function StudentHome() {
   const { profile } = useAuth();
   const toast = useToast();
   const { data, error, loading, reload } = useLoad(async () => {
-    const [courses, upcoming, news, openAtt, cohort] = await Promise.all([
+    const [courses, upcoming, news, openAtt, cohort, mySlots, mySeats] = await Promise.all([
       run(supabase.from('courses').select('id, code, title, color, semester, description').eq('archived', false).order('code')),
       rpc('my_upcoming'),
       run(supabase.from('announcements').select('id, title, body, created_at, pinned, audience, courses(code, color)').order('created_at', { ascending: false }).limit(15)).catch(() => run(supabase.from('announcements').select('id, title, body, created_at, courses(code, color)').order('created_at', { ascending: false }).limit(5))),
       rpc('my_open_attendance'),
       rpc('my_cohort').catch(() => null),
+      rpc('my_upcoming_slots').catch(() => []),
+      rpc('my_exam_seats').catch(() => []),
     ]);
     let filteredUpcoming = upcoming || [];
     if (cohort) {
@@ -59,7 +61,14 @@ export default function StudentHome() {
     const filteredNews = sortAnnouncementsPinnedFirst(
       (news || []).filter((n) => announcementMatchesStudent(n, cohort))
     ).slice(0, 6);
-    return { courses, upcoming: filteredUpcoming, news: filteredNews, openAtt: openAtt || [] };
+    return {
+      courses,
+      upcoming: filteredUpcoming,
+      news: filteredNews,
+      openAtt: openAtt || [],
+      slots: Array.isArray(mySlots) ? mySlots : [],
+      seats: Array.isArray(mySeats) ? mySeats : [],
+    };
   }, []);
 
   const firstName = (profile.full_name || '').split(' ')[0];
@@ -136,6 +145,49 @@ export default function StudentHome() {
                 </section>
               )}
 
+              {((data.slots?.length || 0) > 0 || (data.seats?.length || 0) > 0) && (
+                <section className="card-flush">
+                  <div className="card-head">
+                    <h2>Booked slots &amp; exam halls</h2>
+                    <span className="small muted">Personal schedule</span>
+                  </div>
+                  {(data.slots || []).map((sl) => (
+                    <Link
+                      key={sl.slot_id}
+                      to={`/course/${sl.course_id}?tab=slots`}
+                      className="list-row"
+                      style={{ textDecoration: 'none', color: 'inherit', gap: 12 }}
+                    >
+                      <span className="badge badge-teal">{sl.course_code}</span>
+                      <div className="list-main">
+                        <span className="title">{sl.title}{sl.syndicate_name ? ` · ${sl.syndicate_name}` : ''}</span>
+                        <span className="tiny muted">
+                          {fmtDateTime(sl.starts_at)}{sl.room ? ` · ${sl.room}` : ''}
+                        </span>
+                      </div>
+                      <Icon name="chevronRight" size={15} style={{ color: 'var(--muted)' }} />
+                    </Link>
+                  ))}
+                  {(data.seats || []).map((st) => (
+                    <Link
+                      key={st.plan_id}
+                      to={`/course/${st.course_id}?tab=quizzes`}
+                      className="list-row"
+                      style={{ textDecoration: 'none', color: 'inherit', gap: 12 }}
+                    >
+                      <span className="badge badge-plum">{st.course_code}</span>
+                      <div className="list-main">
+                        <span className="title">{st.title || 'Exam Seating'}</span>
+                        <span className="tiny muted">
+                          <strong>{st.room_name}</strong> · Seat <strong className="mono">#{st.seat_no}</strong>
+                          {st.exam_date ? ` · ${fmtDateTime(st.exam_date)}` : ''}
+                        </span>
+                      </div>
+                      <Icon name="chevronRight" size={15} style={{ color: 'var(--muted)' }} />
+                    </Link>
+                  ))}
+                </section>
+              )}
               <section>
                 <div className="section-title">
                   <h2>My courses</h2>
@@ -232,6 +284,7 @@ export default function StudentHome() {
                 {visibleDeadlines.map((u) => {
                   const d = dayChip(u.due);
                   const bucket = urgencyBucket(u.due);
+                  const seat = u.kind === 'quiz' ? (data.seats || []).find((st) => st.quiz_id === u.id) : null;
                   const gcal = googleCalendarUrl(u, typeof window !== 'undefined' ? window.location.origin : 'https://eclasspscm.com');
                   return (
                     <div key={u.kind + u.id} className="list-row" style={{ gap: 10 }}>
@@ -257,6 +310,7 @@ export default function StudentHome() {
                             <span style={{ color: bucket === 'urgent' ? 'var(--red-ink)' : undefined, fontWeight: bucket === 'urgent' ? 600 : undefined }}>
                               {relative(u.due)}
                             </span>
+                            {seat ? ` · ${seat.room_name} #${seat.seat_no}` : ''}
                           </span>
                         </div>
                       </Link>

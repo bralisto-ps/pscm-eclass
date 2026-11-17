@@ -7,6 +7,7 @@ import QuestionDiagram from '../../components/QuestionDiagram.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import { ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
+import PscmToolkitModal from '../../components/PscmToolkit.jsx';
 
 const LETTERS = 'ABCDEFGHIJ';
 
@@ -58,6 +59,7 @@ export default function ReviewQuiz() {
     }
   }
   const [showFlashcards, setShowFlashcards] = useState(false);
+  const [showToolkit, setShowToolkit] = useState(false);
 
   return (
     <>
@@ -73,6 +75,14 @@ export default function ReviewQuiz() {
               <Icon name="layers" size={16} /> Study as Flashcards
             </button>
           )}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setShowToolkit(true)}
+            title="Verify EOQ, Safety Stock, ABC, Landed Cost & Cash Cycle formulas"
+          >
+            <Icon name="calculator" size={16} /> PSCM Toolkit
+          </button>
           <button type="button" className="btn" onClick={() => navigate(-1)}>
             <Icon name="chevronLeft" /> Back
           </button>
@@ -283,6 +293,9 @@ export default function ReviewQuiz() {
           questions={data.questions}
           onClose={() => setShowFlashcards(false)}
         />
+      )}
+      {showToolkit && (
+        <PscmToolkitModal onClose={() => setShowToolkit(false)} />
       )}
     </>
   );

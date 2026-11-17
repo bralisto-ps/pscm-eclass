@@ -7,6 +7,7 @@ import { fmtBytes, fmtDateTime, hostOf, relative } from '../../../lib/format.js'
 import { isItemLocked, toLocalInputValue } from '../../../lib/courseMeta.js';
 import Icon from '../../../components/Icon.jsx';
 import BulkNudgeModal from '../../../components/BulkNudgeModal.jsx';
+import PscmToolkitModal from '../../../components/PscmToolkit.jsx';
 import { Bar, Confirm, Empty, ErrorNote, Field, KindTag, Loading, Modal, Tabs, useAction, useLoad, useToast } from '../../../components/ui.jsx';
 
 const MAX_MB = 25;
@@ -45,6 +46,7 @@ export default function MaterialsTab({ course }) {
   const [removing, setRemoving] = useState(null);
   const [previewing, setPreviewing] = useState(null);
   const [viewersOf, setViewersOf] = useState(null);
+  const [toolkitOpen, setToolkitOpen] = useState(false);
   const [act, busy] = useAction();
 
   if (loading) return <Loading />;
@@ -79,9 +81,14 @@ export default function MaterialsTab({ course }) {
           Organise materials by week. Files you upload here use your total {STORAGE_LIMIT_LABEL} storage
           ({fmtBytes(usedBytes) || '0 KB'} used) — for videos, upload to YouTube (unlisted) or Google Drive and add the link instead.
         </p>
-        <button type="button" className="btn btn-primary" onClick={() => setEditingWeek({ week_no: nextWeek })}>
-          <Icon name="plus" /> Add week
-        </button>
+        <div className="row-wrap" style={{ gap: 8 }}>
+          <button type="button" className="btn" onClick={() => setToolkitOpen(true)}>
+            <Icon name="calculator" size={16} /> PSCM Toolkit
+          </button>
+          <button type="button" className="btn btn-primary" onClick={() => setEditingWeek({ week_no: nextWeek })}>
+            <Icon name="plus" /> Add week
+          </button>
+        </div>
       </div>
 
       {data.modules.length === 0 && general.length === 0 && (
@@ -158,6 +165,9 @@ export default function MaterialsTab({ course }) {
           material={viewersOf}
           onClose={() => setViewersOf(null)}
         />
+      )}
+      {toolkitOpen && (
+        <PscmToolkitModal courseCode={course.code} onClose={() => setToolkitOpen(false)} />
       )}
       {removing && (
         <Confirm

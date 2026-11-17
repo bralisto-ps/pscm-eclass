@@ -51,22 +51,50 @@ function synAlphaLabel(n) {
   return `Syndicate ${out}`;
 }
 
+const DEFAULT_PSCM_SNIPPETS = [
+  { id: 'def-inco', label: 'Incoterms 2020', body: 'Clarify the applicable Incoterms 2020 rule (cost, risk, and insurance transfer points).', builtin: true },
+  { id: 'def-eoq', label: 'EOQ steps', body: 'Show all EOQ derivation steps, including annual demand, ordering cost, and holding cost.', builtin: true },
+  { id: 'def-ss', label: 'Safety stock', body: 'Include safety stock and reorder point calculations factoring in demand variability and lead time.', builtin: true },
+  { id: 'def-risk', label: 'Supplier risk', body: 'Strengthen your supplier risk evaluation with specific contingency and dual-sourcing options.', builtin: true },
+  { id: 'def-exec', label: 'Strong summary', body: 'Well-structured executive summary with clear, quantified procurement recommendations.', builtin: true },
+];
+
 export default function AssignmentMarking() {
   const { assignmentId } = useParams();
   const { isTA, profile } = useAuth();
+  const toast = useToast();
   const { data, error, loading, reload, setData } = useLoad(async () => {
     const a = await run(supabase.from('assignments').select('*, courses(id, code, title)').eq('id', assignmentId).single());
-    const [students, subs, peerData, reviews] = await Promise.all([
+    const [students, subs, peerData, reviews, courseExemplars, snippetRes, bookingEvents] = await Promise.all([
       rpcAll('course_students', { p_course: a.course_id }),
       allSubmissions(assignmentId),
       rpc('assignment_peer_reviews', { p_assignment: assignmentId }).catch(() => ({ reviews: [], _missing: true })),
       rpc('course_mark_reviews', { p_course: a.course_id, p_assignment: assignmentId }).catch(() => []),
+      rpc('course_assignment_exemplars', { p_course: a.course_id }).catch(() => []),
+      supabase.from('grading_snippets').select('id, label, body').order('created_at', { ascending: false }).then((r) => r.data || [], () => []),
+      rpc('course_booking_events', { p_course: a.course_id }).catch(() => []),
     ]);
     const byIndex = new Map(subs.map((s) => [s.profiles?.index_no, s]));
     const rows = students.map((st) => ({ ...st, sub: byIndex.get(st.index_no) || null }));
     subs.filter((s) => !students.some((st) => st.index_no === s.profiles?.index_no))
       .forEach((s) => rows.push({ index_no: s.profiles?.index_no, full_name: s.profiles?.full_name, activated: true, sub: s }));
-    return { a, rows, peerReviews: peerData?.reviews || [], peerMissingRpc: Boolean(peerData?._missing), reviews: Array.isArray(reviews) ? reviews : [] };
+    const localSnipKey = `pscm_grading_snippets:${profile?.id || 'staff'}`;
+    let localSnips = [];
+    try { localSnips = JSON.parse(localStorage.getItem(localSnipKey) || '[]'); } catch { localSnips = []; }
+    const dbSnips = Array.isArray(snippetRes) ? snippetRes : [];
+    const seenLabels = new Set(dbSnips.map((s) => s.label));
+    const customSnippets = [...dbSnips, ...localSnips.filter((s) => !seenLabels.has(s.label))];
+    const exemplars = (Array.isArray(courseExemplars) ? courseExemplars : []).filter((ex) => ex.assignment_id === assignmentId);
+    return {
+      a,
+      rows,
+      peerReviews: peerData?.reviews || [],
+      peerMissingRpc: Boolean(peerData?._missing),
+      reviews: Array.isArray(reviews) ? reviews : [],
+      exemplars,
+      customSnippets,
+      bookingEvents: Array.isArray(bookingEvents) ? bookingEvents : [],
+    };
   }, [assignmentId]);
 
   const [filter, setFilter] = useState('tomark');
@@ -292,6 +320,38 @@ export default function AssignmentMarking() {
     act(() => openStoredFile('materials', doc.path));
   }
 
+  async function addSnippet(label, body) {
+    const cleanLabel = label.trim();
+    const cleanBody = body.trim();
+    if (!cleanLabel || !cleanBody) return;
+    let savedRow = { id: `local-${Date.now()}`, label: cleanLabel, body: cleanBody, local: true };
+    try {
+      const { data: inserted, error: insErr } = await supabase
+        .from('grading_snippets')
+        .insert({ owner_id: profile?.id, label: cleanLabel, body: cleanBody })
+        .select('id, label, body')
+        .single();
+      if (!insErr && inserted) savedRow = inserted;
+    } catch { /* fallback to localStorage */ }
+    try {
+      const k = `pscm_grading_snippets:${profile?.id || 'staff'}`;
+      const cur = JSON.parse(localStorage.getItem(k) || '[]');
+      localStorage.setItem(k, JSON.stringify([savedRow, ...cur.filter((x) => x.label !== cleanLabel)].slice(0, 30)));
+    } catch { /* ignore */ }
+    setData((d) => ({ ...d, customSnippets: [savedRow, ...(d.customSnippets || []).filter((x) => x.id !== savedRow.id && x.label !== cleanLabel)] }));
+    toast(`Saved feedback snippet "${cleanLabel}".`);
+  }
+  async function deleteSnippet(snip) {
+    try {
+      if (snip.id && !String(snip.id).startsWith('local-')) {
+        await supabase.from('grading_snippets').delete().eq('id', snip.id);
+      }
+      const k = `pscm_grading_snippets:${profile?.id || 'staff'}`;
+      const cur = JSON.parse(localStorage.getItem(k) || '[]');
+      localStorage.setItem(k, JSON.stringify(cur.filter((x) => x.id !== snip.id && x.label !== snip.label)));
+    } catch { /* ignore */ }
+    setData((d) => ({ ...d, customSnippets: (d.customSnippets || []).filter((x) => x.id !== snip.id) }));
+  }
   function copySql() {
     navigator.clipboard?.writeText?.(ALL_NEW_FEATURES_SQL);
     setCopiedSql(true);
@@ -373,6 +433,30 @@ export default function AssignmentMarking() {
           </div>
         )}
 
+        {data.exemplars?.length > 0 && (
+          <div className="notice notice-info stack-sm" style={{ padding: '10px 14px' }}>
+            <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+              <span className="small">
+                <strong><Icon name="award" size={14} /> {data.exemplars.length} Anonymized Model Exemplar{data.exemplars.length === 1 ? '' : 's'}</strong>{' '}
+                {a.results_released ? '(visible to students under this assignment)' : '(will become visible to students when you release marks)'}
+              </span>
+            </div>
+            <div className="row-wrap" style={{ gap: 6 }}>
+              {data.exemplars.map((ex) => (
+                <span key={ex.id} className="badge badge-teal" style={{ gap: 6 }}>
+                  {ex.title} ({ex.marks !== null && ex.marks !== undefined ? `${fmtNumber(ex.marks)}/${fmtNumber(a.max_marks)}` : 'Exemplar'})
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    style={{ padding: '0 3px', minHeight: 16, fontSize: 12, lineHeight: 1 }}
+                    aria-label={`Remove ${ex.title}`}
+                    onClick={() => act(async () => { await rpc('remove_assignment_exemplar', { p_exemplar: ex.id }); reload(); }, 'Exemplar removed.')}
+                  >×</button>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         <GroupFilters rows={enrichedRows} value={group} onChange={setGroup} />
         <GroupSummaryTable summary={summary} doneLabel="Marked" />
 
@@ -567,6 +651,11 @@ export default function AssignmentMarking() {
           blindMode={blindMode}
           blindMap={blindMap}
           hasNext={shown.slice(marking + 1).some((r) => r.sub || r._synLeaderSub)}
+          exemplars={data.exemplars || []}
+          snippets={[...(data.customSnippets || []), ...DEFAULT_PSCM_SNIPPETS]}
+          onAddSnippet={addSnippet}
+          onDeleteSnippet={deleteSnippet}
+          onExemplarChanged={reload}
           onShowSql={() => setShowSql(true)}
           onClose={() => setMarking(null)}
           onSaved={(patch, next, reloadFull) => {
@@ -600,6 +689,7 @@ export default function AssignmentMarking() {
           a={a}
           assignMeta={assignMeta}
           allRows={enrichedRows}
+          bookingEvents={data.bookingEvents || []}
           onClose={() => setGradingPres(false)}
           onSaved={reload}
         />
@@ -668,13 +758,19 @@ export default function AssignmentMarking() {
   );
 }
 
-function MarkModal({ a, assignMeta, allRows, row, blindMode = false, blindMap = null, hasNext, onShowSql, onClose, onSaved }) {
+function MarkModal({ a, assignMeta, allRows, row, blindMode = false, blindMap = null, hasNext, exemplars = [], snippets = DEFAULT_PSCM_SNIPPETS, onAddSnippet, onDeleteSnippet, onExemplarChanged, onShowSql, onClose, onSaved }) {
   const toast = useToast();
   const [act] = useAction();
   const effectiveSub = row.sub || row._synLeaderSub;
   const [marks, setMarks] = useState(row.sub?.marks ?? '');
   const [feedback, setFeedback] = useState(row.sub?.feedback || '');
   const [busy, setBusy] = useState(false);
+  const [addingSnip, setAddingSnip] = useState(false);
+  const [snipLabel, setSnipLabel] = useState('');
+  const [exOpen, setExOpen] = useState(false);
+  const [exTitle, setExTitle] = useState('Model A-Grade Submission');
+  const [exNote, setExNote] = useState('');
+  const [exBusy, setExBusy] = useState(false);
 
   const syndicate = row._syn;
   const syndicatePeers = useMemo(() => {
@@ -986,17 +1082,190 @@ function MarkModal({ a, assignMeta, allRows, row, blindMode = false, blindMap = 
         <input className="input mono" type="number" min="0" max={a.max_marks} step="0.5" style={{ maxWidth: 160 }} value={marks} onChange={(e) => setMarks(e.target.value)} autoFocus />
       </Field>
 
+      <div className="stack-sm">
+        <div className="between" style={{ flexWrap: 'wrap', gap: 6 }}>
+          <span className="eyebrow">Quick feedback snippets</span>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            onClick={() => setAddingSnip((v) => !v)}
+          >
+            <Icon name="bookmark" size={13} /> {addingSnip ? 'Cancel' : 'Save current feedback as snippet'}
+          </button>
+        </div>
+        {addingSnip && (
+          <div className="row-wrap" style={{ gap: 6, padding: '8px 10px', background: 'var(--surface-2)', borderRadius: 8, border: '1px solid var(--line)' }}>
+            <input
+              className="input"
+              style={{ flex: 1, minWidth: 160, minHeight: 34 }}
+              value={snipLabel}
+              onChange={(e) => setSnipLabel(e.target.value)}
+              placeholder="Short chip label (e.g. Missing lead time)"
+            />
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              disabled={!snipLabel.trim() || !feedback.trim()}
+              onClick={async () => {
+                await onAddSnippet?.(snipLabel, feedback);
+                setSnipLabel('');
+                setAddingSnip(false);
+              }}
+            >
+              Save chip
+            </button>
+          </div>
+        )}
+        <div className="row-wrap" style={{ gap: 6 }}>
+          {snippets.map((sn) => (
+            <span key={sn.id || sn.label} className="row" style={{ gap: 2 }}>
+              <button
+                type="button"
+                className="chip"
+                title={sn.body}
+                onClick={() => setFeedback((cur) => (cur.trim() ? `${cur.trimEnd()}\n• ${sn.body}` : sn.body))}
+              >
+                + {sn.label}
+              </button>
+              {!sn.builtin && onDeleteSnippet && (
+                <button
+                  type="button"
+                  className="btn-ghost tiny"
+                  style={{ minHeight: 24, padding: '0 4px' }}
+                  aria-label={`Delete snippet ${sn.label}`}
+                  onClick={() => onDeleteSnippet(sn)}
+                >×</button>
+              )}
+            </span>
+          ))}
+        </div>
+      </div>
       <Field label="Feedback to the student" hint="shown when you release marks">
         <textarea className="textarea" rows={4} value={feedback} onChange={(e) => setFeedback(e.target.value)} />
       </Field>
+      {effectiveSub?.id && !isInClass && (() => {
+        const existingEx = exemplars.find((ex) => ex.submission_id === effectiveSub.id);
+        return (
+          <div className="stack-sm" style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+            {existingEx ? (
+              <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                <div className="row" style={{ gap: 6 }}>
+                  <Icon name="award" size={15} style={{ color: 'var(--teal)' }} />
+                  <span className="small">Promoted as anonymized exemplar: <strong>{existingEx.title}</strong></span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={exBusy}
+                  onClick={async () => {
+                    setExBusy(true);
+                    try {
+                      await rpc('remove_assignment_exemplar', { p_exemplar: existingEx.id });
+                      toast('Exemplar removed.');
+                      onExemplarChanged?.();
+                    } catch (e) {
+                      toast(e.message, 'error');
+                    } finally {
+                      setExBusy(false);
+                    }
+                  }}
+                >
+                  Remove exemplar
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                  <span className="small muted">Share this submission (stripped of student name &amp; index) as a study benchmark?</span>
+                  <button type="button" className="btn btn-sm" onClick={() => setExOpen((v) => !v)}>
+                    <Icon name="award" size={14} /> {exOpen ? 'Hide' : 'Promote as Anonymized Exemplar'}
+                  </button>
+                </div>
+                {exOpen && (
+                  <div className="stack-sm" style={{ paddingTop: 6, borderTop: '1px solid var(--line-2)' }}>
+                    <Field label="Exemplar label">
+                      <input className="input" value={exTitle} onChange={(e) => setExTitle(e.target.value)} placeholder="e.g. Model A-Grade Case Study" />
+                    </Field>
+                    <Field label="Why this is a model answer" hint="optional note shown to students">
+                      <input className="input" value={exNote} onChange={(e) => setExNote(e.target.value)} placeholder="e.g. Clear EOQ sensitivity table & practical Incoterms choice." />
+                    </Field>
+                    <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                      <span className="tiny muted">Student identity is completely stripped and only visible after marks are released.</span>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-primary"
+                        disabled={exBusy || !exTitle.trim()}
+                        onClick={async () => {
+                          setExBusy(true);
+                          try {
+                            await rpc('promote_assignment_exemplar', {
+                              p_submission: effectiveSub.id,
+                              p_title: exTitle.trim(),
+                              p_note: exNote.trim(),
+                            });
+                            toast('Published as anonymized model exemplar.');
+                            setExOpen(false);
+                            onExemplarChanged?.();
+                          } catch (e) {
+                            toast(e.message || 'Could not publish exemplar (ensure Section 17 SQL is applied).', 'error');
+                          } finally {
+                            setExBusy(false);
+                          }
+                        }}
+                      >
+                        {exBusy ? 'Publishing…' : 'Publish Anonymized Exemplar'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })()}
     </Modal>
   );
 }
 
 
-function PresentationModal({ a, assignMeta, allRows, onClose, onSaved }) {
+function PresentationModal({ a, assignMeta, allRows, bookingEvents = [], onClose, onSaved }) {
   const toast = useToast();
-  const groups = assignMeta.syndicate.groups || [];
+  const [bookedFirst, setBookedFirst] = useState(true);
+  const slotBySyndicateId = useMemo(() => {
+    const map = new Map();
+    const rawGroups = assignMeta.syndicate.groups || [];
+    const sortedEvs = [...bookingEvents].sort((e1, e2) => {
+      const s1 = e1.assignment_id === a.id ? 0 : e1.kind === 'presentation' ? 1 : 2;
+      const s2 = e2.assignment_id === a.id ? 0 : e2.kind === 'presentation' ? 1 : 2;
+      return s1 - s2;
+    });
+    for (const ev of sortedEvs) {
+      for (const sl of (ev.slots || [])) {
+        if (!sl.booked) continue;
+        for (const g of rawGroups) {
+          if (map.has(g.id)) continue;
+          const synMatch = sl.syndicate_name && sl.syndicate_name.trim().toLowerCase() === g.name.trim().toLowerCase();
+          const memMatch = sl.booked_index_no && g.members.includes(normalizeIndexNo(sl.booked_index_no));
+          if (synMatch || memMatch) {
+            map.set(g.id, { ...sl, eventTitle: ev.title, room: sl.room || ev.location });
+          }
+        }
+      }
+    }
+    return map;
+  }, [bookingEvents, assignMeta.syndicate.groups, a.id]);
+  const groups = useMemo(() => {
+    const raw = assignMeta.syndicate.groups || [];
+    if (!bookedFirst || slotBySyndicateId.size === 0) return raw;
+    return [...raw].sort((g1, g2) => {
+      const s1 = slotBySyndicateId.get(g1.id);
+      const s2 = slotBySyndicateId.get(g2.id);
+      if (s1 && !s2) return -1;
+      if (!s1 && s2) return 1;
+      if (s1 && s2) return new Date(s1.starts_at).getTime() - new Date(s2.starts_at).getTime();
+      return 0;
+    });
+  }, [assignMeta.syndicate.groups, bookedFirst, slotBySyndicateId]);
   const byNorm = useMemo(() => new Map(allRows.map((r) => [normalizeIndexNo(r.index_no), r])), [allRows]);
 
   const initialIdx = useMemo(() => {
@@ -1148,13 +1417,22 @@ function PresentationModal({ a, assignMeta, allRows, onClose, onSaved }) {
               }).length;
               return (
                 <option key={g.id || idx} value={idx}>
-                  {g.name} ({markedMembers}/{g.members.length} marked)
+                  {g.name}{slotBySyndicateId.get(g.id) ? ` · ${fmtDateTime(slotBySyndicateId.get(g.id).starts_at)}` : ''} ({markedMembers}/{g.members.length} marked)
                 </option>
               );
             })}
           </select>
         </Field>
-        <div className="row" style={{ gap: 6, alignSelf: 'flex-end' }}>
+        <div className="row-wrap" style={{ gap: 6, alignSelf: 'flex-end' }}>
+          {slotBySyndicateId.size > 0 && (
+            <button
+              type="button"
+              className={`btn btn-sm ${bookedFirst ? 'btn-primary' : ''}`}
+              onClick={() => { setBookedFirst((v) => !v); setGroupIdx(0); }}
+            >
+              <Icon name="clock" size={13} /> {bookedFirst ? 'Ordered by slot' : 'Group order'}
+            </button>
+          )}
           <button type="button" className="btn btn-sm" disabled={groupIdx === 0} onClick={() => setGroupIdx((i) => Math.max(0, i - 1))}>← Prev</button>
           <button type="button" className="btn btn-sm" disabled={!hasNext} onClick={() => setGroupIdx((i) => Math.min(groups.length - 1, i + 1))}>Next →</button>
         </div>
@@ -1162,7 +1440,15 @@ function PresentationModal({ a, assignMeta, allRows, onClose, onSaved }) {
 
       <div className="stack-sm" style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--teal-50)', border: '1px solid var(--teal)' }}>
         <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <strong className="small" style={{ color: 'var(--teal-dark)' }}>{syndicate.name} · {peers.length} members</strong>
+          <div className="row-wrap" style={{ gap: 8 }}>
+            <strong className="small" style={{ color: 'var(--teal-dark)' }}>{syndicate.name} · {peers.length} members</strong>
+            {slotBySyndicateId.get(syndicate.id) && (
+              <span className="badge badge-blue">
+                <Icon name="clock" size={12} /> Booked: {fmtDateTime(slotBySyndicateId.get(syndicate.id).starts_at)}
+                {slotBySyndicateId.get(syndicate.id).room ? ` · ${slotBySyndicateId.get(syndicate.id).room}` : ''}
+              </span>
+            )}
+          </div>
           <label className="check" style={{ gap: 6 }}>
             <input type="checkbox" checked={customSplit} onChange={(e) => setCustomSplit(e.target.checked)} />
             <span className="tiny strong">Adjust individual member marks</span>

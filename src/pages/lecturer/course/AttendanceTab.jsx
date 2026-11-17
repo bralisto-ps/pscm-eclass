@@ -4,7 +4,8 @@ import { fmtDateTime, fmtFull, relative } from '../../../lib/format.js';
 import { openStoredFile } from '../../../lib/files.js';
 import { downloadWorkbook } from '../../../lib/sheets.js';
 import Icon from '../../../components/Icon.jsx';
-import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad } from '../../../components/ui.jsx';
+import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../../components/ui.jsx';
+import ExamSeatingModal from '../../../components/ExamSeatingModal.jsx';
 import { ALL_GROUPS, GroupFilters, matchesGroup } from '../../../components/Groups.jsx';
 import { SortSelect, SortTh } from '../../../components/SortBar.jsx';
 import { byNameIndex, compareNumber, compareText } from '../../../lib/sort.js';
@@ -37,6 +38,8 @@ export default function AttendanceTab({ course }) {
   }, [course.id]);
   const [live, setLive] = useState(null);
   const [starting, setStarting] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [seatingOpen, setSeatingOpen] = useState(false);
   const [viewing, setViewing] = useState(null);
   const [checking, setChecking] = useState(null);
   const [group, setGroup] = useState(ALL_GROUPS);
@@ -99,11 +102,14 @@ export default function AttendanceTab({ course }) {
             To catch anomalies: enforce <strong>GPS Geofencing</strong> to restrict check-ins strictly to students physically inside the hall, compare row numbers with head counts, use <strong>Spot check</strong> to verify random students, and inspect held check-ins where multiple students checked in from one device.
           </p>
         </div>
-        {openSession ? (
-          <button type="button" className="btn btn-primary" onClick={() => setLive(openSession.id)}><Icon name="eye" /> Show the open session</button>
-        ) : (
-          <button type="button" className="btn btn-primary" onClick={() => setStarting(true)}><Icon name="plus" /> Start attendance</button>
-        )}
+        <div className="row-wrap" style={{ gap: 8 }}>
+          {openSession ? (
+            <button type="button" className="btn btn-primary" onClick={() => setLive(openSession.id)}><Icon name="eye" /> Show the open session</button>
+          ) : (
+            <button type="button" className="btn btn-primary" onClick={() => setStarting(true)}><Icon name="plus" /> Start attendance</button>
+          )}
+          <button type="button" className="btn" onClick={() => setManualOpen(true)}><Icon name="clipboard" size={16} /> Quick Roll-Call (No Code)</button>
+        </div>
       </section>
 
 
@@ -178,6 +184,7 @@ export default function AttendanceTab({ course }) {
           <div className="row-wrap" style={{ gap: 8 }}>
             <button type="button" className="btn btn-sm" onClick={() => setPrinting('register')} disabled={!data.students.length}><Icon name="file" size={16} /> Print Register</button>
             <button type="button" className="btn btn-sm btn-primary" onClick={() => setPrinting('exam')} disabled={!data.students.length}><Icon name="printer" size={16} /> Exam Hall Sign-In Sheet</button>
+            <button type="button" className="btn btn-sm" onClick={() => setSeatingOpen(true)} disabled={!data.students.length}><Icon name="grid" size={16} /> Hall Seating</button>
             <button type="button" className="btn btn-sm" onClick={exportXlsx} disabled={!data.students.length}><Icon name="download" size={16} /> Export to Excel</button>
           </div>
         </div>
@@ -219,6 +226,20 @@ export default function AttendanceTab({ course }) {
       </section>
 
       {starting && <StartModal course={course} streams={data.streams} classes={data.classes} onClose={() => setStarting(false)} onStarted={(id) => { setStarting(false); setLive(id); reload(); }} />}
+      {manualOpen && (
+        <ManualRollCallModal
+          course={course}
+          streams={data.streams}
+          classes={data.classes}
+          onClose={() => setManualOpen(false)}
+          onStarted={(sess) => {
+            setManualOpen(false);
+            reload();
+            setViewing(sess);
+          }}
+        />
+      )}
+      {seatingOpen && <ExamSeatingModal course={course} onClose={() => setSeatingOpen(false)} />}
       {live && <LiveView sessionId={live} course={course} onClose={() => { setLive(null); reload(); }} />}
       {checking && <SessionCheck sessionId={checking} course={course} onClose={() => { setChecking(null); reload(); }} />}
       {viewing && <RegisterModal session={viewing} course={course} students={data.students} onClose={() => setViewing(null)} onChanged={reload} />}
@@ -637,11 +658,18 @@ function SessionCheck({ sessionId, course, onClose }) {
 
 function RegisterModal({ session, course, students, onClose, onChanged }) {
   const [act] = useAction();
+  const toast = useToast();
   const changed = useRef(false);
   const [q, setQ] = useState('');
-  const [present, setPresent] = useState(() => new Set(students.filter((s) => s.sessions.includes(session.id)).map((s) => s.index_no)));
-  const applicable = students.filter((s) => sessionFor(session, s));
-  const shown = applicable.filter((s) => !q.trim() || s.full_name.toLowerCase().includes(q.toLowerCase()) || s.index_no.toLowerCase().includes(q.toLowerCase()));
+  const [group, setGroup] = useState(ALL_GROUPS);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [present, setPresent] = useState(() => new Set(students.filter((s) => (s.sessions || []).includes(session.id)).map((s) => s.index_no)));
+  const applicable = useMemo(() => students.filter((s) => sessionFor(session, s)), [students, session]);
+  const shown = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    return applicable.filter((s) => matchesGroup(s, group)
+      && (!term || s.full_name.toLowerCase().includes(term) || s.index_no.toLowerCase().includes(term)));
+  }, [applicable, group, q]);
 
   async function toggle(s) {
     const on = !present.has(s.index_no);
@@ -656,6 +684,29 @@ function RegisterModal({ session, course, students, onClose, onChanged }) {
     else changed.current = true;
   }
 
+  async function bulkSetShown(on) {
+    const targets = shown.filter((s) => (on ? !present.has(s.index_no) : present.has(s.index_no)));
+    if (!targets.length) return;
+    setBulkBusy(true);
+    try {
+      for (let i = 0; i < targets.length; i += 8) {
+        const batch = targets.slice(i, i + 8);
+        await Promise.all(batch.map((s) => rpc('set_attendance', { p_session: session.id, p_index: s.index_no, p_present: on })));
+      }
+      setPresent((cur) => {
+        const next = new Set(cur);
+        targets.forEach((s) => { if (on) next.add(s.index_no); else next.delete(s.index_no); });
+        return next;
+      });
+      changed.current = true;
+      toast(on ? `Marked ${targets.length} student(s) present.` : `Cleared ${targets.length} student(s).`);
+    } catch (e) {
+      toast(e.message || 'Bulk update failed.', 'error');
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   function close() {
     if (changed.current) onChanged();
     onClose();
@@ -663,7 +714,7 @@ function RegisterModal({ session, course, students, onClose, onChanged }) {
 
   return (
     <Modal title={`${session.title} · register`} onClose={close} wide>
-      <div className="between" style={{ flexWrap: 'wrap' }}>
+      <div className="between" style={{ flexWrap: 'wrap', gap: 10 }}>
         <span className="small muted">{course.code} · {fmtFull(session.opens_at)} · {present.size} of {applicable.length} present</span>
         <label className="search">
           <span className="sr-only">Search</span>
@@ -671,17 +722,133 @@ function RegisterModal({ session, course, students, onClose, onChanged }) {
           <input className="input" style={{ width: 220, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a student" />
         </label>
       </div>
-      <p className="tiny muted">Tick to mark a student present by hand, for example someone whose phone was flat.</p>
+      <div className="between" style={{ flexWrap: 'wrap', gap: 10, paddingTop: 4 }}>
+        <GroupFilters students={applicable} value={group} onChange={setGroup} />
+        <div className="row-wrap" style={{ gap: 6 }}>
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            disabled={bulkBusy || shown.every((s) => present.has(s.index_no))}
+            onClick={() => bulkSetShown(true)}
+          >
+            <Icon name="check" size={14} /> Mark shown present
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={bulkBusy || shown.every((s) => !present.has(s.index_no))}
+            onClick={() => bulkSetShown(false)}
+          >
+            Clear shown
+          </button>
+        </div>
+      </div>
+      <p className="tiny muted">Tick individually or filter by group and bulk-mark shown students present.</p>
       <div className="card-flush" style={{ maxHeight: 420, overflowY: 'auto' }}>
-        {shown.slice(0, 300).map((s) => (
+        {shown.slice(0, 400).map((s) => (
           <label key={s.index_no} className="list-row" style={{ cursor: 'pointer' }}>
-            <input type="checkbox" checked={present.has(s.index_no)} onChange={() => toggle(s)} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} />
+            <input type="checkbox" checked={present.has(s.index_no)} onChange={() => toggle(s)} disabled={bulkBusy} style={{ width: 18, height: 18, accentColor: 'var(--teal)' }} />
             <span className="mono small" style={{ width: 130 }}>{s.index_no}</span>
-            <span className="list-main"><span className="title">{s.full_name}</span></span>
+            <span className="list-main">
+              <span className="title">{s.full_name}</span>
+              {(s.programme || s.stream) && <span className="tiny muted">{[s.programme, s.stream].filter(Boolean).join(' · ')}</span>}
+            </span>
             {present.has(s.index_no) ? <span className="badge badge-teal">Present</span> : <span className="badge">Absent</span>}
           </label>
         ))}
-        {shown.length === 0 && <Empty>No students.</Empty>}
+        {shown.length === 0 && <Empty>No students match.</Empty>}
+      </div>
+    </Modal>
+  );
+}
+
+function ManualRollCallModal({ course, streams, classes, onClose, onStarted }) {
+  const [act, busy] = useAction();
+  const [title, setTitle] = useState(`Roll-call — ${new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}`);
+  const [who, setWho] = useState('all');
+  const [chosen, setChosen] = useState([]);
+  const [pickedClasses, setPickedClasses] = useState([]);
+  const keyOf = (c) => `${c.programme}|${c.stream}`;
+
+  async function create() {
+    if (who === 'streams' && !chosen.length) throw new Error('Tick at least one stream, or choose Everyone.');
+    if (who === 'classes' && !pickedClasses.length) throw new Error('Tick at least one class, or choose Everyone.');
+    const pStreams = who === 'streams' ? chosen : [];
+    const pClasses = who === 'classes' ? pickedClasses : [];
+    let id;
+    try {
+      id = await rpc('start_manual_rollcall', {
+        p_course: course.id,
+        p_title: title.trim(),
+        p_streams: pStreams,
+        p_classes: pClasses,
+      });
+    } catch (e) {
+      if (/start_manual_rollcall|does not exist|schema cache/i.test(e.message || '')) {
+        throw new Error('Manual roll-call requires the latest Supabase SQL (Section 17). Please run it in Supabase SQL Editor.');
+      }
+      throw e;
+    }
+    if (id) {
+      onStarted({
+        id,
+        title: title.trim() || 'Roll-call',
+        streams: pStreams,
+        classes: pClasses,
+        opens_at: new Date().toISOString(),
+      });
+    }
+  }
+
+  return (
+    <Modal
+      title="Quick Roll-Call (No Code)"
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="btn btn-primary" onClick={() => act(create)} disabled={busy}>
+            {busy ? 'Opening…' : 'Create & Open Register'}
+          </button>
+        </>
+      }
+    >
+      <div className="notice notice-info small">
+        Creates a closed roll-call session without projecting a student check-in code, and immediately opens the attendance register for manual ticking.
+      </div>
+      <Field label="Session title">
+        <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
+      </Field>
+      <div className="stack-sm">
+        <span className="eyebrow">Who is this roll-call for?</span>
+        <div className="row-wrap" style={{ gap: 14 }}>
+          <label className="check"><input type="radio" name="mrwho" checked={who === 'all'} onChange={() => setWho('all')} /><span>Everyone</span></label>
+          {streams.length > 0 && <label className="check"><input type="radio" name="mrwho" checked={who === 'streams'} onChange={() => setWho('streams')} /><span>Chosen streams</span></label>}
+          {classes.length > 0 && <label className="check"><input type="radio" name="mrwho" checked={who === 'classes'} onChange={() => setWho('classes')} /><span>Chosen classes</span></label>}
+        </div>
+        {who === 'streams' && (
+          <div className="row-wrap" style={{ gap: 10 }}>
+            {streams.map((st) => (
+              <label key={st} className="check">
+                <input type="checkbox" checked={chosen.includes(st)} onChange={(e) => setChosen((c) => (e.target.checked ? [...c, st] : c.filter((x) => x !== st)))} />
+                <span>{st}</span>
+              </label>
+            ))}
+          </div>
+        )}
+        {who === 'classes' && (
+          <div className="row-wrap" style={{ gap: 10 }}>
+            {classes.map((cl) => {
+              const k = keyOf(cl);
+              return (
+                <label key={k} className="check">
+                  <input type="checkbox" checked={pickedClasses.includes(k)} onChange={(e) => setPickedClasses((c) => (e.target.checked ? [...c, k] : c.filter((x) => x !== k)))} />
+                  <span>{cl.programme || 'No programme'} · {cl.stream || 'No stream'}</span>
+                </label>
+              );
+            })}
+          </div>
+        )}
       </div>
     </Modal>
   );
