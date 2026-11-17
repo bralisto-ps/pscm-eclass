@@ -1,4 +1,6 @@
-import { parseCourseMeta } from '../../lib/courseMeta.js';
+import { isItemLocked, parseCourseMeta } from '../../lib/courseMeta.js';
+import { announcementMatchesStudent, formatAnnouncementAudience, sortAnnouncementsPinnedFirst } from '../../lib/announcementMeta.js';
+import CourseInfoCard from '../../components/CourseInfoCard.jsx';
 import { cleanText } from '../../lib/quizMeta.js';
 import { SUBMISSION_FORMATS, assignmentMatchesStudent, findStudentSyndicate, formatSubmissionRules, normalizeIndexNo, parseAssignmentMeta, resolveEffectiveDue, validateSubmissionFile } from '../../lib/assignmentMeta.js';
 import { buildTypedResponsePdfBlob } from '../../lib/textPdf.js';
@@ -41,7 +43,7 @@ export default function StudentCourse() {
   const [checkingIn, setCheckingIn] = useState(false);
 
   const { data, error, loading, reload } = useLoad(async () => {
-    const [course, modules, materials, news, quizzes, assignments, attendance, ca, viewsRes, cohort] = await Promise.all([
+    const [course, modules, materials, news, quizzes, assignments, attendance, ca, viewsRes, cohort, excuses, reviews, annReads, attCounts] = await Promise.all([
       run(supabase.from('courses').select('*').eq('id', courseId).maybeSingle()),
       run(supabase.from('modules').select('*').eq('course_id', courseId).order('week_no', { nullsFirst: false }).order('position')),
       run(supabase.from('materials').select('*').eq('course_id', courseId).order('position').order('created_at')),
@@ -52,8 +54,27 @@ export default function StudentCourse() {
       rpc('my_ca', { p_course: courseId }),
       supabase.from('material_views').select('material_id').eq('course_id', courseId).then((r) => r.data || [], () => []),
       rpc('my_cohort').catch(() => null),
+      rpc('my_attendance_excuses', { p_course: courseId }).catch(() => []),
+      rpc('my_mark_reviews', { p_course: courseId }).catch(() => []),
+      rpc('my_announcement_reads', { p_course: courseId }).catch(() => []),
+      rpc('student_attention_counts', { p_course: courseId }).catch(() => null),
     ]);
-    return { course, modules, materials, news, quizzes: quizzes || [], assignments: assignments || [], attendance, ca, viewedIds: (viewsRes || []).map((v) => v.material_id), cohort };
+    return {
+      course,
+      modules,
+      materials,
+      news: sortAnnouncementsPinnedFirst(news || []),
+      quizzes: quizzes || [],
+      assignments: assignments || [],
+      attendance,
+      ca,
+      viewedIds: (viewsRes || []).map((v) => v.material_id),
+      cohort,
+      excuses: Array.isArray(excuses) ? excuses : [],
+      reviews: Array.isArray(reviews) ? reviews : [],
+      readAnnIds: new Set(Array.isArray(annReads) ? annReads.map((r) => r.announcement_id) : []),
+      attCounts: attCounts || { unread_announcements: 0, open_polls: 0 },
+    };
   }, [courseId]);
 
   const visibleAssignments = useMemo(() => {
@@ -61,6 +82,35 @@ export default function StudentCourse() {
     if (!data?.cohort) return list;
     return list.filter((a) => Boolean(a.submission) || assignmentMatchesStudent(parseAssignmentMeta(a), data.cohort));
   }, [data?.assignments, data?.cohort]);
+
+  const visibleNews = useMemo(() => {
+    const list = data?.news || [];
+    return sortAnnouncementsPinnedFirst(list.filter((n) => announcementMatchesStudent(n, data?.cohort)));
+  }, [data?.news, data?.cohort]);
+
+  const reviewBySubmission = useMemo(() => {
+    const m = new Map();
+    for (const r of data?.reviews || []) {
+      if (r.kind === 'assignment' && r.submission_id && !m.has(r.submission_id)) m.set(r.submission_id, r);
+    }
+    return m;
+  }, [data?.reviews]);
+
+  const unreadNewsCount = useMemo(() => {
+    if (!data) return 0;
+    const cutoff = Date.now() - 30 * 86400 * 1000;
+    return visibleNews.filter((n) => new Date(n.created_at).getTime() >= cutoff && !data.readAnnIds?.has(n.id)).length;
+  }, [visibleNews, data]);
+
+  const tabsWithCounts = useMemo(
+    () =>
+      TABS.map((t) => {
+        if (t.id === 'announcements' && unreadNewsCount > 0) return { ...t, count: unreadNewsCount };
+        if (t.id === 'polls' && (data?.attCounts?.open_polls || 0) > 0) return { ...t, count: data.attCounts.open_polls };
+        return t;
+      }),
+    [unreadNewsCount, data?.attCounts?.open_polls]
+  );
 
   if (loading) return <CourseSkeleton />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
@@ -92,7 +142,7 @@ export default function StudentCourse() {
           <div className="code">{course.code}</div>
           <h1>{course.title}</h1>
         </div>
-        <Tabs dark tabs={TABS} value={tab} onChange={setTab} />
+        <Tabs dark tabs={tabsWithCounts} value={tab} onChange={setTab} />
       </header>
 
       <div className="page">
@@ -100,9 +150,9 @@ export default function StudentCourse() {
         <ErrorBoundary key={tab}>
           {tab === 'materials' && <Materials data={data} course={course} profile={profile} onQuizzes={() => setTab('quizzes')} graded={graded} />}
           {tab === 'quizzes' && <Quizzes quizzes={data.quizzes} reload={reload} />}
-          {tab === 'assignments' && <Assignments assignments={visibleAssignments} course={course} profile={profile} cohort={data.cohort} reload={reload} />}
+          {tab === 'assignments' && <Assignments assignments={visibleAssignments} course={course} profile={profile} cohort={data.cohort} reviewBySubmission={reviewBySubmission} reload={reload} />}
           {tab === 'attendance' && (
-            <StudentAttendanceView attendance={data.attendance} course={course} onCheckIn={() => setCheckingIn(true)} />
+            <StudentAttendanceView attendance={data.attendance} course={course} excuses={data.excuses} onCheckIn={() => setCheckingIn(true)} reload={reload} />
           )}
           {tab === 'polls' && <StudentPollsFeedback course={course} />}
           {tab === 'grades' && (
@@ -115,7 +165,7 @@ export default function StudentCourse() {
           )}
           {tab === 'qa' && <Forum course={course} />}
           {tab === 'messages' && <Messages course={course} />}
-          {tab === 'announcements' && <Announcements news={data.news} />}
+          {tab === 'announcements' && <Announcements news={visibleNews} readIds={data.readAnnIds} onMarkedRead={reload} />}
         </ErrorBoundary>
       </div>
       {checkingIn && <CheckInModal courseId={course.id} courseCode={course.code} askRow={data.attendance?.ask_row} onClose={() => setCheckingIn(false)} onDone={reload} />}
@@ -171,12 +221,16 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
             >
               <span className="week-badge">{g.week_no ? `W${g.week_no}` : 'GEN'}</span>
               <span style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>
-                  {g.week_no ? g.title || `Week ${g.week_no}` : g.title}
+                <div className="row" style={{ gap: 5, alignItems: 'center' }}>
+                  {isItemLocked(g.unlock_at) && <Icon name="lock" size={12} style={{ color: 'var(--amber-ink)', flexShrink: 0 }} />}
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>
+                    {g.week_no ? g.title || `Week ${g.week_no}` : g.title}
+                  </span>
                 </div>
                 <div className="tiny muted">
-                  {g.items.length} {g.items.length === 1 ? 'item' : 'items'}
-                  {viewedCount > 0 ? ` · ${viewedCount} viewed` : ''}
+                  {isItemLocked(g.unlock_at)
+                    ? `Unlocks ${fmtDateTime(g.unlock_at)}`
+                    : `${g.items.length} ${g.items.length === 1 ? 'item' : 'items'}${viewedCount > 0 ? ` · ${viewedCount} viewed` : ''}`}
                 </div>
               </span>
             </button>
@@ -191,40 +245,64 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
               <h2 style={{ fontSize: 20 }}>{current.week_no ? `Week ${current.week_no} · ${current.title}` : current.title}</h2>
               {current.summary && <p className="pre" style={{ color: 'var(--text-2)', maxWidth: 680 }}>{current.summary}</p>}
             </div>
-            <div className="card-flush">
-              {current.items.length === 0 && <Empty icon="file">Nothing posted for this week yet.</Empty>}
-              {current.items.map((m) => {
-                const seen = viewedSet.has(m.id);
-                return (
-                  <button key={m.id} type="button" className="list-row" onClick={() => open(m)}>
-                    <KindTag kind={m.kind} />
-                    <span className="list-main">
-                      <span className="title">{m.title}</span>
-                      <span className="tiny muted">
-                        {m.url ? hostOf(m.url) : fmtBytes(m.size_bytes)} · added {relative(m.created_at)}
+            {isItemLocked(current.unlock_at) ? (
+              <div className="card stack-sm" style={{ background: 'var(--surface-2)', textAlign: 'center', padding: '28px 20px' }}>
+                <div style={{ margin: '0 auto', width: 40, height: 40, borderRadius: '50%', background: 'var(--amber-50)', color: 'var(--amber-ink)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Icon name="clock" size={20} />
+                </div>
+                <strong>This week is scheduled to unlock later</strong>
+                <span className="small muted">Materials for this week open on <strong>{fmtDateTime(current.unlock_at)}</strong>.</span>
+              </div>
+            ) : (
+              <div className="card-flush">
+                {current.items.length === 0 && <Empty icon="file">Nothing posted for this week yet.</Empty>}
+                {current.items.map((m) => {
+                  const seen = viewedSet.has(m.id);
+                  const matLocked = isItemLocked(m.unlock_at);
+                  if (matLocked) {
+                    return (
+                      <div key={m.id} className="list-row" style={{ opacity: 0.72, background: 'var(--surface-2)', cursor: 'not-allowed' }}>
+                        <KindTag kind={m.kind} />
+                        <span className="list-main">
+                          <span className="title">{m.title}</span>
+                          <span className="tiny muted">Scheduled to unlock {fmtDateTime(m.unlock_at)}</span>
+                        </span>
+                        <span className="badge badge-amber"><Icon name="clock" size={12} /> Locked</span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <button key={m.id} type="button" className="list-row" onClick={() => open(m)}>
+                      <KindTag kind={m.kind} />
+                      <span className="list-main">
+                        <span className="title">{m.title}</span>
+                        <span className="tiny muted">
+                          {m.url ? hostOf(m.url) : fmtBytes(m.size_bytes)} · added {relative(m.created_at)}
+                        </span>
                       </span>
-                    </span>
-                    {seen && (
-                      <span className="viewed-tag">
-                        <Icon name="check" size={14} /> Viewed
-                      </span>
-                    )}
-                    {isViewOnlyPath(m.storage_path) ? (
-                      <span className="tiny muted nowrap" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <Icon name="lock" size={14} /> Read-only
-                      </span>
-                    ) : (
-                      <Icon name={m.url ? 'link' : 'download'} size={17} style={{ color: 'var(--muted)' }} />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+                      {seen && (
+                        <span className="viewed-tag">
+                          <Icon name="check" size={14} /> Viewed
+                        </span>
+                      )}
+                      {isViewOnlyPath(m.storage_path) ? (
+                        <span className="tiny muted nowrap" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <Icon name="lock" size={14} /> Read-only
+                        </span>
+                      ) : (
+                        <Icon name={m.url ? 'link' : 'download'} size={17} style={{ color: 'var(--muted)' }} />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </>
         )}
       </main>
 
       <aside className="stack">
+        <CourseInfoCard course={course} />
         {nextQuiz && (
           <div className="card stack-sm">
             <span className="badge badge-amber" style={{ alignSelf: 'flex-start' }}>
@@ -478,7 +556,7 @@ function Quizzes({ quizzes }) {
 }
 
 // ---------------- assignments ----------------
-function Assignments({ assignments, course, profile, cohort, reload }) {
+function Assignments({ assignments, course, profile, cohort, reviewBySubmission, reload }) {
   const toast = useToast();
   const [readingDoc, setReadingDoc] = useState(null);
   if (!assignments.length) return <div className="card"><Empty icon="clipboard" title="No assignments yet">Assignments will appear here when your lecturer posts them.</Empty></div>;
@@ -489,6 +567,7 @@ function Assignments({ assignments, course, profile, cohort, reload }) {
           key={a.id}
           a={a}
           cohort={cohort}
+          review={a.submission?.id ? reviewBySubmission?.get(a.submission.id) : null}
           onReadDoc={(doc, item) => setReadingDoc({
             id: item.id,
             title: doc.name || item.title,
@@ -521,7 +600,7 @@ function Assignments({ assignments, course, profile, cohort, reload }) {
 
 const MAX_BYTES = 5 * 1024 * 1024;
 
-function AssignmentCard({ a, cohort, onReadDoc, reload }) {
+function AssignmentCard({ a, cohort, review, onReadDoc, reload }) {
   const { session, profile } = useAuth();
   const toast = useToast();
   const [act] = useAction();
@@ -546,6 +625,8 @@ function AssignmentCard({ a, cohort, onReadDoc, reload }) {
     return s?.response_text || '';
   });
   const [pasteNotice, setPasteNotice] = useState('');
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewReason, setReviewReason] = useState('');
   const [busy, setBusy] = useState(false);
 
   const typingRef = useRef({
@@ -873,6 +954,75 @@ function AssignmentCard({ a, cohort, onReadDoc, reload }) {
         </div>
       )}
       {s?.marked && !a.released && <p className="small muted">Your work has been marked. Marks will show here when your lecturer releases them.</p>}
+      {s?.marked && a.released && (
+        <div className="between" style={{ paddingTop: 8, borderTop: '1px solid var(--line-2)', flexWrap: 'wrap', gap: 8 }}>
+          {review ? (
+            <div className="stack-sm" style={{ gap: 2 }}>
+              <span className={`badge ${review.status === 'pending' ? 'badge-amber' : review.status === 'approved' ? 'badge-teal' : 'badge-red'}`}>
+                {review.status === 'pending'
+                  ? 'Mark review pending'
+                  : review.status === 'approved'
+                  ? `Mark adjusted to ${fmtNumber(review.updated_marks)} / ${fmtNumber(a.max_marks)}`
+                  : 'Mark review declined'}
+              </span>
+              {review.reviewer_note && <span className="tiny muted"><strong>Staff note:</strong> {review.reviewer_note}</span>}
+            </div>
+          ) : (
+            <>
+              <span className="tiny muted">Need clarification or a re-check of your mark?</span>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={() => { setReviewReason(''); setReviewOpen(true); }}
+              >
+                <Icon name="flag" size={13} /> Request mark review
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {reviewOpen && (
+        <Modal
+          title={`Request mark review · ${a.title}`}
+          onClose={() => setReviewOpen(false)}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={() => setReviewOpen(false)} disabled={busy}>Cancel</button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy || reviewReason.trim().length < 5}
+                onClick={async () => {
+                  const ok = await act(
+                    () => rpc('request_mark_review', { p_kind: 'assignment', p_target_id: s.id, p_reason: reviewReason.trim() }),
+                    'Mark review request sent to your lecturer.'
+                  );
+                  if (ok !== undefined) {
+                    setReviewOpen(false);
+                    reload();
+                  }
+                }}
+              >
+                {busy ? 'Sending…' : 'Submit request'}
+              </button>
+            </>
+          }
+        >
+          <div className="small muted">
+            Current mark: <strong className="mono">{fmtNumber(s.marks)} / {fmtNumber(a.max_marks)}</strong>
+          </div>
+          <Field label="Reason for review" hint="explain specifically what should be re-checked">
+            <textarea
+              className="textarea"
+              style={{ minHeight: 100 }}
+              value={reviewReason}
+              onChange={(e) => setReviewReason(e.target.value)}
+              placeholder="Explain why you think this submission should be re-marked…"
+              autoFocus
+            />
+          </Field>
+        </Modal>
+      )}
 
       {canSubmit && (
         <div className="stack" style={{ borderTop: '1px solid var(--line-2)', paddingTop: 16 }}>
@@ -1095,17 +1245,54 @@ function SyndicatePeerCheck({ assignmentId, syndicate, selfIndex, locked }) {
 }
 
 // ---------------- announcements ----------------
-function Announcements({ news }) {
+function Announcements({ news, readIds, onMarkedRead }) {
+  const [act, busy] = useAction();
+  const [localRead, setLocalRead] = useState(() => new Set());
   if (!news.length) return <div className="card"><Empty icon="megaphone" title="No announcements yet" /></div>;
+
+  async function markRead(id) {
+    setLocalRead((prev) => new Set(prev).add(id));
+    await act(() => rpc('mark_announcement_read', { p_announcement: id }), 'Marked as read.');
+    onMarkedRead?.();
+  }
+
   return (
     <div className="stack" style={{ maxWidth: 760 }}>
-      {news.map((n) => (
-        <article key={n.id} className="card stack-sm">
-          <span className="tiny muted">{fmtFull(n.created_at)}</span>
-          <h2>{n.title}</h2>
-          {n.body && <p className="pre">{n.body}</p>}
-        </article>
-      ))}
+      {news.map((n) => {
+        const isRead = Boolean(readIds?.has(n.id) || localRead.has(n.id));
+        const audLabel = formatAnnouncementAudience(n);
+        return (
+          <article key={n.id} className="card stack-sm" style={n.pinned ? { borderColor: 'var(--teal)' } : undefined}>
+            <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+              <div className="row-wrap" style={{ gap: 6, alignItems: 'center' }}>
+                {n.pinned && (
+                  <span className="badge badge-teal">
+                    <Icon name="pin" size={11} /> Pinned
+                  </span>
+                )}
+                {audLabel && <span className="badge badge-plum">For: {audLabel}</span>}
+                <span className="tiny muted">{fmtFull(n.created_at)}</span>
+              </div>
+              {isRead ? (
+                <span className="viewed-tag">
+                  <Icon name="check" size={14} /> Acknowledged
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={busy}
+                  onClick={() => markRead(n.id)}
+                >
+                  <Icon name="check" size={14} /> Mark as read
+                </button>
+              )}
+            </div>
+            <h2>{n.title}</h2>
+            {n.body && <p className="pre">{n.body}</p>}
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -1246,12 +1433,73 @@ function AttendanceCard({ attendance }) {
 }
 
 
-function StudentAttendanceView({ attendance, course, onCheckIn }) {
+function StudentAttendanceView({ attendance, course, excuses = [], onCheckIn, reload }) {
+  const { session } = useAuth();
+  const toast = useToast();
   const openNow = attendance?.open_now;
   const sessions = attendance?.sessions || [];
   const attended = attendance?.attended || 0;
   const total = attendance?.total || 0;
   const pctv = total > 0 ? Math.round((attended / total) * 100) : 100;
+
+  const excuseBySession = useMemo(() => new Map((excuses || []).map((e) => [e.session_id, e])), [excuses]);
+  const missedSessions = useMemo(
+    () => sessions.filter((x) => x.status !== 'ok' && x.status !== 'review'),
+    [sessions]
+  );
+
+  const [excuseOpen, setExcuseOpen] = useState(false);
+  const [excuseSessionId, setExcuseSessionId] = useState('');
+  const [excuseReason, setExcuseReason] = useState('');
+  const [excuseFile, setExcuseFile] = useState(null);
+  const [uploadingExcuse, setUploadingExcuse] = useState(false);
+
+  function openExcuseModal(preselectSessionId = '') {
+    const firstId = preselectSessionId || missedSessions[0]?.id || '';
+    const existing = excuseBySession.get(firstId);
+    setExcuseSessionId(firstId);
+    setExcuseReason(existing?.status === 'rejected' ? '' : existing?.reason || '');
+    setExcuseFile(null);
+    setExcuseOpen(true);
+  }
+
+  async function submitExcuse() {
+    if (!excuseSessionId) {
+      toast('Select the session you missed.', 'error');
+      return;
+    }
+    if (excuseReason.trim().length < 3) {
+      toast('Enter a brief reason (at least 3 characters).', 'error');
+      return;
+    }
+    if (excuseFile && excuseFile.size > 5 * 1024 * 1024) {
+      toast('Supporting file must be 5 MB or smaller.', 'error');
+      return;
+    }
+    setUploadingExcuse(true);
+    try {
+      let evPath = null;
+      let evName = null;
+      if (excuseFile && session?.user?.id) {
+        const dest = `excuses/${course.id}/${session.user.id}/${Date.now()}-${safeFileName(excuseFile.name)}`;
+        evPath = await uploadFile('submissions', dest, excuseFile);
+        evName = excuseFile.name;
+      }
+      await rpc('submit_attendance_excuse', {
+        p_session: excuseSessionId,
+        p_reason: excuseReason.trim(),
+        p_evidence_path: evPath,
+        p_evidence_name: evName,
+      });
+      toast('Excuse request submitted for lecturer review.');
+      setExcuseOpen(false);
+      reload?.();
+    } catch (e) {
+      toast(e.message || 'Could not submit excuse request.', 'error');
+    } finally {
+      setUploadingExcuse(false);
+    }
+  }
 
   return (
     <div className="stack-lg" style={{ maxWidth: 860 }}>
@@ -1307,34 +1555,116 @@ function StudentAttendanceView({ attendance, course, onCheckIn }) {
       </section>
 
       <section className="card-flush">
-        <div className="card-head">
-          <h2>Attendance Log</h2>
-          <span className="small muted">{sessions.length} sessions</span>
+        <div className="card-head" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <div className="row" style={{ gap: 8 }}>
+            <h2>Attendance Log</h2>
+            <span className="small muted">{sessions.length} sessions</span>
+          </div>
+          {missedSessions.length > 0 && (
+            <button type="button" className="btn btn-sm" onClick={() => openExcuseModal()}>
+              <Icon name="clipboard" size={14} /> Submit absence / medical excuse
+            </button>
+          )}
         </div>
         {sessions.length === 0 ? (
           <div style={{ padding: "32px 20px", textAlign: "center" }} className="muted small">
             No attendance sessions held yet for this course.
           </div>
         ) : (
-          sessions.map((x) => (
-            <div key={x.id} className="list-row small" style={{ padding: "12px 18px" }}>
-              <span className="list-main">
-                <span className="title" style={{ fontWeight: 600 }}>{x.title}</span>
-                <span className="tiny muted">{fmtDateTime(x.opens_at)}</span>
-              </span>
-              {x.status === "ok" ? (
-                <span className="badge badge-teal"><Icon name="check" size={13} /> Present</span>
-              ) : x.status === "review" ? (
-                <span className="badge badge-amber" title="Your lecturer is checking this check-in">Being checked</span>
-              ) : x.status === "rejected" ? (
-                <span className="badge badge-red" title="Your check-in was not accepted">Not accepted</span>
-              ) : (
-                <span className="badge badge-subtle">Absent</span>
-              )}
-            </div>
-          ))
+          sessions.map((x) => {
+            const ex = excuseBySession.get(x.id);
+            const canRequest = x.status !== 'ok' && x.status !== 'review' && ex?.status !== 'approved';
+            return (
+              <div key={x.id} className="list-row small" style={{ padding: "12px 18px", flexWrap: 'wrap', gap: 10 }}>
+                <span className="list-main">
+                  <span className="title" style={{ fontWeight: 600 }}>{x.title}</span>
+                  <span className="tiny muted">{fmtDateTime(x.opens_at)}</span>
+                  {ex && (
+                    <span className="tiny muted" style={{ marginTop: 2 }}>
+                      Excuse ({ex.status === 'pending' ? 'Pending review' : ex.status === 'approved' ? 'Approved' : 'Declined'})
+                      {ex.reviewer_note ? ` — ${ex.reviewer_note}` : ''}
+                    </span>
+                  )}
+                </span>
+                <div className="row-wrap" style={{ gap: 8, alignItems: 'center' }}>
+                  {x.status === "ok" ? (
+                    <span className="badge badge-teal"><Icon name="check" size={13} /> Present{ex?.status === 'approved' ? ' · Excused' : ''}</span>
+                  ) : x.status === "review" ? (
+                    <span className="badge badge-amber" title="Your lecturer is checking this check-in">Being checked</span>
+                  ) : x.status === "rejected" ? (
+                    <span className="badge badge-red" title="Your check-in was not accepted">Not accepted</span>
+                  ) : (
+                    <span className="badge badge-subtle">Absent</span>
+                  )}
+                  {canRequest && (!ex || ex.status === 'rejected') && (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => openExcuseModal(x.id)}
+                    >
+                      {ex?.status === 'rejected' ? 'Resubmit excuse' : 'Submit excuse'}
+                    </button>
+                  )}
+                  {ex?.status === 'pending' && <span className="badge badge-amber">Excuse pending</span>}
+                </div>
+              </div>
+            );
+          })
         )}
       </section>
+
+      {excuseOpen && (
+        <Modal
+          title="Submit absence / medical excuse"
+          onClose={() => !uploadingExcuse && setExcuseOpen(false)}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={() => setExcuseOpen(false)} disabled={uploadingExcuse}>Cancel</button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={uploadingExcuse || !excuseSessionId || excuseReason.trim().length < 3}
+                onClick={submitExcuse}
+              >
+                {uploadingExcuse ? 'Submitting…' : 'Submit excuse'}
+              </button>
+            </>
+          }
+        >
+          <Field label="Session missed">
+            <select
+              className="select"
+              value={excuseSessionId}
+              onChange={(e) => setExcuseSessionId(e.target.value)}
+            >
+              {missedSessions.map((ms) => (
+                <option key={ms.id} value={ms.id}>
+                  {ms.title} ({fmtDateTime(ms.opens_at)})
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Reason for absence" hint="medical, bereavement, official duty, technical issue">
+            <textarea
+              className="textarea"
+              style={{ minHeight: 96 }}
+              value={excuseReason}
+              onChange={(e) => setExcuseReason(e.target.value)}
+              placeholder="Explain why you missed this lecture…"
+              autoFocus
+            />
+          </Field>
+          <Field label="Supporting document" hint="optional · PDF or image up to 5 MB (hospital note, exeat)">
+            <input
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*"
+              className="input"
+              style={{ paddingTop: 9 }}
+              onChange={(e) => setExcuseFile(e.target.files?.[0] || null)}
+            />
+          </Field>
+        </Modal>
+      )}
     </div>
   );
 }

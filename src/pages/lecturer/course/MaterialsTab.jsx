@@ -1,11 +1,13 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import { useAuth } from '../../../lib/auth.jsx';
 import { rpc, run, supabase, safeFileName } from '../../../lib/supabase.js';
 import { isViewOnlyPath, openStoredFile, removeFiles, setViewOnlyFlag, uploadFile, STORAGE_LIMIT_LABEL } from '../../../lib/files.js';
 const SecureSlideViewer = lazy(() => import('../../../components/SecureSlideViewer.jsx'));
-import { fmtBytes, hostOf, relative } from '../../../lib/format.js';
+import { fmtBytes, fmtDateTime, hostOf, relative } from '../../../lib/format.js';
+import { isItemLocked, toLocalInputValue } from '../../../lib/courseMeta.js';
 import Icon from '../../../components/Icon.jsx';
-import { Confirm, Empty, ErrorNote, Field, KindTag, Loading, Modal, useAction, useLoad } from '../../../components/ui.jsx';
+import BulkNudgeModal from '../../../components/BulkNudgeModal.jsx';
+import { Bar, Confirm, Empty, ErrorNote, Field, KindTag, Loading, Modal, Tabs, useAction, useLoad, useToast } from '../../../components/ui.jsx';
 
 const MAX_MB = 25;
 
@@ -42,6 +44,7 @@ export default function MaterialsTab({ course }) {
   const { profile } = useAuth();
   const [removing, setRemoving] = useState(null);
   const [previewing, setPreviewing] = useState(null);
+  const [viewersOf, setViewersOf] = useState(null);
   const [act, busy] = useAction();
 
   if (loading) return <Loading />;
@@ -94,12 +97,14 @@ export default function MaterialsTab({ course }) {
           key={m.id}
           title={m.week_no ? `Week ${m.week_no} · ${m.title}` : m.title}
           summary={m.summary}
+          unlockAt={m.unlock_at}
           items={data.materials.filter((x) => x.module_id === m.id)}
           onAdd={() => setAdding(m.id)}
           onEdit={() => setEditingWeek(m)}
           onDeleteWeek={() => setRemoving({ type: 'module', item: m })}
           onDelete={(item) => setRemoving({ type: 'material', item })}
           onPreview={(item) => setPreviewing(item)}
+          onViewers={(item) => setViewersOf(item)}
           onToggleLock={async (item) => {
             const nextPath = setViewOnlyFlag(item.storage_path, !isViewOnlyPath(item.storage_path));
             const ok = await act(
@@ -121,6 +126,7 @@ export default function MaterialsTab({ course }) {
         onAdd={() => setAdding('general')}
         onDelete={(item) => setRemoving({ type: 'material', item })}
         onPreview={(item) => setPreviewing(item)}
+        onViewers={(item) => setViewersOf(item)}
         onToggleLock={async (item) => {
           const nextPath = setViewOnlyFlag(item.storage_path, !isViewOnlyPath(item.storage_path));
           const ok = await act(
@@ -129,6 +135,8 @@ export default function MaterialsTab({ course }) {
           );
           if (ok !== undefined) reload();
         }}
+        statMap={data.statMap}
+        statsSupported={data.statsSupported}
         act={act}
         muted
       />
@@ -143,6 +151,13 @@ export default function MaterialsTab({ course }) {
             onClose={() => setPreviewing(null)}
           />
         </Suspense>
+      )}
+      {viewersOf && (
+        <MaterialViewersModal
+          course={course}
+          material={viewersOf}
+          onClose={() => setViewersOf(null)}
+        />
       )}
       {removing && (
         <Confirm
@@ -161,12 +176,20 @@ export default function MaterialsTab({ course }) {
   );
 }
 
-function WeekCard({ title, summary, items, onAdd, onEdit, onDeleteWeek, onDelete, onPreview, onToggleLock, statMap, statsSupported, act, muted }) {
+function WeekCard({ title, summary, unlockAt, items, onAdd, onEdit, onDeleteWeek, onDelete, onPreview, onViewers, onToggleLock, statMap, statsSupported, act, muted }) {
+  const weekLocked = isItemLocked(unlockAt);
   return (
     <section className="card-flush" style={muted ? { background: 'var(--surface-2)' } : undefined}>
       <div className="card-head">
         <div className="stack-sm" style={{ gap: 2, minWidth: 0 }}>
-          <h2>{title}</h2>
+          <div className="row-wrap" style={{ gap: 8, alignItems: 'center' }}>
+            <h2>{title}</h2>
+            {weekLocked && (
+              <span className="badge badge-amber" style={{ fontSize: 11 }}>
+                <Icon name="clock" size={11} /> Scheduled · unlocks {fmtDateTime(unlockAt)}
+              </span>
+            )}
+          </div>
           {summary && <span className="small muted pre">{summary}</span>}
         </div>
         <div className="row">
@@ -180,60 +203,267 @@ function WeekCard({ title, summary, items, onAdd, onEdit, onDeleteWeek, onDelete
         const st = statMap?.get(m.id);
         const viewOnly = isViewOnlyPath(m.storage_path);
         const isPdf = m.storage_path && (m.kind === 'pdf' || /\.pdf$/i.test(m.storage_path));
+        const itemLocked = isItemLocked(m.unlock_at);
         return (
-        <div key={m.id} className="list-row">
-          <KindTag kind={m.kind} />
-          <span className="list-main">
-            <span className="title">
-              {m.title}
-              {viewOnly && (
-                <span className="badge badge-teal" style={{ marginLeft: 8, fontSize: 11 }}>
-                  <Icon name="lock" size={11} /> Read-only
-                </span>
-              )}
+          <div key={m.id} className="list-row">
+            <KindTag kind={m.kind} />
+            <span className="list-main">
+              <span className="title row-wrap" style={{ gap: 6, alignItems: 'center' }}>
+                <span>{m.title}</span>
+                {viewOnly && (
+                  <span className="badge badge-teal" style={{ fontSize: 11 }}>
+                    <Icon name="lock" size={11} /> Read-only
+                  </span>
+                )}
+                {itemLocked && (
+                  <span className="badge badge-amber" style={{ fontSize: 11 }}>
+                    <Icon name="clock" size={11} /> Unlocks {fmtDateTime(m.unlock_at)}
+                  </span>
+                )}
+              </span>
+              <span className="tiny muted">
+                {m.url ? hostOf(m.url) : fmtBytes(m.size_bytes)} · added {relative(m.created_at)}
+                {statsSupported && (
+                  <> · <strong style={{ color: st?.unique_students ? 'var(--teal-dark)' : 'var(--text-2)' }}>{st?.unique_students || 0} student{(st?.unique_students || 0) === 1 ? '' : 's'} opened</strong>{st?.total_opens ? ` (${st.total_opens} opens)` : ''}</>
+                )}
+              </span>
             </span>
-            <span className="tiny muted">
-              {m.url ? hostOf(m.url) : fmtBytes(m.size_bytes)} · added {relative(m.created_at)}
-              {statsSupported && (
-                <> · <strong style={{ color: st?.unique_students ? 'var(--teal-dark)' : 'var(--text-2)' }}>{st?.unique_students || 0} student{(st?.unique_students || 0) === 1 ? '' : 's'} opened</strong>{st?.total_opens ? ` (${st.total_opens} opens)` : ''}</>
-              )}
-            </span>
-          </span>
-          {isPdf && onToggleLock && (
-            <button
-              type="button"
-              className="icon-btn plain"
-              title={viewOnly ? 'Currently read-only — click to allow downloads' : 'Currently downloadable — click to lock as read-only'}
-              aria-label={viewOnly ? `Allow downloads for ${m.title}` : `Make ${m.title} read-only`}
-              onClick={() => onToggleLock(m)}
-              style={{ color: viewOnly ? 'var(--teal-dark)' : 'var(--muted)' }}
-            >
-              <Icon name="lock" size={16} />
+            {statsSupported && onViewers && (
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={() => onViewers(m)}
+                title="See who viewed and nudge students who haven't opened yet"
+              >
+                <Icon name="users" size={14} /> Viewers
+              </button>
+            )}
+            {isPdf && onToggleLock && (
+              <button
+                type="button"
+                className="icon-btn plain"
+                title={viewOnly ? 'Currently read-only — click to allow downloads' : 'Currently downloadable — click to lock as read-only'}
+                aria-label={viewOnly ? `Allow downloads for ${m.title}` : `Make ${m.title} read-only`}
+                onClick={() => onToggleLock(m)}
+                style={{ color: viewOnly ? 'var(--teal-dark)' : 'var(--muted)' }}
+              >
+                <Icon name="lock" size={16} />
+              </button>
+            )}
+            <button type="button" className="icon-btn plain" aria-label={`Open ${m.title}`}
+              onClick={() => (m.url ? window.open(m.url, '_blank', 'noopener') : viewOnly ? onPreview?.(m) : act(() => openStoredFile('materials', m.storage_path)))}>
+              <Icon name={m.url ? 'link' : 'eye'} />
             </button>
-          )}
-          <button type="button" className="icon-btn plain" aria-label={`Open ${m.title}`}
-            onClick={() => (m.url ? window.open(m.url, '_blank', 'noopener') : viewOnly ? onPreview?.(m) : act(() => openStoredFile('materials', m.storage_path)))}>
-            <Icon name={m.url ? 'link' : 'eye'} />
-          </button>
-          <button type="button" className="icon-btn plain" aria-label={`Delete ${m.title}`} onClick={() => onDelete(m)}>
-            <Icon name="trash" />
-          </button>
-        </div>
+            <button type="button" className="icon-btn plain" aria-label={`Delete ${m.title}`} onClick={() => onDelete(m)}>
+              <Icon name="trash" />
+            </button>
+          </div>
         );
       })}
     </section>
   );
 }
 
+function MaterialViewersModal({ course, material, onClose }) {
+  const toast = useToast();
+  const { data, error, loading } = useLoad(
+    () => rpc('material_viewer_breakdown', { p_course: course.id, p_material: material.id }),
+    [course.id, material.id],
+  );
+  const [tab, setTab] = useState('unviewed');
+  const [classKey, setClassKey] = useState('ALL');
+  const [nudging, setNudging] = useState(false);
+
+  const students = useMemo(() => data?.students || [], [data?.students]);
+  const classes = useMemo(() => {
+    const map = new Map();
+    for (const s of students) {
+      const key = `${s.programme || ''}|${s.stream || ''}`;
+      const label = [s.programme, s.stream].filter(Boolean).join(' · ') || 'No class assigned';
+      if (!map.has(key)) map.set(key, { key, label, total: 0, viewed: 0 });
+      const b = map.get(key);
+      b.total += 1;
+      if (s.viewed) b.viewed += 1;
+    }
+    return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+  }, [students]);
+
+  const filtered = useMemo(() => {
+    if (classKey === 'ALL') return students;
+    return students.filter((s) => `${s.programme || ''}|${s.stream || ''}` === classKey);
+  }, [students, classKey]);
+
+  const viewedList = useMemo(() => filtered.filter((s) => s.viewed), [filtered]);
+  const unviewedList = useMemo(() => filtered.filter((s) => !s.viewed), [filtered]);
+  const overallPct = filtered.length ? Math.round((viewedList.length / filtered.length) * 100) : 0;
+
+  return (
+    <>
+      <Modal
+        wide
+        title={`Viewers · ${material.title}`}
+        onClose={onClose}
+        footer={
+          <div className="between" style={{ width: '100%', flexWrap: 'wrap', gap: 8 }}>
+            <span className="tiny muted">
+              {viewedList.length} of {filtered.length} student{filtered.length === 1 ? '' : 's'} opened ({overallPct}%)
+            </span>
+            <div className="row" style={{ gap: 8 }}>
+              {unviewedList.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => {
+                    const activeUnviewed = unviewedList.filter((s) => s.activated);
+                    if (!activeUnviewed.length) {
+                      toast('None of the unviewed students have activated accounts yet.', 'error');
+                      return;
+                    }
+                    setNudging(true);
+                  }}
+                >
+                  <Icon name="bell" size={15} /> Nudge {unviewedList.length} non-viewer{unviewedList.length === 1 ? '' : 's'}
+                </button>
+              )}
+              <button type="button" className="btn" onClick={onClose}>Close</button>
+            </div>
+          </div>
+        }
+      >
+        {loading && <Loading />}
+        {error && (
+          <div className="notice notice-warn small">
+            Viewer breakdown requires the latest Supabase SQL migration (Section 16). Once run, you can inspect per-class read rates and nudge non-viewers from here.
+          </div>
+        )}
+        {!loading && !error && data && (
+          <div className="stack">
+            {classes.length > 1 && (
+              <div className="card-soft stack-sm" style={{ padding: 12 }}>
+                <div className="between">
+                  <strong className="small">Class completion breakdown</strong>
+                  {classKey !== 'ALL' && (
+                    <button type="button" className="btn btn-sm btn-ghost" onClick={() => setClassKey('ALL')}>
+                      Show all classes
+                    </button>
+                  )}
+                </div>
+                <div className="grid-2" style={{ gap: 10 }}>
+                  {classes.map((c) => {
+                    const p = c.total ? Math.round((c.viewed / c.total) * 100) : 0;
+                    const active = classKey === c.key;
+                    return (
+                      <button
+                        key={c.key}
+                        type="button"
+                        onClick={() => setClassKey(active ? 'ALL' : c.key)}
+                        style={{
+                          textAlign: 'left',
+                          padding: '8px 10px',
+                          borderRadius: 8,
+                          border: active ? '1.5px solid var(--teal)' : '1px solid var(--line)',
+                          background: active ? 'var(--teal-50)' : 'var(--surface)',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <div className="between small" style={{ marginBottom: 4 }}>
+                          <span className="strong">{c.label}</span>
+                          <span className="mono tiny muted">{c.viewed}/{c.total} ({p}%)</span>
+                        </div>
+                        <Bar value={p} />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <Tabs
+              tabs={[
+                { id: 'unviewed', label: 'Not viewed yet', count: unviewedList.length },
+                { id: 'viewed', label: 'Viewed', count: viewedList.length },
+              ]}
+              value={tab}
+              onChange={setTab}
+            />
+
+            <div className="card-flush" style={{ maxHeight: 340, overflowY: 'auto' }}>
+              {(tab === 'unviewed' ? unviewedList : viewedList).length === 0 ? (
+                <div className="small muted" style={{ padding: '18px 16px' }}>
+                  {tab === 'unviewed' ? 'Every student in this filter has opened this material.' : 'No students have opened this material yet.'}
+                </div>
+              ) : (
+                (tab === 'unviewed' ? unviewedList : viewedList).map((s) => (
+                  <div key={s.index_no} className="list-row small">
+                    <span className="list-main">
+                      <span className="title">{s.full_name} <span className="mono tiny muted">({s.index_no})</span></span>
+                      <span className="tiny muted">
+                        {[s.programme, s.stream].filter(Boolean).join(' · ') || 'No class'}
+                        {!s.activated && ' · Account not activated yet'}
+                      </span>
+                    </span>
+                    {s.viewed ? (
+                      <span className="tiny muted mono">
+                        {s.view_count}× · {relative(s.last_viewed_at)}
+                      </span>
+                    ) : (
+                      <span className="badge">Not opened</span>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {nudging && (
+        <BulkNudgeModal
+          courseId={course.id}
+          courseCode={course.code}
+          title={`Nudge non-viewers · ${material.title}`}
+          subtitle={`Remind students who haven't opened "${material.title}" yet.`}
+          students={unviewedList.map((s) => ({ ...s, activated: s.activated }))}
+          defaultSubject={`Please review: ${material.title} (${course.code})`}
+          defaultMessage={`Hi {first_name},\n\nPlease make sure to open and review "${material.title}" on PSCM E-Class before our next class.\n\nThank you.`}
+          onClose={() => setNudging(false)}
+        />
+      )}
+    </>
+  );
+}
+
 function WeekForm({ course, week, onClose, onSaved }) {
   const [act, busy] = useAction();
-  const [f, setF] = useState({ week_no: week.week_no ?? '', title: week.title || '', summary: week.summary || '' });
+  const [f, setF] = useState({
+    week_no: week.week_no ?? '',
+    title: week.title || '',
+    summary: week.summary || '',
+    unlock_at: toLocalInputValue(week.unlock_at),
+  });
   async function save() {
-    const row = { course_id: course.id, week_no: f.week_no === '' ? null : Number(f.week_no), title: f.title.trim(), summary: f.summary };
-    const ok = await act(
-      () => (week.id ? run(supabase.from('modules').update(row).eq('id', week.id)) : run(supabase.from('modules').insert(row))),
-      week.id ? 'Week updated.' : 'Week added.',
-    );
+    const baseRow = {
+      course_id: course.id,
+      week_no: f.week_no === '' ? null : Number(f.week_no),
+      title: f.title.trim(),
+      summary: f.summary,
+    };
+    const unlockIso = f.unlock_at ? new Date(f.unlock_at).toISOString() : null;
+    const rowWithUnlock = { ...baseRow, unlock_at: unlockIso };
+    const ok = await act(async () => {
+      try {
+        return week.id
+          ? await run(supabase.from('modules').update(rowWithUnlock).eq('id', week.id))
+          : await run(supabase.from('modules').insert(rowWithUnlock));
+      } catch (err) {
+        if (!f.unlock_at && /unlock_at|column/i.test(err?.message || '')) {
+          return week.id
+            ? await run(supabase.from('modules').update(baseRow).eq('id', week.id))
+            : await run(supabase.from('modules').insert(baseRow));
+        }
+        throw err;
+      }
+    }, week.id ? 'Week updated.' : 'Week added.');
     if (ok !== undefined) {
       onClose();
       onSaved();
@@ -250,6 +480,14 @@ function WeekForm({ course, week, onClose, onSaved }) {
       <Field label="What this week covers" hint="optional, shown to students">
         <textarea className="textarea" value={f.summary} onChange={(e) => setF({ ...f, summary: e.target.value })} />
       </Field>
+      <Field label="Unlock date & time" hint="optional — leave blank to make available immediately">
+        <div className="row" style={{ gap: 8 }}>
+          <input className="input" type="datetime-local" value={f.unlock_at} onChange={(e) => setF({ ...f, unlock_at: e.target.value })} />
+          {f.unlock_at && (
+            <button type="button" className="btn btn-sm" onClick={() => setF({ ...f, unlock_at: '' })}>Clear</button>
+          )}
+        </div>
+      </Field>
     </Modal>
   );
 }
@@ -260,8 +498,22 @@ function MaterialForm({ course, moduleId, onClose, onSaved }) {
   const [viewOnly, setViewOnly] = useState(true);
   const [title, setTitle] = useState('');
   const [url, setUrl] = useState('');
+  const [unlockAt, setUnlockAt] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  async function insertMaterial(row) {
+    const unlockIso = unlockAt ? new Date(unlockAt).toISOString() : null;
+    try {
+      await run(supabase.from('materials').insert(unlockIso ? { ...row, unlock_at: unlockIso } : row));
+    } catch (err) {
+      if (!unlockIso && /unlock_at|column/i.test(err?.message || '')) {
+        await run(supabase.from('materials').insert(row));
+      } else {
+        throw err;
+      }
+    }
+  }
 
   async function save() {
     setError('');
@@ -269,9 +521,9 @@ function MaterialForm({ course, moduleId, onClose, onSaved }) {
     try {
       if (mode === 'link') {
         if (!/^https?:\/\//i.test(url.trim())) throw new Error('Paste a full link starting with https://');
-        await run(supabase.from('materials').insert({
+        await insertMaterial({
           course_id: course.id, module_id: moduleId, kind: kindFromUrl(url), title: title.trim() || hostOf(url), url: url.trim(),
-        }));
+        });
       } else {
         if (!files.length) throw new Error('Choose at least one file.');
         const big = files.find((f) => f.size > MAX_MB * 1024 * 1024);
@@ -287,9 +539,9 @@ function MaterialForm({ course, moduleId, onClose, onSaved }) {
           const isPdfFile = /\.pdf$/i.test(file.name);
           const finalPath = viewOnly && isPdfFile ? setViewOnlyFlag(stored, true) : stored;
           const niceTitle = files.length === 1 && title.trim() ? title.trim() : file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
-          await run(supabase.from('materials').insert({
+          await insertMaterial({
             course_id: course.id, module_id: moduleId, kind: kindFromName(file.name), title: niceTitle, storage_path: finalPath, size_bytes: file.size,
-          }));
+          });
         }
       }
       onClose();
@@ -344,6 +596,12 @@ function MaterialForm({ course, moduleId, onClose, onSaved }) {
           <p className="small muted">For Google Drive files, set sharing to “Anyone with the link can view”.</p>
         </>
       )}
+      <Field label="Schedule unlock" hint="optional — leave blank to unlock immediately">
+        <div className="row" style={{ gap: 8 }}>
+          <input className="input" type="datetime-local" value={unlockAt} onChange={(e) => setUnlockAt(e.target.value)} />
+          {unlockAt && <button type="button" className="btn btn-sm" onClick={() => setUnlockAt('')}>Clear</button>}
+        </div>
+      </Field>
     </Modal>
   );
 }

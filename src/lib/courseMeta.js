@@ -18,6 +18,12 @@ export function parseCourseMeta(course) {
       max_score: 60,
       scores: {},
     },
+    course_info: {
+      venue: '',
+      schedule: '',
+      officeHours: '',
+      syllabusNote: '',
+    },
   };
 
   if (!raw || typeof raw !== 'string') return fallback;
@@ -40,13 +46,20 @@ export function parseCourseMeta(course) {
         max_score: Number(parsed.exam_config?.max_score ?? 60),
         scores: parsed.exam_config?.scores && typeof parsed.exam_config.scores === 'object' ? parsed.exam_config.scores : {},
       },
+      course_info: {
+        venue: String(parsed.course_info?.venue || ''),
+        schedule: String(parsed.course_info?.schedule || ''),
+        officeHours: String(parsed.course_info?.officeHours || ''),
+        syllabusNote: String(parsed.course_info?.syllabusNote || ''),
+      },
     };
   } catch {
     return fallback;
   }
 }
 
-export function serializeCourseMeta(about, ca_config, exam_config) {
+export function serializeCourseMeta(about, ca_config, exam_config, course_info) {
+  const info = course_info || {};
   return JSON.stringify({
     about: String(about || '').trim(),
     ca_config: ca_config || {
@@ -62,7 +75,39 @@ export function serializeCourseMeta(about, ca_config, exam_config) {
       max_score: 60,
       scores: {},
     },
+    course_info: {
+      venue: String(info.venue || '').trim(),
+      schedule: String(info.schedule || '').trim(),
+      officeHours: String(info.officeHours || '').trim(),
+      syllabusNote: String(info.syllabusNote || '').trim(),
+    },
   });
+}
+
+export function hasCourseInfo(meta) {
+  const info = meta?.course_info || {};
+  return Boolean(
+    String(meta?.about || '').trim() ||
+    String(info.venue || '').trim() ||
+    String(info.schedule || '').trim() ||
+    String(info.officeHours || '').trim() ||
+    String(info.syllabusNote || '').trim()
+  );
+}
+
+export function isItemLocked(unlockAt, nowMs = Date.now()) {
+  if (!unlockAt) return false;
+  const t = new Date(unlockAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return t > nowMs;
+}
+
+export function toLocalInputValue(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 // Compute CA 1 (/20), CA 2 (/20), and Total CA (/40) for a student row

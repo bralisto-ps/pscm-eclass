@@ -5472,3 +5472,786 @@ begin
     execute format('grant execute on function public.%s to authenticated', f);
   end loop;
 end $$;
+
+-- =====================================================================
+-- 16. PSCM E-Class Feature Pack II:
+--     Scheduled Unlock (Drip) for Weeks & Materials,
+--     Cohort-Targeted, Pinned & Acknowledged Announcements,
+--     Absence & Medical Excuse Requests (auto-credit attendance),
+--     Structured Mark Review / Re-Mark Disputes,
+--     Per-Material Viewer Breakdown & Course Attention Counters
+-- =====================================================================
+
+-- 16A. Scheduled unlock ("drip") dates for modules & materials
+alter table public.modules   add column if not exists unlock_at timestamptz;
+alter table public.materials add column if not exists unlock_at timestamptz;
+
+-- 16B. Announcement pinning, cohort targeting & read acknowledgements
+alter table public.announcements add column if not exists pinned   boolean not null default false;
+alter table public.announcements add column if not exists audience jsonb;
+
+create table if not exists public.announcement_reads (
+  announcement_id uuid not null references public.announcements on delete cascade,
+  student_id      uuid not null references public.profiles(id) on delete cascade,
+  read_at         timestamptz not null default now(),
+  primary key (announcement_id, student_id)
+);
+create index if not exists announcement_reads_student_idx on public.announcement_reads (student_id);
+
+alter table public.announcement_reads enable row level security;
+
+drop policy if exists "Students manage own announcement reads" on public.announcement_reads;
+create policy "Students manage own announcement reads" on public.announcement_reads
+  for all to authenticated
+  using (student_id = auth.uid())
+  with check (
+    student_id = auth.uid()
+    and exists (
+      select 1 from public.announcements a
+       where a.id = announcement_id and public.is_enrolled(a.course_id)
+    )
+  );
+
+drop policy if exists "Staff read announcement acknowledgements" on public.announcement_reads;
+create policy "Staff read announcement acknowledgements" on public.announcement_reads
+  for select to authenticated
+  using (
+    exists (
+      select 1 from public.announcements a
+       where a.id = announcement_id and public.is_staff(a.course_id)
+    )
+  );
+
+create or replace function public.mark_announcement_read(p_announcement uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_course uuid;
+begin
+  select course_id into v_course from public.announcements where id = p_announcement;
+  if v_course is null then raise exception 'Announcement not found.'; end if;
+  if not public.is_enrolled(v_course) then raise exception 'Not enrolled in this course.'; end if;
+  insert into public.announcement_reads (announcement_id, student_id, read_at)
+  values (p_announcement, auth.uid(), now())
+  on conflict (announcement_id, student_id) do nothing;
+end;
+$$;
+
+create or replace function public.course_announcement_reads(p_course uuid)
+returns table (announcement_id uuid, read_count int)
+language plpgsql stable security definer set search_path = public as $$
+#variable_conflict use_column
+begin
+  perform public.require_staff(p_course);
+  return query
+    select a.id, count(r.student_id)::int
+      from public.announcements a
+      left join public.announcement_reads r on r.announcement_id = a.id
+     where a.course_id = p_course
+     group by a.id;
+end;
+$$;
+
+create or replace function public.my_announcement_reads(p_course uuid default null)
+returns table (announcement_id uuid, read_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  select r.announcement_id, r.read_at
+    from public.announcement_reads r
+    join public.announcements a on a.id = r.announcement_id
+   where r.student_id = auth.uid()
+     and (p_course is null or a.course_id = p_course);
+$$;
+
+-- 16C. Absence & Medical Excuse Requests (auto-credit attendance on approval)
+alter table public.attendance drop constraint if exists attendance_method_check;
+alter table public.attendance add constraint attendance_method_check check (method in ('code', 'manual', 'excused'));
+
+-- Allow students to upload supporting excuse documents under submissions/excuses/<course_id>/<student_id>/<file>
+drop policy if exists "excuses upload" on storage.objects;
+create policy "excuses upload" on storage.objects for insert to authenticated
+  with check (
+    bucket_id = 'submissions'
+    and (storage.foldername(name))[1] = 'excuses'
+    and (storage.foldername(name))[3] = auth.uid()::text
+    and public.is_enrolled(public.try_uuid((storage.foldername(name))[2]))
+  );
+
+drop policy if exists "excuses read" on storage.objects;
+create policy "excuses read" on storage.objects for select to authenticated
+  using (
+    bucket_id = 'submissions'
+    and (storage.foldername(name))[1] = 'excuses'
+    and (
+      public.is_lecturer()
+      or (storage.foldername(name))[3] = auth.uid()::text
+      or public.is_ta(public.try_uuid((storage.foldername(name))[2]))
+    )
+  );
+
+-- Update R2/signed file_access helper to also authorize submissions/excuses/<course_id>/<student_id>/<file>
+create or replace function public.file_access(p_bucket text, p_path text, p_action text) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+declare
+  clean_path text := regexp_replace(coalesce(p_path, ''), '^r2:', '');
+  parts text[] := string_to_array(clean_path, '/');
+begin
+  if auth.uid() is null or coalesce(p_path, '') like '%..%' or cardinality(parts) < 2 then return false; end if;
+  if p_bucket = 'materials' then
+    if p_action = 'download' then
+      return public.is_lecturer() or public.is_ta(public.try_uuid(parts[1])) or public.is_enrolled(public.try_uuid(parts[1]));
+    end if;
+    return public.is_lecturer();
+  elsif p_bucket = 'submissions' then
+    if parts[1] = 'excuses' then
+      if cardinality(parts) < 4 then return false; end if;
+      if p_action = 'upload' then
+        return parts[3] = auth.uid()::text and public.is_enrolled(public.try_uuid(parts[2]));
+      end if;
+      if p_action = 'download' then
+        return public.is_lecturer()
+            or parts[3] = auth.uid()::text
+            or public.is_ta(public.try_uuid(parts[2]));
+      end if;
+      return public.is_lecturer();
+    end if;
+    if cardinality(parts) < 3 then return false; end if;
+    if p_action = 'download' then
+      return public.is_lecturer()
+          or parts[2] = auth.uid()::text
+          or exists (
+            select 1 from public.submissions s
+             where s.assignment_id = public.try_uuid(parts[1])
+               and s.student_id = auth.uid()
+               and regexp_replace(s.file_path, '^r2:', '') = clean_path
+          )
+          or public.is_ta((select course_id from public.assignments where id = public.try_uuid(parts[1])));
+    end if;
+    if p_action = 'upload' then
+      return parts[2] = auth.uid()::text and public.can_submit(public.try_uuid(parts[1]));
+    end if;
+    return public.is_lecturer();
+  end if;
+  return false;
+end;
+$$;
+
+create table if not exists public.attendance_excuses (
+  id            uuid primary key default gen_random_uuid(),
+  course_id     uuid not null references public.courses on delete cascade,
+  session_id    uuid not null references public.attendance_sessions on delete cascade,
+  student_id    uuid not null references public.profiles(id) on delete cascade,
+  index_no      text not null,
+  reason        text not null check (length(btrim(reason)) >= 3),
+  evidence_path text,
+  evidence_name text,
+  status        text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
+  reviewer_note text not null default '',
+  reviewed_by   uuid references public.profiles(id) on delete set null,
+  reviewed_at   timestamptz,
+  created_at    timestamptz not null default now(),
+  unique (session_id, student_id)
+);
+create index if not exists attendance_excuses_course_idx on public.attendance_excuses (course_id, status, created_at desc);
+
+alter table public.attendance_excuses enable row level security;
+
+drop policy if exists "Students read own attendance excuses" on public.attendance_excuses;
+create policy "Students read own attendance excuses" on public.attendance_excuses
+  for select to authenticated
+  using (student_id = auth.uid());
+
+drop policy if exists "Staff manage course attendance excuses" on public.attendance_excuses;
+create policy "Staff manage course attendance excuses" on public.attendance_excuses
+  for all to authenticated
+  using (public.is_staff(course_id))
+  with check (public.is_staff(course_id));
+
+create or replace function public.submit_attendance_excuse(
+  p_session       uuid,
+  p_reason        text,
+  p_evidence_path text default null,
+  p_evidence_name text default null
+) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  v_course  uuid;
+  v_index   text;
+  v_id      uuid;
+  v_cur     text;
+begin
+  select s.course_id into v_course from public.attendance_sessions s where s.id = p_session;
+  if v_course is null then raise exception 'Attendance session not found.'; end if;
+  if not public.is_enrolled(v_course) then raise exception 'You are not enrolled in this course.'; end if;
+  select public.norm_index(index_no) into v_index from public.profiles where id = auth.uid();
+  if coalesce(v_index, '') = '' then raise exception 'Student index number not found.'; end if;
+  if length(btrim(coalesce(p_reason, ''))) < 3 then
+    raise exception 'Please provide a brief explanation (at least 3 characters).';
+  end if;
+
+  select id, status into v_id, v_cur
+    from public.attendance_excuses
+   where session_id = p_session and student_id = auth.uid();
+
+  if v_id is not null and v_cur = 'approved' then
+    raise exception 'An excuse has already been approved for this session.';
+  end if;
+
+  insert into public.attendance_excuses (
+    course_id, session_id, student_id, index_no, reason, evidence_path, evidence_name, status, reviewer_note, reviewed_by, reviewed_at
+  ) values (
+    v_course, p_session, auth.uid(), v_index, btrim(p_reason),
+    nullif(btrim(coalesce(p_evidence_path, '')), ''),
+    nullif(btrim(coalesce(p_evidence_name, '')), ''),
+    'pending', '', null, null
+  )
+  on conflict (session_id, student_id) do update
+    set reason        = excluded.reason,
+        evidence_path = coalesce(excluded.evidence_path, public.attendance_excuses.evidence_path),
+        evidence_name = coalesce(excluded.evidence_name, public.attendance_excuses.evidence_name),
+        status        = 'pending',
+        reviewer_note = '',
+        reviewed_by   = null,
+        reviewed_at   = null,
+        created_at    = now()
+  returning id into v_id;
+
+  return v_id;
+end;
+$$;
+
+create or replace function public.my_attendance_excuses(p_course uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', e.id,
+      'session_id', e.session_id,
+      'session_title', s.title,
+      'opens_at', s.opens_at,
+      'reason', e.reason,
+      'evidence_path', e.evidence_path,
+      'evidence_name', e.evidence_name,
+      'status', e.status,
+      'reviewer_note', e.reviewer_note,
+      'reviewed_at', e.reviewed_at,
+      'created_at', e.created_at
+    ) order by e.created_at desc)
+    from public.attendance_excuses e
+    join public.attendance_sessions s on s.id = e.session_id
+    where e.course_id = p_course and e.student_id = auth.uid()
+  ), '[]'::jsonb);
+$$;
+
+create or replace function public.course_attendance_excuses(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public.require_staff(p_course);
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', e.id,
+      'course_id', e.course_id,
+      'session_id', e.session_id,
+      'session_title', s.title,
+      'session_opens_at', s.opens_at,
+      'student_id', e.student_id,
+      'index_no', e.index_no,
+      'full_name', coalesce(r.full_name, p.full_name, e.index_no),
+      'programme', coalesce(r.programme, ''),
+      'stream', coalesce(r.stream, ''),
+      'reason', e.reason,
+      'evidence_path', e.evidence_path,
+      'evidence_name', e.evidence_name,
+      'status', e.status,
+      'reviewer_note', e.reviewer_note,
+      'reviewed_at', e.reviewed_at,
+      'created_at', e.created_at
+    ) order by (e.status = 'pending') desc, e.created_at desc)
+    from public.attendance_excuses e
+    join public.attendance_sessions s on s.id = e.session_id
+    left join public.profiles p on p.id = e.student_id
+    left join public.roster r on upper(trim(r.index_no)) = upper(trim(e.index_no))
+    where e.course_id = p_course
+  ), '[]'::jsonb);
+end;
+$$;
+
+create or replace function public.resolve_attendance_excuse(
+  p_excuse uuid,
+  p_status text,
+  p_note   text default ''
+) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_ex   public.attendance_excuses;
+  v_note text := coalesce(btrim(p_note), '');
+begin
+  if p_status not in ('approved', 'rejected') then
+    raise exception 'Invalid excuse resolution status.';
+  end if;
+  select * into v_ex from public.attendance_excuses where id = p_excuse;
+  if v_ex.id is null then raise exception 'Excuse request not found.'; end if;
+  perform public.require_staff(v_ex.course_id);
+
+  update public.attendance_excuses
+     set status = p_status,
+         reviewer_note = v_note,
+         reviewed_by = auth.uid(),
+         reviewed_at = now()
+   where id = p_excuse;
+
+  if p_status = 'approved' then
+    insert into public.attendance (session_id, index_no, status, method, note, reviewed_by)
+    values (
+      v_ex.session_id,
+      public.norm_index(v_ex.index_no),
+      'ok',
+      'excused',
+      case when v_note <> '' then 'Excused: ' || v_note else 'Approved absence excuse' end,
+      auth.uid()
+    )
+    on conflict (session_id, index_no) do update
+      set status = 'ok',
+          method = 'excused',
+          note = excluded.note,
+          reviewed_by = auth.uid();
+  end if;
+
+  perform public.log_course_audit(
+    v_ex.course_id,
+    case when p_status = 'approved' then 'excuse_approved' else 'excuse_rejected' end,
+    format('%s excuse request for %s', case when p_status = 'approved' then 'Approved' else 'Declined' end, v_ex.index_no),
+    jsonb_build_object('excuse_id', p_excuse, 'session_id', v_ex.session_id, 'index_no', v_ex.index_no)
+  );
+end;
+$$;
+
+-- 16D. Structured Mark Review / Re-Mark Requests
+-- Enhance get_attempt_review to also return response_id, attempt_id, quiz_id, and course_id for review requests
+create or replace function public.get_attempt_review(p_attempt uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  a      public.attempts;
+  qz     public.quizzes;
+  v_show boolean;
+  qs     jsonb;
+begin
+  select * into a from public.attempts where id = p_attempt and student_id = auth.uid();
+  if a.id is null then raise exception 'Attempt not found.'; end if;
+  if a.status = 'in_progress' then raise exception 'Quiz is still in progress.'; end if;
+  select * into qz from public.quizzes where id = a.quiz_id;
+  if not qz.results_released and not qz.is_practice then
+    raise exception 'Results for this quiz have not been released yet.';
+  end if;
+  v_show := qz.show_answers or qz.is_practice;
+
+  select jsonb_agg(jsonb_build_object(
+           'id', q.id, 'response_id', r.id, 'kind', q.kind, 'prompt', q.prompt, 'marks', q.marks, 'unit', q.unit,
+           'vars', case when coalesce(trim(q.formula), '') <> ''
+                        then public.gen_vars(a.seed, q.id, q.params) else '{}'::jsonb end,
+           'options', case when q.kind in ('mcq','truefalse','multiselect') then q.options else '[]'::jsonb end,
+           'value', r.value, 'is_correct', r.is_correct, 'marks_awarded', r.marks_awarded,
+           'feedback', r.feedback,
+           'image_path', q.image_path,
+           'correct', case when not v_show then null
+                           when q.kind in ('mcq','truefalse','multiselect') then q.answer->'correct'
+                           when q.kind = 'short' then q.answer->'accepted'
+                           when q.kind = 'numeric' then
+                             (select to_jsonb(public.expected_value(q, a.seed)))
+                           else null end,
+           'explanation', case when v_show then q.explanation else '' end)
+         order by o.ord)
+    into qs
+    from unnest(a.question_order) with ordinality as o(qid, ord)
+    join public.questions q on q.id = o.qid
+    left join public.responses r on r.attempt_id = a.id and r.question_id = q.id;
+
+  return jsonb_build_object(
+    'title', qz.title,
+    'course_id', qz.course_id,
+    'quiz_id', qz.id,
+    'attempt_id', a.id,
+    'results_released', qz.results_released,
+    'score', a.score,
+    'max_score', a.max_score,
+    'status', a.status,
+    'questions', coalesce(qs, '[]'::jsonb)
+  );
+end;
+$$;
+
+create table if not exists public.mark_reviews (
+  id            uuid primary key default gen_random_uuid(),
+  course_id     uuid not null references public.courses on delete cascade,
+  kind          text not null check (kind in ('quiz_response', 'assignment')),
+  quiz_id       uuid references public.quizzes on delete cascade,
+  attempt_id    uuid references public.attempts on delete cascade,
+  response_id   uuid references public.responses on delete cascade,
+  assignment_id uuid references public.assignments on delete cascade,
+  submission_id uuid references public.submissions on delete cascade,
+  student_id    uuid not null references public.profiles(id) on delete cascade,
+  index_no      text not null,
+  reason        text not null check (length(btrim(reason)) >= 5),
+  original_marks numeric,
+  updated_marks  numeric,
+  status        text not null default 'pending' check (status in ('pending', 'approved', 'declined')),
+  reviewer_note text not null default '',
+  reviewed_by   uuid references public.profiles(id) on delete set null,
+  reviewed_at   timestamptz,
+  created_at    timestamptz not null default now()
+);
+create index if not exists mark_reviews_course_idx on public.mark_reviews (course_id, status, created_at desc);
+create unique index if not exists mark_reviews_resp_pending_idx on public.mark_reviews (response_id) where response_id is not null and status = 'pending';
+create unique index if not exists mark_reviews_sub_pending_idx  on public.mark_reviews (submission_id) where submission_id is not null and status = 'pending';
+
+alter table public.mark_reviews enable row level security;
+
+drop policy if exists "Students read own mark reviews" on public.mark_reviews;
+create policy "Students read own mark reviews" on public.mark_reviews
+  for select to authenticated
+  using (student_id = auth.uid());
+
+drop policy if exists "Staff manage course mark reviews" on public.mark_reviews;
+create policy "Staff manage course mark reviews" on public.mark_reviews
+  for all to authenticated
+  using (public.is_staff(course_id))
+  with check (public.is_staff(course_id));
+
+create or replace function public.request_mark_review(
+  p_kind      text,
+  p_target_id uuid,
+  p_reason    text
+) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  v_index   text;
+  v_course  uuid;
+  v_id      uuid;
+  r_row     record;
+  s_row     record;
+begin
+  if p_kind not in ('quiz_response', 'assignment') then
+    raise exception 'Invalid review target type.';
+  end if;
+  if length(btrim(coalesce(p_reason, ''))) < 5 then
+    raise exception 'Please enter a brief justification (at least 5 characters).';
+  end if;
+  select public.norm_index(index_no) into v_index from public.profiles where id = auth.uid();
+
+  if p_kind = 'quiz_response' then
+    select r.id as response_id, r.marks_awarded, a.id as attempt_id, a.quiz_id, a.status, qz.course_id, qz.results_released
+      into r_row
+      from public.responses r
+      join public.attempts a on a.id = r.attempt_id
+      join public.quizzes qz on qz.id = a.quiz_id
+     where r.id = p_target_id and a.student_id = auth.uid();
+    if r_row.response_id is null then raise exception 'Quiz answer not found.'; end if;
+    if r_row.status = 'in_progress' or not r_row.results_released then
+      raise exception 'Marks must be released before requesting a review.';
+    end if;
+    if r_row.marks_awarded is null then
+      raise exception 'This answer is still being marked.';
+    end if;
+    if exists (select 1 from public.mark_reviews mr where mr.response_id = p_target_id and mr.status = 'pending') then
+      raise exception 'A mark review request is already pending for this question.';
+    end if;
+    insert into public.mark_reviews (
+      course_id, kind, quiz_id, attempt_id, response_id, student_id, index_no, reason, original_marks
+    ) values (
+      r_row.course_id, 'quiz_response', r_row.quiz_id, r_row.attempt_id, r_row.response_id,
+      auth.uid(), coalesce(v_index, ''), btrim(p_reason), r_row.marks_awarded
+    ) returning id into v_id;
+    return v_id;
+  else
+    select s.id as submission_id, s.marks, a.id as assignment_id, a.course_id, a.released
+      into s_row
+      from public.submissions s
+      join public.assignments a on a.id = s.assignment_id
+     where s.id = p_target_id and s.student_id = auth.uid();
+    if s_row.submission_id is null then raise exception 'Assignment submission not found.'; end if;
+    if not s_row.released or s_row.marks is null then
+      raise exception 'Marks must be released before requesting a review.';
+    end if;
+    if exists (select 1 from public.mark_reviews mr where mr.submission_id = p_target_id and mr.status = 'pending') then
+      raise exception 'A mark review request is already pending for this assignment.';
+    end if;
+    insert into public.mark_reviews (
+      course_id, kind, assignment_id, submission_id, student_id, index_no, reason, original_marks
+    ) values (
+      s_row.course_id, 'assignment', s_row.assignment_id, s_row.submission_id,
+      auth.uid(), coalesce(v_index, ''), btrim(p_reason), s_row.marks
+    ) returning id into v_id;
+    return v_id;
+  end if;
+end;
+$$;
+
+create or replace function public.my_mark_reviews(
+  p_course  uuid default null,
+  p_attempt uuid default null
+) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', mr.id,
+      'kind', mr.kind,
+      'quiz_id', mr.quiz_id,
+      'attempt_id', mr.attempt_id,
+      'response_id', mr.response_id,
+      'assignment_id', mr.assignment_id,
+      'submission_id', mr.submission_id,
+      'reason', mr.reason,
+      'original_marks', mr.original_marks,
+      'updated_marks', mr.updated_marks,
+      'status', mr.status,
+      'reviewer_note', mr.reviewer_note,
+      'reviewed_at', mr.reviewed_at,
+      'created_at', mr.created_at
+    ) order by mr.created_at desc)
+    from public.mark_reviews mr
+    where mr.student_id = auth.uid()
+      and (p_course is null or mr.course_id = p_course)
+      and (p_attempt is null or mr.attempt_id = p_attempt)
+  ), '[]'::jsonb);
+$$;
+
+create or replace function public.course_mark_reviews(
+  p_course     uuid,
+  p_quiz       uuid default null,
+  p_assignment uuid default null
+) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public.require_staff(p_course);
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', mr.id,
+      'course_id', mr.course_id,
+      'kind', mr.kind,
+      'quiz_id', mr.quiz_id,
+      'attempt_id', mr.attempt_id,
+      'response_id', mr.response_id,
+      'assignment_id', mr.assignment_id,
+      'submission_id', mr.submission_id,
+      'student_id', mr.student_id,
+      'index_no', mr.index_no,
+      'full_name', coalesce(r.full_name, p.full_name, mr.index_no),
+      'programme', coalesce(r.programme, ''),
+      'stream', coalesce(r.stream, ''),
+      'item_title', case when mr.kind = 'quiz_response' then qz.title else a.title end,
+      'question_prompt', case when mr.kind = 'quiz_response' then q.prompt else null end,
+      'student_answer', case when mr.kind = 'quiz_response' then coalesce(resp.value #>> '{}', '') else coalesce(sub.response_text, sub.file_name, '') end,
+      'max_marks', case when mr.kind = 'quiz_response' then q.marks else a.max_marks end,
+      'current_marks', case when mr.kind = 'quiz_response' then resp.marks_awarded else sub.marks end,
+      'original_marks', mr.original_marks,
+      'updated_marks', mr.updated_marks,
+      'reason', mr.reason,
+      'status', mr.status,
+      'reviewer_note', mr.reviewer_note,
+      'reviewed_at', mr.reviewed_at,
+      'created_at', mr.created_at
+    ) order by (mr.status = 'pending') desc, mr.created_at desc)
+    from public.mark_reviews mr
+    left join public.profiles p on p.id = mr.student_id
+    left join public.roster r on upper(trim(r.index_no)) = upper(trim(mr.index_no))
+    left join public.quizzes qz on qz.id = mr.quiz_id
+    left join public.responses resp on resp.id = mr.response_id
+    left join public.questions q on q.id = resp.question_id
+    left join public.assignments a on a.id = mr.assignment_id
+    left join public.submissions sub on sub.id = mr.submission_id
+    where mr.course_id = p_course
+      and (p_quiz is null or mr.quiz_id = p_quiz)
+      and (p_assignment is null or mr.assignment_id = p_assignment)
+  ), '[]'::jsonb);
+end;
+$$;
+
+create or replace function public.resolve_mark_review(
+  p_review    uuid,
+  p_status    text,
+  p_new_marks numeric default null,
+  p_note      text default ''
+) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_rev  public.mark_reviews;
+  v_max  numeric;
+  v_note text := coalesce(btrim(p_note), '');
+begin
+  if p_status not in ('approved', 'declined') then
+    raise exception 'Invalid review resolution status.';
+  end if;
+  select * into v_rev from public.mark_reviews where id = p_review;
+  if v_rev.id is null then raise exception 'Mark review request not found.'; end if;
+  perform public.require_staff(v_rev.course_id);
+
+  if p_status = 'approved' and p_new_marks is not null then
+    if v_rev.kind = 'quiz_response' then
+      select q.marks into v_max
+        from public.responses r join public.questions q on q.id = r.question_id
+       where r.id = v_rev.response_id;
+      if p_new_marks < 0 or p_new_marks > coalesce(v_max, 0) then
+        raise exception 'Updated marks must be between 0 and %.', v_max;
+      end if;
+      update public.responses
+         set marks_awarded = p_new_marks,
+             is_correct = (p_new_marks = v_max),
+             feedback = case when v_note <> '' then v_note else feedback end,
+             marked_by = auth.uid()
+       where id = v_rev.response_id;
+      perform public.recalc_attempt(v_rev.attempt_id);
+    else
+      select a.max_marks into v_max from public.assignments a where a.id = v_rev.assignment_id;
+      if p_new_marks < 0 or p_new_marks > coalesce(v_max, 0) then
+        raise exception 'Updated marks must be between 0 and %.', v_max;
+      end if;
+      update public.submissions
+         set marks = p_new_marks,
+             feedback = case when v_note <> '' then
+               case when coalesce(btrim(feedback), '') <> '' then feedback || E'
+
+Review response: ' || v_note else v_note end
+             else feedback end,
+             marked_at = now(),
+             marked_by = auth.uid()
+       where id = v_rev.submission_id;
+    end if;
+  end if;
+
+  update public.mark_reviews
+     set status = p_status,
+         updated_marks = case when p_status = 'approved' and p_new_marks is not null then p_new_marks else coalesce(updated_marks, original_marks) end,
+         reviewer_note = v_note,
+         reviewed_by = auth.uid(),
+         reviewed_at = now()
+   where id = p_review;
+
+  perform public.log_course_audit(
+    v_rev.course_id,
+    case when p_status = 'approved' then 'mark_review_approved' else 'mark_review_declined' end,
+    format('%s mark review for %s', case when p_status = 'approved' then 'Approved' else 'Declined' end, v_rev.index_no),
+    jsonb_build_object('review_id', p_review, 'kind', v_rev.kind, 'new_marks', p_new_marks)
+  );
+end;
+$$;
+
+-- 16E. Per-material viewer breakdown & Course attention badge counters
+create or replace function public.material_viewer_breakdown(
+  p_course   uuid,
+  p_material uuid
+) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_mat record;
+  v_rows jsonb;
+begin
+  perform public.require_staff(p_course);
+  select id, title, kind into v_mat from public.materials where id = p_material and course_id = p_course;
+  if v_mat.id is null then raise exception 'Material not found.'; end if;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'index_no', r.index_no,
+    'full_name', r.full_name,
+    'programme', coalesce(r.programme, ''),
+    'stream', coalesce(r.stream, ''),
+    'activated', (p.id is not null),
+    'viewed', (coalesce(mv.view_count, 0) > 0),
+    'view_count', coalesce(mv.view_count, 0),
+    'last_viewed_at', mv.last_viewed_at
+  ) order by (coalesce(mv.view_count, 0) > 0) asc, r.full_name, r.index_no), '[]'::jsonb)
+  into v_rows
+  from public.enrollments e
+  join public.roster r on r.index_no = e.index_no
+  left join public.profiles p on p.index_no = r.index_no
+  left join public.material_views mv on mv.material_id = p_material and mv.student_id = p.id
+  where e.course_id = p_course;
+
+  return jsonb_build_object(
+    'material', jsonb_build_object('id', v_mat.id, 'title', v_mat.title, 'kind', v_mat.kind),
+    'students', v_rows
+  );
+end;
+$$;
+
+create or replace function public.course_attention_counts(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public.require_staff(p_course);
+  return jsonb_build_object(
+    'unreplied_messages', (select count(*)::int from public.course_messages m where m.course_id = p_course and m.reply is null),
+    'unanswered_qa',      (select count(*)::int from public.forum_posts f where f.course_id = p_course and f.answer is null and f.hidden = false),
+    'pending_excuses',    (select count(*)::int from public.attendance_excuses e where e.course_id = p_course and e.status = 'pending'),
+    'pending_reviews',    (select count(*)::int from public.mark_reviews mr where mr.course_id = p_course and mr.status = 'pending')
+  );
+end;
+$$;
+
+create or replace function public.student_attention_counts(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_prog   text := '';
+  v_stream text := '';
+begin
+  if not public.is_enrolled(p_course) then
+    return jsonb_build_object('unread_announcements', 0, 'open_polls', 0);
+  end if;
+  select coalesce(r.programme, ''), coalesce(r.stream, '') into v_prog, v_stream
+    from public.profiles p
+    left join public.roster r on upper(trim(r.index_no)) = upper(trim(p.index_no))
+   where p.id = auth.uid()
+   limit 1;
+
+  return jsonb_build_object(
+    'unread_announcements', (
+      select count(*)::int
+        from public.announcements a
+       where a.course_id = p_course
+         and a.created_at > now() - interval '30 days'
+         and not exists (
+           select 1 from public.announcement_reads ar
+            where ar.announcement_id = a.id and ar.student_id = auth.uid()
+         )
+         and (
+           a.audience is null
+           or (
+             (coalesce(jsonb_array_length(a.audience->'programmes'), 0) = 0
+              or exists (select 1 from jsonb_array_elements_text(a.audience->'programmes') pr where upper(trim(pr)) = upper(trim(v_prog))))
+             and
+             (coalesce(jsonb_array_length(a.audience->'streams'), 0) = 0
+              or exists (select 1 from jsonb_array_elements_text(a.audience->'streams') st where upper(trim(st)) = upper(trim(v_stream))))
+           )
+         )
+    ),
+    'open_polls', (
+      select count(*)::int
+        from public.course_polls cp
+       where cp.course_id = p_course
+         and cp.is_open = true
+         and not exists (
+           select 1 from public.poll_votes pv where pv.poll_id = cp.id and pv.student_id = auth.uid()
+         )
+    )
+  );
+end;
+$$;
+
+do $$
+declare f text;
+begin
+  foreach f in array array[
+    'mark_announcement_read(uuid)',
+    'course_announcement_reads(uuid)',
+    'my_announcement_reads(uuid)',
+    'submit_attendance_excuse(uuid, text, text, text)',
+    'my_attendance_excuses(uuid)',
+    'course_attendance_excuses(uuid)',
+    'resolve_attendance_excuse(uuid, text, text)',
+    'request_mark_review(text, uuid, text)',
+    'my_mark_reviews(uuid, uuid)',
+    'course_mark_reviews(uuid, uuid, uuid)',
+    'resolve_mark_review(uuid, text, numeric, text)',
+    'material_viewer_breakdown(uuid, uuid)',
+    'course_attention_counts(uuid)',
+    'student_attention_counts(uuid)'
+  ]
+  loop
+    execute format('revoke execute on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated', f);
+  end loop;
+end $$;

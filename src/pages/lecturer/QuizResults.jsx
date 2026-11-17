@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
 import { fmtFull, fmtNumber, pct } from '../../lib/format.js';
 import { downloadWorkbook } from '../../lib/sheets.js';
@@ -18,6 +18,7 @@ import { ALL_NEW_FEATURES_SQL } from '../../lib/allFeaturesSql.js';
 import { parseQuizMeta, serializeQuizMeta } from '../../lib/quizMeta.js';
 import RubricGrader, { RubricEditor } from '../../components/RubricGrader.jsx';
 import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
+import MarkReviewQueue from '../../components/MarkReviewQueue.jsx';
 
 const BINS = [
   { label: '0–39%', lo: 0, hi: 39.999, color: 'var(--amber)' },
@@ -39,22 +40,25 @@ const STATUS = {
 export default function QuizResults() {
   const { quizId } = useParams();
   const { isTA } = useAuth();
-  const [tab, setTab] = useState('gradebook');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get('tab') || 'gradebook';
+  const setTab = (t) => setSearchParams({ tab: t }, { replace: true });
   const [regrading, setRegrading] = useState(false);
   const [showFeaturesSql, setShowFeaturesSql] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
   const { data, error, loading, reload, setData } = useLoad(async () => {
     const quiz = await run(supabase.from('quizzes').select('*, courses(id, code, title)').eq('id', quizId).single());
-    const [rows, queue] = await Promise.all([
+    const [rows, queue, reviews] = await Promise.all([
       rpcAll('quiz_gradebook', { p_quiz: quizId }),
       rpcAll('marking_queue', { p_quiz: quizId }),
+      rpc('course_mark_reviews', { p_course: quiz.course_id, p_quiz: quizId }).catch(() => []),
     ]);
     const { photos, meta: photoMeta } = await loadQuizProctorPhotos({
       courseId: quiz.course_id,
       quizId: quiz.id,
       rows,
     });
-    return { quiz, rows, queue, photos, photoMeta };
+    return { quiz, rows, queue, reviews: Array.isArray(reviews) ? reviews : [], photos, photoMeta };
   }, [quizId]);
 
   const photoMap = data?.photos || new Map();
@@ -65,7 +69,8 @@ export default function QuizResults() {
   if (loading) return <Loading label="Collecting results…" />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
 
-  const { quiz, rows, queue } = data;
+  const { quiz, rows, queue, reviews } = data;
+  const pendingReviews = (reviews || []).filter((r) => r.status === 'pending').length;
   const pending = queue.filter((r) => r.marks_awarded === null).length;
   const activeCount = rows.filter((r) => r.status === 'in_progress').length;
 
@@ -126,6 +131,7 @@ export default function QuizResults() {
           { id: 'live', label: 'Live monitor', count: activeCount },
           { id: 'short', label: 'Short answers' },
           { id: 'marking', label: 'Written answers', count: pending },
+          ...(reviews?.length ? [{ id: 'reviews', label: 'Mark reviews', count: pendingReviews }] : []),
           ...(isTA ? [] : [{ id: 'analysis', label: 'Question analysis' }, { id: 'integrity', label: 'Integrity checks' }]),
         ]} value={tab}
           onChange={(t) => { setTab(t); if (t === 'gradebook') reload(); }} />
@@ -133,6 +139,7 @@ export default function QuizResults() {
         {tab === 'live' && <LiveQuizMonitor quiz={quiz} isTA={isTA} onMutate={reload} />}
         {tab === 'short' && <ShortAnswerClusterTab quiz={quiz} onUpdated={reload} onShowSql={() => setShowFeaturesSql(true)} />}
         {tab === 'marking' && <Marking quiz={quiz} isTA={isTA} queue={queue} onQuizUpdated={(nextQ) => setData((d) => ({ ...d, quiz: nextQ }))} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
+        {tab === 'reviews' && <MarkReviewQueue reviews={reviews || []} onResolved={reload} title="Quiz mark review requests" />}
         {tab === 'analysis' && !isTA && <ItemAnalysis quiz={quiz} />}
         {tab === 'integrity' && !isTA && <Integrity quiz={quiz} rows={rows} photos={photoMap} onShowSql={() => setShowFeaturesSql(true)} />}
       </div>

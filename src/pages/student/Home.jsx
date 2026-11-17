@@ -4,6 +4,7 @@ import CheckInModal from '../../components/CheckIn.jsx';
 import { useAuth } from '../../lib/auth.jsx';
 import { buildDeadlinesIcs, googleCalendarUrl } from '../../lib/calendar.js';
 import { assignmentMatchesStudent, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
+import { announcementMatchesStudent, sortAnnouncementsPinnedFirst } from '../../lib/announcementMeta.js';
 import { downloadText } from '../../lib/sheets.js';
 import { rpc, run, supabase } from '../../lib/supabase.js';
 import { dayChip, fmtDateTime, greeting, relative } from '../../lib/format.js';
@@ -36,7 +37,7 @@ export default function StudentHome() {
     const [courses, upcoming, news, openAtt, cohort] = await Promise.all([
       run(supabase.from('courses').select('id, code, title, color, semester, description').eq('archived', false).order('code')),
       rpc('my_upcoming'),
-      run(supabase.from('announcements').select('id, title, body, created_at, courses(code, color)').order('created_at', { ascending: false }).limit(5)),
+      run(supabase.from('announcements').select('id, title, body, created_at, pinned, audience, courses(code, color)').order('created_at', { ascending: false }).limit(15)).catch(() => run(supabase.from('announcements').select('id, title, body, created_at, courses(code, color)').order('created_at', { ascending: false }).limit(5))),
       rpc('my_open_attendance'),
       rpc('my_cohort').catch(() => null),
     ]);
@@ -55,7 +56,10 @@ export default function StudentHome() {
         }
       }
     }
-    return { courses, upcoming: filteredUpcoming, news, openAtt: openAtt || [] };
+    const filteredNews = sortAnnouncementsPinnedFirst(
+      (news || []).filter((n) => announcementMatchesStudent(n, cohort))
+    ).slice(0, 6);
+    return { courses, upcoming: filteredUpcoming, news: filteredNews, openAtt: openAtt || [] };
   }, []);
 
   const firstName = (profile.full_name || '').split(' ')[0];
@@ -292,7 +296,10 @@ export default function StudentHome() {
                   <div key={n.id} className="list-row" style={{ alignItems: 'flex-start' }}>
                     <div className="list-main">
                       <span className="tiny muted">{n.courses?.code} · {relative(n.created_at)}</span>
-                      <span className="strong small">{n.title}</span>
+                      <span className="row-wrap" style={{ gap: 6, alignItems: 'center' }}>
+                        {n.pinned && <span className="badge badge-teal" style={{ fontSize: 10, padding: '1px 6px' }}>Pinned</span>}
+                        <span className="strong small">{n.title}</span>
+                      </span>
                       {n.body && (
                         <span className="small pre" style={{ color: 'var(--text-2)' }}>
                           {n.body.length > 220 ? `${n.body.slice(0, 220)}…` : n.body}

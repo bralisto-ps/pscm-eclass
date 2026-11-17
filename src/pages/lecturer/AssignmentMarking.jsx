@@ -16,6 +16,7 @@ import RubricGrader from '../../components/RubricGrader.jsx';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { AssignmentForm } from './course/AssignmentsTab.jsx';
 import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
+import MarkReviewQueue from '../../components/MarkReviewQueue.jsx';
 import { compareSubmissionTexts, extractAssignmentTexts } from '../../lib/similarity.js';
 
 const SecureSlideViewer = lazy(() => import('../../components/SecureSlideViewer.jsx'));
@@ -55,16 +56,17 @@ export default function AssignmentMarking() {
   const { isTA, profile } = useAuth();
   const { data, error, loading, reload, setData } = useLoad(async () => {
     const a = await run(supabase.from('assignments').select('*, courses(id, code, title)').eq('id', assignmentId).single());
-    const [students, subs, peerData] = await Promise.all([
+    const [students, subs, peerData, reviews] = await Promise.all([
       rpcAll('course_students', { p_course: a.course_id }),
       allSubmissions(assignmentId),
       rpc('assignment_peer_reviews', { p_assignment: assignmentId }).catch(() => ({ reviews: [], _missing: true })),
+      rpc('course_mark_reviews', { p_course: a.course_id, p_assignment: assignmentId }).catch(() => []),
     ]);
     const byIndex = new Map(subs.map((s) => [s.profiles?.index_no, s]));
     const rows = students.map((st) => ({ ...st, sub: byIndex.get(st.index_no) || null }));
     subs.filter((s) => !students.some((st) => st.index_no === s.profiles?.index_no))
       .forEach((s) => rows.push({ index_no: s.profiles?.index_no, full_name: s.profiles?.full_name, activated: true, sub: s }));
-    return { a, rows, peerReviews: peerData?.reviews || [], peerMissingRpc: Boolean(peerData?._missing) };
+    return { a, rows, peerReviews: peerData?.reviews || [], peerMissingRpc: Boolean(peerData?._missing), reviews: Array.isArray(reviews) ? reviews : [] };
   }, [assignmentId]);
 
   const [filter, setFilter] = useState('tomark');
@@ -309,6 +311,10 @@ export default function AssignmentMarking() {
       </Topbar>
 
       <div className="page stack">
+        {data.reviews?.length > 0 && (
+          <MarkReviewQueue reviews={data.reviews} onResolved={reload} title="Assignment mark review requests" />
+        )}
+
         <div className="grid-4">
           <div className="kpi">
             <div className="kpi-head"><span className="l">Submitted</span><span className="kpi-icon"><Icon name="upload" size={16} /></span></div>

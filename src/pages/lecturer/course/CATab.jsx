@@ -311,7 +311,7 @@ function CAInner({ course, data, reload, onCourseChanged }) {
     }
 
     // Save description with serialized metadata
-    const serialized = serializeCourseMeta(meta.about, caConfig, examConfig);
+    const serialized = serializeCourseMeta(meta.about, caConfig, examConfig, meta.course_info);
 
     await run(
       supabase.from('courses').update({
@@ -969,7 +969,7 @@ function CAInner({ course, data, reload, onCourseChanged }) {
           onClose={() => setBorderlineModal(false)}
           onSave={async (updatedExamConfig) => {
             setExamConfig(updatedExamConfig);
-            const serialized = serializeCourseMeta(meta.about, caConfig, updatedExamConfig);
+            const serialized = serializeCourseMeta(meta.about, caConfig, updatedExamConfig, meta.course_info);
             await run(supabase.from('courses').update({ description: serialized }).eq('id', course.id));
             toast('Moderated exam marks saved.');
             reload();
@@ -986,7 +986,7 @@ function CAInner({ course, data, reload, onCourseChanged }) {
           examConfig={examConfig}
           onSave={async (updatedExamConfig) => {
             setExamConfig(updatedExamConfig);
-            const serialized = serializeCourseMeta(meta.about, caConfig, updatedExamConfig);
+            const serialized = serializeCourseMeta(meta.about, caConfig, updatedExamConfig, meta.course_info);
             await run(supabase.from('courses').update({ description: serialized }).eq('id', course.id));
             toast(updatedExamConfig.released ? 'Final exam scores released to students!' : 'Exam marks saved.');
             reload();

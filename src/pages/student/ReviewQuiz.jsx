@@ -5,7 +5,7 @@ import { fillVars, fmtNumber, pct } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import QuestionDiagram from '../../components/QuestionDiagram.jsx';
 import { Topbar } from '../../components/Layout.jsx';
-import { ErrorNote, Loading, useLoad } from '../../components/ui.jsx';
+import { ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
 
 const LETTERS = 'ABCDEFGHIJ';
@@ -18,7 +18,45 @@ function shown(v) {
 export default function ReviewQuiz() {
   const { attemptId } = useParams();
   const navigate = useNavigate();
-  const { data, error, loading, reload } = useLoad(() => rpc('get_attempt_review', { p_attempt: attemptId }), [attemptId]);
+  const toast = useToast();
+  const [act, busy] = useAction();
+  const { data, error, loading, reload } = useLoad(async () => {
+    const [review, myRevs] = await Promise.all([
+      rpc('get_attempt_review', { p_attempt: attemptId }),
+      rpc('my_mark_reviews', { p_attempt: attemptId }).catch(() => []),
+    ]);
+    const revMap = new Map();
+    if (Array.isArray(myRevs)) {
+      myRevs.forEach((r) => {
+        if (r.response_id && !revMap.has(r.response_id)) revMap.set(r.response_id, r);
+      });
+    }
+    return { ...review, reviewMap: revMap };
+  }, [attemptId]);
+  const [requestingQ, setRequestingQ] = useState(null);
+  const [reason, setReason] = useState('');
+
+  async function submitReview() {
+    if (!requestingQ?.response_id) return;
+    if (reason.trim().length < 5) {
+      toast('Please enter a brief justification (at least 5 characters).', 'error');
+      return;
+    }
+    const ok = await act(
+      () =>
+        rpc('request_mark_review', {
+          p_kind: 'quiz_response',
+          p_target_id: requestingQ.response_id,
+          p_reason: reason.trim(),
+        }),
+      'Mark review request sent to your lecturer.'
+    );
+    if (ok !== undefined) {
+      setRequestingQ(null);
+      setReason('');
+      reload();
+    }
+  }
   const [showFlashcards, setShowFlashcards] = useState(false);
 
   return (
@@ -172,6 +210,38 @@ export default function ReviewQuiz() {
                       </p>
                     </div>
                   )}
+                  {q.response_id && q.marks_awarded !== null && data.results_released && (() => {
+                    const rev = data.reviewMap?.get(q.response_id);
+                    return (
+                      <div className="between" style={{ paddingTop: 10, borderTop: '1px solid var(--line-2)', flexWrap: 'wrap', gap: 8 }}>
+                        {rev ? (
+                          <div className="stack-sm" style={{ gap: 2 }}>
+                            <span className={`badge ${rev.status === 'pending' ? 'badge-amber' : rev.status === 'approved' ? 'badge-teal' : 'badge-red'}`}>
+                              {rev.status === 'pending'
+                                ? 'Mark review pending'
+                                : rev.status === 'approved'
+                                ? `Mark adjusted to ${fmtNumber(rev.updated_marks)} / ${fmtNumber(q.marks)}`
+                                : 'Mark review declined'}
+                            </span>
+                            {rev.reviewer_note && (
+                              <span className="tiny muted"><strong>Lecturer note:</strong> {rev.reviewer_note}</span>
+                            )}
+                          </div>
+                        ) : (
+                          <>
+                            <span className="tiny muted">Believe this answer was marked unfairly?</span>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-ghost"
+                              onClick={() => { setReason(''); setRequestingQ(q); }}
+                            >
+                              <Icon name="flag" size={13} /> Request mark review
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </article>
               );
             })}
@@ -179,6 +249,34 @@ export default function ReviewQuiz() {
         )}
       </div>
 
+      {requestingQ && (
+        <Modal
+          title="Request mark review"
+          onClose={() => setRequestingQ(null)}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={() => setRequestingQ(null)} disabled={busy}>Cancel</button>
+              <button type="button" className="btn btn-primary" onClick={submitReview} disabled={busy || reason.trim().length < 5}>
+                {busy ? 'Sending…' : 'Submit request'}
+              </button>
+            </>
+          }
+        >
+          <div className="small muted">
+            Current score: <strong className="mono">{fmtNumber(requestingQ.marks_awarded)} / {fmtNumber(requestingQ.marks)}</strong>
+          </div>
+          <Field label="Why should this answer be reviewed?" hint="explain clearly for your lecturer or TA">
+            <textarea
+              className="textarea"
+              style={{ minHeight: 100 }}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Explain why your answer merits additional marks…"
+              autoFocus
+            />
+          </Field>
+        </Modal>
+      )}
       {showFlashcards && data && (
         <FlashcardDeckModal
           quiz={{ title: data.title }}

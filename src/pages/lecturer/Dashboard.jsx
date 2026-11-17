@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { rpc, run, supabase } from '../../lib/supabase.js';
 import { useAuth } from '../../lib/auth.jsx';
 import { COURSE_COLORS, contrastWithWhite, fmtDate, greeting, initials, relative } from '../../lib/format.js';
+import { parseCourseMeta, serializeCourseMeta } from '../../lib/courseMeta.js';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import { Bar, DashboardSkeleton, ErrorNote, Field, Modal, Swatch, useAction, useLoad } from '../../components/ui.jsx';
@@ -27,6 +28,8 @@ async function fetchDashboardBundle() {
       liveQuizTakers: 0,
       dailyPulse: [],
       unansweredQa: [],
+      attentionItems: [],
+      attentionCounts: { messages: 0, excuses: 0, reviews: 0, qa: 0 },
     };
   }
 
@@ -46,6 +49,9 @@ async function fetchDashboardBundle() {
     recentAttemptsRes,
     recentSubsRes,
     qaRes,
+    msgRes,
+    excuseRes,
+    reviewRes,
   ] = await Promise.allSettled([
     supabase
       .from('submissions')
@@ -91,6 +97,24 @@ async function fetchDashboardBundle() {
       .eq('hidden', false)
       .order('created_at', { ascending: false })
       .limit(20),
+    supabase
+      .from('course_messages')
+      .select('id, course_id, subject, message, created_at')
+      .is('reply', null)
+      .order('created_at', { ascending: false })
+      .limit(40),
+    supabase
+      .from('attendance_excuses')
+      .select('id, course_id, session_id, index_no, reason, created_at')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false })
+      .limit(50),
+    supabase
+      .from('mark_reviews')
+      .select('id, course_id, kind, quiz_id, assignment_id, index_no, reason, created_at')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false })
+      .limit(50),
   ]);
 
   const activeIds = new Set(courses.filter((c) => !c.archived).map((c) => c.id));
@@ -625,6 +649,41 @@ export default function Dashboard() {
                 </main>
 
                 <aside className="stack">
+                  {(bundle.attentionItems?.length || 0) > 0 && (
+                    <section className="card-flush" style={{ borderColor: 'var(--amber)' }}>
+                      <div className="card-head">
+                        <div className="row" style={{ gap: 8 }}>
+                          <Icon name="bell" size={16} style={{ color: 'var(--amber-ink)' }} />
+                          <h2>Needs my attention</h2>
+                        </div>
+                        <span className="badge badge-amber">
+                          {bundle.attentionCounts.excuses + bundle.attentionCounts.reviews + bundle.attentionCounts.messages}
+                        </span>
+                      </div>
+                      {bundle.attentionItems.slice(0, 8).map((item) => {
+                        const c = courseById.get(item.courseId);
+                        const kindLabel =
+                          item.kind === 'excuses' ? 'Excuse' : item.kind === 'reviews' ? 'Re-mark' : 'Inbox';
+                        return (
+                          <Link key={item.id} to={item.to} className="list-row">
+                            <span className="nav-course-dot" style={{ background: c?.color || 'var(--teal)', width: 11, height: 11 }} />
+                            <div className="list-main">
+                              <span className="title">{item.label}</span>
+                              <span className="tiny muted row" style={{ gap: 6, marginTop: 2 }}>
+                                <span className="queue-kind">{kindLabel}</span>
+                                <span>{c?.code}</span>
+                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 160 }}>
+                                  · {item.preview}
+                                </span>
+                              </span>
+                            </div>
+                            <Icon name="chevronRight" size={14} style={{ color: 'var(--muted)' }} />
+                          </Link>
+                        );
+                      })}
+                    </section>
+                  )}
+
                   {/* 1. Direct Marking Queue (Routes straight to Assignment OR Quiz Written Marking!) */}
                   <section className="card-flush">
                     <div className="card-head">
@@ -847,11 +906,16 @@ function Mini({ v, l }) {
 export function CourseForm({ course, onClose, onSaved }) {
   const navigate = useNavigate();
   const [act, busy] = useAction();
+  const existingMeta = useMemo(() => parseCourseMeta(course), [course]);
   const [f, setF] = useState({
     code: course?.code || '',
     title: course?.title || '',
     semester: course?.semester || '',
-    description: course?.description || '',
+    about: existingMeta.about || '',
+    venue: existingMeta.course_info?.venue || '',
+    schedule: existingMeta.course_info?.schedule || '',
+    officeHours: existingMeta.course_info?.officeHours || '',
+    syllabusNote: existingMeta.course_info?.syllabusNote || '',
     color: course?.color || COURSE_COLORS[0],
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -859,7 +923,24 @@ export function CourseForm({ course, onClose, onSaved }) {
 
   async function save() {
     if (!f.code.trim() || !f.title.trim() || tooLight) return;
-    const row = { ...f, code: f.code.trim().toUpperCase(), title: f.title.trim() };
+    const serializedDescription = serializeCourseMeta(
+      f.about,
+      existingMeta.ca_config,
+      existingMeta.exam_config,
+      {
+        venue: f.venue,
+        schedule: f.schedule,
+        officeHours: f.officeHours,
+        syllabusNote: f.syllabusNote,
+      }
+    );
+    const row = {
+      code: f.code.trim().toUpperCase(),
+      title: f.title.trim(),
+      semester: f.semester,
+      description: serializedDescription,
+      color: f.color,
+    };
     const result = await act(async () => {
       if (course) {
         await run(supabase.from('courses').update(row).eq('id', course.id));
@@ -876,7 +957,7 @@ export function CourseForm({ course, onClose, onSaved }) {
   }
 
   return (
-    <Modal title={course ? 'Course settings' : 'New course'} onClose={onClose}
+    <Modal title={course ? 'Course settings & timetable' : 'New course'} onClose={onClose}
       footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button>
         <button type="button" className="btn btn-primary" onClick={save} disabled={busy || !f.code.trim() || !f.title.trim() || tooLight}>Save</button></>}>
       <div className="grid-2">
@@ -884,7 +965,17 @@ export function CourseForm({ course, onClose, onSaved }) {
         <Field label="Semester" hint="optional"><input className="input" value={f.semester} onChange={set('semester')} placeholder="Semester 1, 2026/27" /></Field>
       </div>
       <Field label="Course title"><input className="input" value={f.title} onChange={set('title')} placeholder="Introduction to Supply Chain Management" /></Field>
-      <Field label="Short description" hint="optional"><textarea className="textarea" value={f.description} onChange={set('description')} /></Field>
+      <Field label="Short description" hint="optional"><textarea className="textarea" style={{ minHeight: 72 }} value={f.about} onChange={set('about')} /></Field>
+      <div className="grid-2">
+        <Field label="Lecture venue" hint="optional"><input className="input" value={f.venue} onChange={set('venue')} placeholder="Auditorium B / Block 4" /></Field>
+        <Field label="Office hours" hint="optional"><input className="input" value={f.officeHours} onChange={set('officeHours')} placeholder="Wed 2:00–4:00 PM" /></Field>
+      </div>
+      <Field label="Lecture timetable" hint="optional — shown on student course page">
+        <textarea className="textarea" style={{ minHeight: 64 }} value={f.schedule} onChange={set('schedule')} placeholder="Morning: Tue 8–10 AM · Evening: Thu 6–8 PM" />
+      </Field>
+      <Field label="Key syllabus note" hint="optional">
+        <input className="input" value={f.syllabusNote} onChange={set('syllabusNote')} placeholder="75% attendance required for final examination eligibility" />
+      </Field>
       <div className="field">
         <span className="field-label">Colour</span>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(36px, 1fr))', gap: 8 }}>

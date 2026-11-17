@@ -5,6 +5,9 @@ import { isViewOnlyPath, openStoredFile, setViewOnlyFlag } from '../lib/files.js
 import { useAuth } from '../lib/auth.jsx';
 import { fmtBytes, fmtDateTime, fmtNumber, relative } from '../lib/format.js';
 import Icon from './Icon.jsx';
+import CourseInfoCard from './CourseInfoCard.jsx';
+import { isItemLocked } from '../lib/courseMeta.js';
+import { formatAnnouncementAudience, sortAnnouncementsPinnedFirst } from '../lib/announcementMeta.js';
 import { Empty, ErrorNote, KindTag, Loading, Tabs, useAction, useLoad } from './ui.jsx';
 
 const SecureSlideViewer = lazy(() => import('./SecureSlideViewer.jsx'));
@@ -34,7 +37,7 @@ export default function StudentPreview({ course, onExit }) {
       materials: materials || [],
       quizzes: quizzes || [],
       assignments: assignments || [],
-      news: news || [],
+      news: sortAnnouncementsPinnedFirst(news || []),
     };
   }, [course.id]);
 
@@ -90,7 +93,7 @@ export default function StudentPreview({ course, onExit }) {
               <div className="card"><Empty icon="book" title="No lecture materials yet">Students see an empty materials tab.</Empty></div>
             ) : (
               <div className="two-col" style={{ gridTemplateColumns: '240px minmax(0, 1fr)' }}>
-                <aside className="card-flush">
+                <div className="stack"><CourseInfoCard course={course} /><aside className="card-flush">
                   {groups.map((g) => (
                     <button
                       key={g.id}
@@ -105,7 +108,7 @@ export default function StudentPreview({ course, onExit }) {
                       </span>
                     </button>
                   ))}
-                </aside>
+                </aside></div>
                 <section className="card stack">
                   <div>
                     <h2 style={{ margin: 0 }}>{activeWeek?.week_no ? `Week ${activeWeek.week_no} — ` : ''}{activeWeek?.title}</h2>
@@ -124,6 +127,8 @@ export default function StudentPreview({ course, onExit }) {
                               <div className="tiny muted row-wrap" style={{ gap: 6 }}>
                                 {m.locked ? (
                                   <span className="badge badge-amber"><Icon name="lock" size={11} /> Locked for students</span>
+                                ) : isItemLocked(m.unlock_at) ? (
+                                  <span className="badge badge-amber"><Icon name="clock" size={11} /> Scheduled · unlocks {fmtDateTime(m.unlock_at)}</span>
                                 ) : (
                                   <span>Visible to students</span>
                                 )}
@@ -237,8 +242,12 @@ export default function StudentPreview({ course, onExit }) {
               <div className="stack">
                 {data.news.map((n) => (
                   <article key={n.id} className="card stack-sm">
-                    <div className="between">
-                      <strong>{n.title}</strong>
+                    <div className="between" style={{ flexWrap: 'wrap', gap: 6 }}>
+                      <div className="row-wrap" style={{ gap: 6, alignItems: 'center' }}>
+                        {n.pinned && <span className="badge badge-teal"><Icon name="pin" size={11} /> Pinned</span>}
+                        {formatAnnouncementAudience(n) && <span className="badge badge-plum">For: {formatAnnouncementAudience(n)}</span>}
+                        <strong>{n.title}</strong>
+                      </div>
                       <span className="tiny muted">{relative(n.created_at)}</span>
                     </div>
                     <p className="pre small" style={{ margin: 0 }}>{n.body}</p>

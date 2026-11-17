@@ -2,6 +2,7 @@ import Messages from '../../components/Messages.jsx';
 import { useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
+import { hasCourseInfo, parseCourseMeta } from '../../lib/courseMeta.js';
 import { useAuth } from '../../lib/auth.jsx';
 import { fmtDateTime } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
@@ -42,13 +43,27 @@ export default function ManageCourse() {
   const { isTA } = useAuth();
   const [params, setParams] = useSearchParams();
   const [previewStudent, setPreviewStudent] = useState(false);
-  const tabs = isTA ? TABS.filter((t) => TA_TABS.includes(t.id)) : TABS;
+  const rawTabs = isTA ? TABS.filter((t) => TA_TABS.includes(t.id)) : TABS;
+  const tabs = rawTabs.map((t) => {
+    if (t.id === 'attendance' && counts.pending_excuses > 0) return { ...t, count: counts.pending_excuses };
+    if (t.id === 'qa' && counts.unanswered_qa > 0) return { ...t, count: counts.unanswered_qa };
+    if (t.id === 'messages' && counts.unreplied_messages > 0) return { ...t, count: counts.unreplied_messages };
+    return t;
+  });
   const asked = params.get('tab');
   const tab = tabs.some((t) => t.id === asked) ? asked : tabs[0].id;
-  const { data: course, error, loading, reload } = useLoad(
-    () => run(supabase.from('courses').select('*').eq('id', courseId).maybeSingle()),
-    [courseId],
-  );
+  const { data: loaded, error, loading, reload } = useLoad(async () => {
+    const [course, counts] = await Promise.all([
+      run(supabase.from('courses').select('*').eq('id', courseId).maybeSingle()),
+      rpc('course_attention_counts', { p_course: courseId }).catch(() => null),
+    ]);
+    return {
+      course,
+      counts: counts || { unreplied_messages: 0, unanswered_qa: 0, pending_excuses: 0, pending_reviews: 0 },
+    };
+  }, [courseId]);
+  const course = loaded?.course;
+  const counts = loaded?.counts || { unreplied_messages: 0, unanswered_qa: 0, pending_excuses: 0, pending_reviews: 0 };
 
   if (loading) return <CourseSkeleton />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
@@ -75,6 +90,20 @@ export default function ManageCourse() {
         {!previewStudent && <Tabs dark tabs={tabs} value={tab} onChange={(t) => setParams({ tab: t }, { replace: true })} />}
       </header>
       <div className="page">
+        {!previewStudent && counts.pending_reviews > 0 && (
+          <div className="notice notice-warn between small" style={{ marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+            <div className="row" style={{ gap: 8 }}>
+              <Icon name="flag" size={16} />
+              <span>
+                <strong>{counts.pending_reviews} mark review request{counts.pending_reviews === 1 ? '' : 's'}</strong> waiting across quizzes or assignments.
+              </span>
+            </div>
+            <div className="row" style={{ gap: 8 }}>
+              <button type="button" className="btn btn-sm" onClick={() => setParams({ tab: 'quizzes' }, { replace: true })}>Quizzes</button>
+              <button type="button" className="btn btn-sm" onClick={() => setParams({ tab: 'assignments' }, { replace: true })}>Assignments</button>
+            </div>
+          </div>
+        )}
         {previewStudent ? (
           <StudentPreview course={course} onExit={() => setPreviewStudent(false)} />
         ) : (
@@ -124,17 +153,24 @@ function SettingsTab({ course, reload }) {
     if (ok !== undefined) navigate('/');
   }
 
+  const meta = parseCourseMeta(course);
+  const info = meta.course_info || {};
+
   return (
     <div className="stack-lg" style={{ maxWidth: 880 }}>
       <section className="card stack">
         <div className="between">
-          <h2>Course details</h2>
+          <h2>Course details &amp; timetable</h2>
           <button type="button" className="btn" onClick={() => setEditing(true)}>Edit details</button>
         </div>
-        <dl className="grid-2" style={{ margin: 0 }}>
+        <dl className="grid-2" style={{ margin: 0, gap: 14 }}>
           <div><dt className="eyebrow">Code</dt><dd className="mono" style={{ margin: 0 }}>{course.code}</dd></div>
           <div><dt className="eyebrow">Semester</dt><dd style={{ margin: 0 }}>{course.semester || '—'}</dd></div>
-          <div style={{ gridColumn: '1 / -1' }}><dt className="eyebrow">Description</dt><dd className="pre" style={{ margin: 0 }}>{course.description || '—'}</dd></div>
+          <div><dt className="eyebrow">Lecture venue</dt><dd style={{ margin: 0 }}>{info.venue || '—'}</dd></div>
+          <div><dt className="eyebrow">Office hours</dt><dd className="pre" style={{ margin: 0 }}>{info.officeHours || '—'}</dd></div>
+          <div style={{ gridColumn: '1 / -1' }}><dt className="eyebrow">Lecture timetable</dt><dd className="pre" style={{ margin: 0 }}>{info.schedule || '—'}</dd></div>
+          <div style={{ gridColumn: '1 / -1' }}><dt className="eyebrow">Description</dt><dd className="pre" style={{ margin: 0 }}>{meta.about || (hasCourseInfo(meta) ? '—' : '—')}</dd></div>
+          {info.syllabusNote && <div style={{ gridColumn: '1 / -1' }}><dt className="eyebrow">Key course note</dt><dd className="pre" style={{ margin: 0 }}>{info.syllabusNote}</dd></div>}
         </dl>
       </section>
 

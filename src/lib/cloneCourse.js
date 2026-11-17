@@ -42,7 +42,7 @@ export async function cloneCourse({
   const cleanDescription = serializeCourseMeta(meta.about || '', initialCaConfig, {
     released: false,
     scores: {},
-  });
+  }, meta.course_info);
 
   // 1. Create the new course shell
   const newCourse = await run(
@@ -240,7 +240,8 @@ export async function cloneCourse({
       const updatedDesc = serializeCourseMeta(
         meta.about || '',
         { ...meta.ca_config, ca1_components: nextCa1, ca2_components: nextCa2 },
-        { released: false, scores: {} }
+        { released: false, scores: {} },
+        meta.course_info
       );
       await run(supabase.from('courses').update({ description: updatedDesc }).eq('id', newCourse.id));
     }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { rpc, rpcAll, run, supabase } from '../../../lib/supabase.js';
-import { fmtDateTime, fmtFull } from '../../../lib/format.js';
+import { fmtDateTime, fmtFull, relative } from '../../../lib/format.js';
+import { openStoredFile } from '../../../lib/files.js';
 import { downloadWorkbook } from '../../../lib/sheets.js';
 import Icon from '../../../components/Icon.jsx';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad } from '../../../components/ui.jsx';
@@ -25,13 +26,14 @@ export const sessionWho = (s) => (s.classes?.length ? s.classes.map(classText).j
 
 export default function AttendanceTab({ course }) {
   const { data, error, loading, reload } = useLoad(async () => {
-    const [sessions, students, opts, classes] = await Promise.all([
+    const [sessions, students, opts, classes, excuses] = await Promise.all([
       rpc('course_attendance_sessions', { p_course: course.id }),
       rpcAll('course_attendance', { p_course: course.id }),
       run(supabase.from('group_options').select('name').eq('kind', 'stream').order('name')),
       rpcAll('course_classes', { p_course: course.id }),
+      rpc('course_attendance_excuses', { p_course: course.id }).catch(() => []),
     ]);
-    return { sessions, students, streams: opts.map((o) => o.name), classes };
+    return { sessions, students, streams: opts.map((o) => o.name), classes, excuses: Array.isArray(excuses) ? excuses : [] };
   }, [course.id]);
   const [live, setLive] = useState(null);
   const [starting, setStarting] = useState(false);
@@ -103,6 +105,11 @@ export default function AttendanceTab({ course }) {
           <button type="button" className="btn btn-primary" onClick={() => setStarting(true)}><Icon name="plus" /> Start attendance</button>
         )}
       </section>
+
+
+      {(data.excuses?.length || 0) > 0 && (
+        <ExcuseRequestsCard excuses={data.excuses} onResolved={reload} />
+      )}
 
       <section className="card-flush">
         <div className="card-head"><h2>Sessions</h2><span className="small muted">{data.sessions.length} so far</span></div>
@@ -677,5 +684,158 @@ function RegisterModal({ session, course, students, onClose, onChanged }) {
         {shown.length === 0 && <Empty>No students.</Empty>}
       </div>
     </Modal>
+  );
+}
+
+function ExcuseRequestsCard({ excuses = [], onResolved }) {
+  const [act, busy] = useAction();
+  const [resolving, setResolving] = useState(null); // { excuse, status }
+  const [note, setNote] = useState('');
+  const [showResolved, setShowResolved] = useState(false);
+
+  const pending = excuses.filter((e) => e.status === 'pending');
+  const resolved = excuses.filter((e) => e.status !== 'pending');
+  const shown = showResolved ? excuses : pending;
+
+  async function submitDecision() {
+    if (!resolving) return;
+    const isApprove = resolving.status === 'approved';
+    const ok = await act(
+      () =>
+        rpc('resolve_attendance_excuse', {
+          p_excuse: resolving.excuse.id,
+          p_status: resolving.status,
+          p_note: note.trim(),
+        }),
+      isApprove ? 'Excuse approved — attendance credited automatically.' : 'Excuse request declined.'
+    );
+    if (ok !== undefined) {
+      setResolving(null);
+      setNote('');
+      onResolved?.();
+    }
+  }
+
+  return (
+    <section className="card-flush" style={pending.length > 0 ? { borderColor: 'var(--amber)' } : undefined}>
+      <div className="card-head" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <div className="row" style={{ gap: 8 }}>
+          <Icon name="clipboard" size={16} style={{ color: pending.length ? 'var(--amber-ink)' : 'var(--muted)' }} />
+          <h2>Absence &amp; medical excuse requests</h2>
+          {pending.length > 0 ? (
+            <span className="badge badge-amber">{pending.length} pending</span>
+          ) : (
+            <span className="badge badge-teal">All reviewed</span>
+          )}
+        </div>
+        {resolved.length > 0 && (
+          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowResolved((s) => !s)}>
+            {showResolved ? 'Show pending only' : `Show resolved (${resolved.length})`}
+          </button>
+        )}
+      </div>
+
+      {shown.length === 0 ? (
+        <div className="small muted" style={{ padding: '14px 18px' }}>No pending excuse requests.</div>
+      ) : (
+        shown.map((ex) => (
+          <div key={ex.id} className="list-row" style={{ alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
+            <div className="list-main" style={{ minWidth: 260 }}>
+              <div className="row-wrap" style={{ gap: 6, alignItems: 'center' }}>
+                <strong className="small">{ex.full_name}</strong>
+                <span className="mono tiny muted">{ex.index_no}</span>
+                {(ex.programme || ex.stream) && (
+                  <span className="tiny muted">· {[ex.programme, ex.stream].filter(Boolean).join(' ')}</span>
+                )}
+                <span className={`badge ${ex.status === 'pending' ? 'badge-amber' : ex.status === 'approved' ? 'badge-teal' : 'badge-red'}`}>
+                  {ex.status === 'pending' ? 'Pending' : ex.status === 'approved' ? 'Approved · Excused' : 'Declined'}
+                </span>
+              </div>
+              <div className="tiny muted" style={{ marginTop: 2 }}>
+                <strong>Session:</strong> {ex.session_title} · {fmtDateTime(ex.session_opens_at)} · submitted {relative(ex.created_at)}
+              </div>
+              <div className="small pre" style={{ marginTop: 6, padding: '8px 10px', borderRadius: 8, background: 'var(--surface-2)', border: '1px solid var(--line-2)' }}>
+                {ex.reason}
+              </div>
+              {ex.reviewer_note && (
+                <div className="tiny muted" style={{ marginTop: 4 }}>
+                  <strong>Staff note:</strong> {ex.reviewer_note}
+                </div>
+              )}
+            </div>
+            <div className="row-wrap" style={{ gap: 8, alignItems: 'center' }}>
+              {ex.evidence_path && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={busy}
+                  onClick={() => act(() => openStoredFile('submissions', ex.evidence_path))}
+                >
+                  <Icon name="file" size={14} /> {ex.evidence_name || 'View document'}
+                </button>
+              )}
+              {ex.status === 'pending' && (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    disabled={busy}
+                    onClick={() => { setNote(''); setResolving({ excuse: ex, status: 'approved' }); }}
+                  >
+                    <Icon name="check" size={14} /> Approve
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={busy}
+                    onClick={() => { setNote(''); setResolving({ excuse: ex, status: 'rejected' }); }}
+                  >
+                    Decline
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        ))
+      )}
+
+      {resolving && (
+        <Modal
+          title={resolving.status === 'approved' ? 'Approve excuse & credit attendance' : 'Decline excuse request'}
+          onClose={() => setResolving(null)}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={() => setResolving(null)} disabled={busy}>Cancel</button>
+              <button
+                type="button"
+                className={`btn ${resolving.status === 'approved' ? 'btn-primary' : ''}`}
+                onClick={submitDecision}
+                disabled={busy}
+              >
+                {busy ? 'Saving…' : resolving.status === 'approved' ? 'Approve & credit' : 'Decline excuse'}
+              </button>
+            </>
+          }
+        >
+          <p className="small muted">
+            <strong>{resolving.excuse.full_name}</strong> (<span className="mono">{resolving.excuse.index_no}</span>) · {resolving.excuse.session_title}
+          </p>
+          {resolving.status === 'approved' && (
+            <div className="notice notice-info small">
+              Approving will mark this student <strong>Present (Excused)</strong> for this session and update their 75% exam eligibility automatically.
+            </div>
+          )}
+          <Field label="Note to student" hint="optional">
+            <textarea
+              className="textarea"
+              style={{ minHeight: 80 }}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder={resolving.status === 'approved' ? 'Medical excuse accepted.' : 'Please provide official supporting documentation.'}
+            />
+          </Field>
+        </Modal>
+      )}
+    </section>
   );
 }
