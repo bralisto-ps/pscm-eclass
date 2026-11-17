@@ -1,6 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from 'react';
 import { run, supabase } from '../lib/supabase.js';
-import { cleanAssignmentInstructions, formatAssignmentAudience, formatSubmissionRules, hasAudienceFilter, parseAssignmentMeta } from '../lib/assignmentMeta.js';
+import { cleanAssignmentInstructions, formatAssignmentAudience, formatSubmissionRules, hasAudienceFilter, hasDeadlineOverrides, parseAssignmentMeta } from '../lib/assignmentMeta.js';
 import { isViewOnlyPath, openStoredFile, setViewOnlyFlag } from '../lib/files.js';
 import { useAuth } from '../lib/auth.jsx';
 import { fmtBytes, fmtDateTime, fmtNumber, relative } from '../lib/format.js';
@@ -190,6 +190,7 @@ export default function StudentPreview({ course, onExit }) {
                           <strong style={{ fontSize: 16 }}>{a.title}</strong>
                           {restricted && <span className="badge badge-plum">For: {formatAssignmentAudience(meta)}</span>}
                           {subRule && <span className="badge">{subRule}</span>}
+                          {hasDeadlineOverrides(meta) && <span className="badge badge-amber">Per-class deadlines</span>}
                           {meta.syndicate.enabled && <span className="badge badge-teal">Syndicate group</span>}
                           {meta.rubric.length > 0 && <span className="badge badge-blue">{meta.rubric.length}-criteria rubric</span>}
                         </div>

@@ -13,6 +13,7 @@ import QuizzesTab from './course/QuizzesTab.jsx';
 import AssignmentsTab from './course/AssignmentsTab.jsx';
 import StudentsTab from './course/StudentsTab.jsx';
 import AnnouncementsTab from './course/AnnouncementsTab.jsx';
+import PollsFeedbackTab from './course/PollsFeedbackTab.jsx';
 import AttendanceTab from './course/AttendanceTab.jsx';
 import CATab from './course/CATab.jsx';
 import Forum from '../../components/Forum.jsx';
@@ -25,6 +26,7 @@ const TABS = [
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'assignments', label: 'Assignments' },
   { id: 'attendance', label: 'Attendance' },
+  { id: 'polls', label: 'Polls & Feedback' },
   { id: 'ca', label: 'CA' },
   { id: 'students', label: 'Students' },
   { id: 'qa', label: 'Q&A' },
@@ -33,7 +35,7 @@ const TABS = [
   { id: 'settings', label: 'Settings' },
 ];
 // What a teaching assistant sees.
-const TA_TABS = ['quizzes', 'assignments', 'attendance', 'students', 'qa', 'messages', 'announcements'];
+const TA_TABS = ['quizzes', 'assignments', 'attendance', 'polls', 'students', 'qa', 'messages', 'announcements'];
 
 export default function ManageCourse() {
   const { courseId } = useParams();
@@ -81,6 +83,7 @@ export default function ManageCourse() {
           {tab === 'quizzes' && <QuizzesTab course={course} ta={isTA} />}
           {tab === 'assignments' && <AssignmentsTab course={course} ta={isTA} />}
           {tab === 'attendance' && <AttendanceTab course={course} />}
+          {tab === 'polls' && <PollsFeedbackTab course={course} ta={isTA} />}
           {tab === 'ca' && <CATab course={course} onCourseChanged={reload} />}
           {tab === 'students' && <StudentsTab course={course} ta={isTA} />}
           {tab === 'qa' && <Forum course={course} lecturer canDelete={!isTA} />}

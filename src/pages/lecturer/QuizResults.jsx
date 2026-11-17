@@ -17,6 +17,7 @@ import { deleteQuizProctorPhoto, loadQuizProctorPhotos, purgeQuizProctorPhotos }
 import { ALL_NEW_FEATURES_SQL } from '../../lib/allFeaturesSql.js';
 import { parseQuizMeta, serializeQuizMeta } from '../../lib/quizMeta.js';
 import RubricGrader, { RubricEditor } from '../../components/RubricGrader.jsx';
+import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
 
 const BINS = [
   { label: '0–39%', lo: 0, hi: 39.999, color: 'var(--amber)' },
@@ -183,6 +184,7 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoM
   const [viewScript, setViewScript] = useState(null);
   const [purgingPhotos, setPurgingPhotos] = useState(false);
   const [act, busy] = useAction();
+  const [nudging, setNudging] = useState(false);
 
   async function deleteSinglePhoto(item) {
     if (!item?.student) return;
@@ -223,6 +225,8 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoM
   const withPct = done.map((r) => ({ ...r, p: pct(r.score, r.max_score) })).filter((r) => r.p !== null);
   const avg = withPct.length ? Math.round(withPct.reduce((s, r) => s + r.p, 0) / withPct.length) : null;
   const fast = done.filter((r) => r.minutes_used !== null && Number(r.minutes_used) < fastLimit);
+  const notAttempted = rows.filter((r) => r.status === 'not_started' || r.status === 'not_activated')
+    .map((r) => ({ ...r, activated: r.status !== 'not_activated' }));
   const suspicious = rows.filter((r) => r.exits > 0 || r.devices > 1);
   const counts = BINS.map((b) => withPct.filter((r) => r.p >= b.lo && r.p <= b.hi).length);
   const maxCount = Math.max(1, ...counts);
@@ -439,6 +443,16 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoM
                 <Icon name="trash" size={14} /> Clear Photos ({photoMeta.size || photos.size})
               </button>
             )}
+            {!ta && notAttempted.length > 0 && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setNudging(true)}
+                title="Send personalized reminder messages to eligible students who have not attempted this quiz"
+              >
+                <Icon name="mail" size={15} /> Nudge not-attempted ({notAttempted.length})
+              </button>
+            )}
             <button type="button" className="btn btn-sm" onClick={exportXlsx}><Icon name="download" size={16} /> Export to Excel</button>
           </div>
         </div>
@@ -607,8 +621,39 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoM
           </div>
         </Modal>
       )}
+      {nudging && (
+        <BulkNudgeModal
+          courseId={quiz.course_id}
+          courseCode={quiz.courses?.code || ''}
+          title={`Nudge students not attempted · ${quiz.title}`}
+          subtitle={`Students in this filter who have not completed "${quiz.title}" yet.`}
+          students={notAttempted}
+          defaultSubject={`Quiz Reminder: ${quiz.title} ({course})`}
+          defaultMessage={[
+            'Dear {name},',
+            '',
+            `Our records show you have not yet completed the quiz "${quiz.title}" in {course}.`,
+            quiz.closes_at ? `Quiz window closes: ${fmtFull(quiz.closes_at)}.` : '',
+            '',
+            'Please log in to PSCM E-class and complete the quiz before it closes. Reply to this message if you encounter any issue.',
+            '',
+            'Regards,',
+            'Course Lecturer',
+          ].filter((line, idx, arr) => !(line === '' && arr[idx - 1] === '')).join('\n')}
+          onClose={() => setNudging(false)}
+        />
+      )}
     </div>
   );
+}
+
+function hashBlindSeed(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
 }
 
 function normalizeWrittenAnswer(text) {
@@ -634,12 +679,30 @@ function Marking({ quiz, isTA, queue, onMarked, onQuizUpdated }) {
   const [selected, setSelected] = useState(questions[0]?.id);
   const [onlyPending, setOnlyPending] = useState(true);
   const [groupSimilar, setGroupSimilar] = useState(true);
+  const [blindMode, setBlindMode] = useState(false);
 
   const current = questions.find((x) => x.id === selected) || questions[0] || null;
-  const items = useMemo(
-    () => (current ? current.items.filter((r) => !onlyPending || r.marks_awarded === null) : []),
-    [current, onlyPending]
-  );
+  const scriptLabels = useMemo(() => {
+    const map = new Map();
+    if (!current) return map;
+    const pad = Math.max(2, String(current.items.length).length);
+    const shuffled = [...current.items].sort((a, b) =>
+      hashBlindSeed(`${quiz.id}:${a.response_id}`) - hashBlindSeed(`${quiz.id}:${b.response_id}`)
+    );
+    shuffled.forEach((r, idx) => {
+      map.set(r.response_id, `Script #${String(idx + 1).padStart(pad, '0')}`);
+    });
+    return map;
+  }, [current, quiz.id]);
+
+  const items = useMemo(() => {
+    if (!current) return [];
+    const list = current.items.filter((r) => !onlyPending || r.marks_awarded === null);
+    if (!blindMode) return list;
+    return [...list].sort((a, b) =>
+      hashBlindSeed(`${quiz.id}:${a.response_id}`) - hashBlindSeed(`${quiz.id}:${b.response_id}`)
+    );
+  }, [current, onlyPending, blindMode, quiz.id]);
   const markedCount = current ? current.items.filter((r) => r.marks_awarded !== null).length : 0;
 
   const groups = useMemo(() => {
@@ -667,6 +730,10 @@ function Marking({ quiz, isTA, queue, onMarked, onQuizUpdated }) {
           </span>
           <div className="row-wrap" style={{ gap: 14 }}>
             <label className="check small">
+              <input type="checkbox" checked={blindMode} onChange={(e) => setBlindMode(e.target.checked)} />
+              Blind marking (hide names)
+            </label>
+            <label className="check small">
               <input type="checkbox" checked={groupSimilar} onChange={(e) => setGroupSimilar(e.target.checked)} />
               Group matching answers
             </label>
@@ -681,14 +748,14 @@ function Marking({ quiz, isTA, queue, onMarked, onQuizUpdated }) {
           <>
             {groups.slice(0, 50).map((g) => (
               g.items.length === 1
-                ? <MarkCard key={g.items[0].response_id} r={g.items[0]} rubric={activeRubric} onMarked={onMarked} />
-                : <MarkGroupCard key={g.key + '-' + g.items.map((x) => x.response_id).join(',')} group={g} rubric={activeRubric} onMarked={onMarked} />
+                ? <MarkCard key={g.items[0].response_id} r={g.items[0]} rubric={activeRubric} blindLabel={blindMode ? scriptLabels.get(g.items[0].response_id) : ''} onMarked={onMarked} />
+                : <MarkGroupCard key={g.key + '-' + g.items.map((x) => x.response_id).join(',')} group={g} rubric={activeRubric} blindMode={blindMode} scriptLabels={scriptLabels} onMarked={onMarked} />
             ))}
             {groups.length > 50 && <p className="small muted">Showing 50 groups at a time — marked groups disappear from this list as you go.</p>}
           </>
         ) : (
           <>
-            {items.slice(0, 50).map((r) => <MarkCard key={r.response_id} r={r} rubric={activeRubric} onMarked={onMarked} />)}
+            {items.slice(0, 50).map((r) => <MarkCard key={r.response_id} r={r} rubric={activeRubric} blindLabel={blindMode ? scriptLabels.get(r.response_id) : ''} onMarked={onMarked} />)}
             {items.length > 50 && <p className="small muted">Showing 50 at a time — marked answers disappear from this list as you go.</p>}
           </>
         )}
@@ -765,7 +832,7 @@ function QuestionRubricBox({ initial, maxMarks, busy, onSave }) {
   );
 }
 
-function MarkGroupCard({ group, rubric = [], onMarked }) {
+function MarkGroupCard({ group, rubric = [], blindMode = false, scriptLabels = null, onMarked }) {
   const toast = useToast();
   const max = Number(group.max_marks);
   const firstAwarded = group.items.every((x) => x.marks_awarded === group.items[0].marks_awarded) ? group.items[0].marks_awarded : null;
@@ -799,7 +866,7 @@ function MarkGroupCard({ group, rubric = [], onMarked }) {
         <div className="row-wrap" style={{ gap: 8 }}>
           <span className="badge badge-teal">{group.items.length} matching answers</span>
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowStudents(!showStudents)}>
-            {showStudents ? 'Hide students' : `View ${group.items.length} students`}
+            {showStudents ? (blindMode ? 'Hide scripts' : 'Hide students') : (blindMode ? `View ${group.items.length} scripts` : `View ${group.items.length} students`)}
           </button>
         </div>
         <div className="row" style={{ gap: 4 }}>
@@ -812,7 +879,7 @@ function MarkGroupCard({ group, rubric = [], onMarked }) {
         <div className="row-wrap" style={{ gap: 6, padding: '8px 10px', background: 'var(--surface-2)', borderRadius: 8 }}>
           {group.items.map((r) => (
             <span key={r.response_id} className="badge" style={{ fontSize: 12 }}>
-              {r.full_name} <span className="mono tiny muted" style={{ marginLeft: 4 }}>{r.index_no}</span>
+              {blindMode ? (scriptLabels?.get(r.response_id) || 'Script') : <>{r.full_name} <span className="mono tiny muted" style={{ marginLeft: 4 }}>{r.index_no}</span></>}
             </span>
           ))}
         </div>
@@ -848,7 +915,7 @@ function MarkGroupCard({ group, rubric = [], onMarked }) {
   );
 }
 
-function MarkCard({ r, rubric = [], onMarked }) {
+function MarkCard({ r, rubric = [], blindLabel = '', onMarked }) {
   const toast = useToast();
   const max = Number(r.max_marks);
   const [marks, setMarks] = useState(r.marks_awarded ?? '');
@@ -862,7 +929,7 @@ function MarkCard({ r, rubric = [], onMarked }) {
     try {
       await rpc('mark_response', { p_response: r.response_id, p_marks: m, p_feedback: feedback });
       onMarked(r.response_id, m, feedback);
-      toast(`Saved · ${r.full_name}`);
+      toast(`Saved · ${blindLabel || r.full_name}`);
     } catch (e) {
       toast(e.message, 'error');
     } finally {
@@ -873,7 +940,7 @@ function MarkCard({ r, rubric = [], onMarked }) {
   return (
     <article className="card stack-sm">
       <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
-        <span className="strong">{r.full_name} <span className="mono tiny muted">{r.index_no}</span></span>
+        <span className="strong">{blindLabel ? <span className="mono">{blindLabel}</span> : <>{r.full_name} <span className="mono tiny muted">{r.index_no}</span></>}</span>
         <div className="row" style={{ gap: 4 }}>
           {r.marks_awarded !== null && <span className="badge badge-teal">{fmtNumber(r.marks_awarded)} / {fmtNumber(max)}</span>}
           <button type="button" className="btn btn-sm" onClick={() => setMarks(0)} disabled={busy}>0</button>

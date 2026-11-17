@@ -1,6 +1,6 @@
 import { parseCourseMeta } from '../../lib/courseMeta.js';
 import { cleanText } from '../../lib/quizMeta.js';
-import { SUBMISSION_FORMATS, assignmentMatchesStudent, findStudentSyndicate, formatSubmissionRules, normalizeIndexNo, parseAssignmentMeta, validateSubmissionFile } from '../../lib/assignmentMeta.js';
+import { SUBMISSION_FORMATS, assignmentMatchesStudent, findStudentSyndicate, formatSubmissionRules, normalizeIndexNo, parseAssignmentMeta, resolveEffectiveDue, validateSubmissionFile } from '../../lib/assignmentMeta.js';
 import { buildTypedResponsePdfBlob } from '../../lib/textPdf.js';
 import FlashcardDeckModal from '../../components/FlashcardDeck.jsx';
 import { getLetter, getRemarks, GradesTable, TargetGradeCalculator } from './Grades.jsx';
@@ -15,6 +15,7 @@ import Forum from '../../components/Forum.jsx';
 import { useAuth } from '../../lib/auth.jsx';
 import { fmtBytes, fmtDateTime, fmtFull, fmtNumber, hostOf, pct, relative } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
+import StudentPollsFeedback, { LivePollBanner } from '../../components/StudentPollsFeedback.jsx';
 import {
   CourseSkeleton, Empty, ErrorBoundary, ErrorNote, Field, KindTag, Loading, Modal, Tabs, useAction, useLoad, useToast,
 } from '../../components/ui.jsx';
@@ -24,6 +25,7 @@ const TABS = [
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'assignments', label: 'Assignments' },
   { id: 'attendance', label: 'Attendance' },
+  { id: 'polls', label: 'Polls & Feedback' },
   { id: 'grades', label: 'My grades' },
   { id: 'qa', label: 'Q&A' },
   { id: 'messages', label: 'Messages' },
@@ -94,13 +96,15 @@ export default function StudentCourse() {
       </header>
 
       <div className="page">
+        {tab !== 'polls' && <LivePollBanner courseId={course.id} onOpenTab={() => setTab('polls')} />}
         <ErrorBoundary key={tab}>
           {tab === 'materials' && <Materials data={data} course={course} profile={profile} onQuizzes={() => setTab('quizzes')} graded={graded} />}
           {tab === 'quizzes' && <Quizzes quizzes={data.quizzes} reload={reload} />}
-          {tab === 'assignments' && <Assignments assignments={visibleAssignments} course={course} profile={profile} reload={reload} />}
+          {tab === 'assignments' && <Assignments assignments={visibleAssignments} course={course} profile={profile} cohort={data.cohort} reload={reload} />}
           {tab === 'attendance' && (
             <StudentAttendanceView attendance={data.attendance} course={course} onCheckIn={() => setCheckingIn(true)} />
           )}
+          {tab === 'polls' && <StudentPollsFeedback course={course} />}
           {tab === 'grades' && (
             <div className="stack-lg" style={{ maxWidth: 900 }}>
               {data.ca && <CACard ca={data.ca} course={course} profile={profile} />}
@@ -474,7 +478,7 @@ function Quizzes({ quizzes }) {
 }
 
 // ---------------- assignments ----------------
-function Assignments({ assignments, course, profile, reload }) {
+function Assignments({ assignments, course, profile, cohort, reload }) {
   const toast = useToast();
   const [readingDoc, setReadingDoc] = useState(null);
   if (!assignments.length) return <div className="card"><Empty icon="clipboard" title="No assignments yet">Assignments will appear here when your lecturer posts them.</Empty></div>;
@@ -484,6 +488,7 @@ function Assignments({ assignments, course, profile, reload }) {
         <AssignmentCard
           key={a.id}
           a={a}
+          cohort={cohort}
           onReadDoc={(doc, item) => setReadingDoc({
             id: item.id,
             title: doc.name || item.title,
@@ -516,7 +521,7 @@ function Assignments({ assignments, course, profile, reload }) {
 
 const MAX_BYTES = 5 * 1024 * 1024;
 
-function AssignmentCard({ a, onReadDoc, reload }) {
+function AssignmentCard({ a, cohort, onReadDoc, reload }) {
   const { session, profile } = useAuth();
   const toast = useToast();
   const [act] = useAction();
@@ -562,8 +567,17 @@ function AssignmentCard({ a, onReadDoc, reload }) {
     } catch { /* ignore */ }
   }, [draftKey, needsTyped, typedText]);
 
+  const effectiveDue = useMemo(
+    () => resolveEffectiveDue(a, assignMeta, {
+      index_no: cohort?.index_no || profile?.index_no,
+      programme: cohort?.programme,
+      stream: cohort?.stream,
+    }),
+    [a, assignMeta, cohort?.index_no, cohort?.programme, cohort?.stream, profile?.index_no],
+  );
+  const dueAt = effectiveDue.dueAt;
   const now = Date.now();
-  const overdue = a.due_at && new Date(a.due_at).getTime() < now;
+  const overdue = dueAt && new Date(dueAt).getTime() < now;
   const canSubmit = (!overdue || a.allow_late) && !(s && s.marked);
   const wordCount = typedText.trim() ? typedText.trim().split(/\s+/).length : 0;
 
@@ -759,9 +773,10 @@ function AssignmentCard({ a, onReadDoc, reload }) {
           <div className="row-wrap" style={{ gap: 8, alignItems: 'center' }}>
             <h2 style={{ margin: 0 }}>{a.title}</h2>
             {subRuleLabel && <span className="badge">{subRuleLabel}</span>}
+            {effectiveDue.source !== 'default' && effectiveDue.dueAt && <span className="badge badge-plum">{effectiveDue.label}</span>}
           </div>
           <span className="small muted">
-            {a.due_at ? `Due ${fmtFull(a.due_at)} (${relative(a.due_at)})` : 'No deadline'} · {fmtNumber(a.max_marks)} marks
+            {dueAt ? `Due ${fmtFull(dueAt)} (${relative(dueAt)})` : 'No deadline'} · {fmtNumber(a.max_marks)} marks
             {a.allow_late ? ' · late work accepted' : ''}
           </span>
         </div>

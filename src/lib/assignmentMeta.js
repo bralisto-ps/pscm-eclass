@@ -1,7 +1,8 @@
 // Encodes optional assignment rubric criteria, syndicate group configuration,
-// cohort targeting (programmes / streams / classes), and brief document metadata
-// inside assignments.instructions via a hidden HTML comment tag so existing
-// tables require zero breaking migrations.
+// cohort targeting (programmes / streams / classes), brief document metadata,
+// submission rules, and per-class/per-student deadline overrides inside
+// assignments.instructions via a hidden HTML comment tag so existing tables
+// require zero breaking migrations.
 const ASSIGN_META_RE = /\n?\s*<!--\s*ASSIGN_META:(\{[\s\S]*?\})\s*-->\s*$/;
 
 export const RUBRIC_PRESETS = [
@@ -103,6 +104,73 @@ function normalizeClassesArray(arr) {
   return out;
 }
 
+function normalizeIsoDate(val) {
+  if (!val) return null;
+  const d = new Date(val);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+export function normalizeDeadlinesConfig(deadlines) {
+  const byClass = {};
+  const byStudent = {};
+  if (deadlines && typeof deadlines === 'object') {
+    if (deadlines.byClass && typeof deadlines.byClass === 'object') {
+      const seenClass = new Set();
+      for (const [rawKey, rawVal] of Object.entries(deadlines.byClass)) {
+        const iso = normalizeIsoDate(rawVal);
+        if (!iso) continue;
+        const [p = '', st = ''] = String(rawKey || '').split('|');
+        const cleaned = classKey(p, st);
+        const norm = cleaned.toLowerCase();
+        if (!seenClass.has(norm)) {
+          seenClass.add(norm);
+          byClass[cleaned] = iso;
+        }
+      }
+    }
+    if (deadlines.byStudent && typeof deadlines.byStudent === 'object') {
+      for (const [rawIdx, rawVal] of Object.entries(deadlines.byStudent)) {
+        const idx = normalizeIndexNo(rawIdx);
+        const iso = normalizeIsoDate(rawVal);
+        if (idx && iso) byStudent[idx] = iso;
+      }
+    }
+  }
+  return { byClass, byStudent };
+}
+
+export function hasDeadlineOverrides(metaOrDeadlines) {
+  const dl = metaOrDeadlines?.deadlines || metaOrDeadlines;
+  if (!dl) return false;
+  return Object.keys(dl.byClass || {}).length > 0 || Object.keys(dl.byStudent || {}).length > 0;
+}
+
+export function resolveEffectiveDue(assignment, meta, student) {
+  const parsed = meta || parseAssignmentMeta(assignment);
+  const dl = parsed?.deadlines || { byClass: {}, byStudent: {} };
+  const defaultDue = assignment?.due_at || null;
+
+  if (student) {
+    const idx = normalizeIndexNo(student.index_no ?? student.indexNo);
+    if (idx && dl.byStudent?.[idx]) {
+      return { dueAt: dl.byStudent[idx], source: 'student', label: 'Extended deadline' };
+    }
+    const prog = student.programme;
+    const stream = student.stream;
+    if (prog !== undefined || stream !== undefined) {
+      const targetNorm = normClassKey(prog, stream);
+      for (const [k, iso] of Object.entries(dl.byClass || {})) {
+        const [kp = '', ks = ''] = String(k).split('|');
+        if (normClassKey(kp, ks) === targetNorm) {
+          return { dueAt: iso, source: 'class', label: 'Class deadline' };
+        }
+      }
+    }
+  }
+  return { dueAt: defaultDue, source: 'default', label: '' };
+}
+
 export const SUBMISSION_FORMATS = {
   all: {
     id: 'all',
@@ -182,6 +250,7 @@ export function parseAssignmentMeta(assignment) {
     },
     doc: null,
     submission: { mode: 'file', fileFormat: 'all', allowPaste: true },
+    deadlines: { byClass: {}, byStudent: {} },
   };
   if (!match) return empty;
   try {
@@ -230,6 +299,7 @@ export function parseAssignmentMeta(assignment) {
       audience,
       doc,
       submission: normalizeSubmissionConfig(parsed.submission),
+      deadlines: normalizeDeadlinesConfig(parsed.deadlines),
     };
   } catch {
     return empty;
@@ -268,8 +338,10 @@ export function serializeAssignmentMeta(cleanInstructions, meta = {}) {
     : null;
   const submission = normalizeSubmissionConfig(meta.submission);
   const hasCustomSubmission = submission.mode !== 'file' || submission.fileFormat !== 'all' || !submission.allowPaste;
+  const deadlines = normalizeDeadlinesConfig(meta.deadlines);
+  const hasDeadlines = hasDeadlineOverrides(deadlines);
   const hasSyndicate = Boolean(meta.syndicate?.enabled) || groups.length > 0;
-  if (rubric.length === 0 && !hasSyndicate && !hasAudience && !doc && !hasCustomSubmission) return base;
+  if (rubric.length === 0 && !hasSyndicate && !hasAudience && !doc && !hasCustomSubmission && !hasDeadlines) return base;
 
   const payload = {
     rubric,
@@ -281,6 +353,7 @@ export function serializeAssignmentMeta(cleanInstructions, meta = {}) {
     ...(hasAudience ? { audience } : {}),
     ...(doc ? { doc } : {}),
     ...(hasCustomSubmission ? { submission } : {}),
+    ...(hasDeadlines ? { deadlines } : {}),
   };
   return `${base}\n\n<!-- ASSIGN_META:${JSON.stringify(payload)} -->`.trim();
 }

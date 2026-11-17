@@ -4733,3 +4733,742 @@ begin
     execute format('grant execute on function public.%s to authenticated', f);
   end loop;
 end $$;
+-- ---------------------------------------------------------------------
+-- 15. Per-Class/Student Deadlines, Live Polls & Exit Tickets, Anonymous TQM Feedback
+-- ---------------------------------------------------------------------
+create or replace function public.assignment_due_for(
+  p_instructions text,
+  p_default_due timestamptz,
+  p_index_no text,
+  p_programme text,
+  p_stream text
+) returns timestamptz
+language plpgsql immutable as $$
+declare
+  v_match text[];
+  v_meta jsonb;
+  v_dl jsonb;
+  v_by_student jsonb;
+  v_by_class jsonb;
+  v_idx text := upper(btrim(coalesce(p_index_no, '')));
+  v_prog text := lower(regexp_replace(btrim(coalesce(p_programme, '')), '\s+', ' ', 'g'));
+  v_stream text := lower(regexp_replace(btrim(coalesce(p_stream, '')), '\s+', ' ', 'g'));
+  v_target_key text;
+  k text;
+  v text;
+begin
+  if p_instructions is null or position('ASSIGN_META:' in p_instructions) = 0 then
+    return p_default_due;
+  end if;
+  v_match := regexp_match(p_instructions, '<!--\s*ASSIGN_META:(\{.*?\})\s*-->\s*$');
+  if v_match is null or array_length(v_match, 1) < 1 then
+    return p_default_due;
+  end if;
+  begin
+    v_meta := v_match[1]::jsonb;
+  exception when others then
+    return p_default_due;
+  end;
+
+  v_dl := v_meta -> 'deadlines';
+  if v_dl is null or jsonb_typeof(v_dl) <> 'object' then
+    return p_default_due;
+  end if;
+
+  v_by_student := v_dl -> 'byStudent';
+  if v_idx <> '' and jsonb_typeof(v_by_student) = 'object' then
+    for k, v in select * from jsonb_each_text(v_by_student) loop
+      if upper(btrim(k)) = v_idx and coalesce(btrim(v), '') <> '' then
+        begin
+          return v::timestamptz;
+        exception when others then
+          null;
+        end;
+      end if;
+    end loop;
+  end if;
+
+  v_by_class := v_dl -> 'byClass';
+  v_target_key := v_prog || '|' || v_stream;
+  if jsonb_typeof(v_by_class) = 'object' then
+    for k, v in select * from jsonb_each_text(v_by_class) loop
+      if lower(regexp_replace(btrim(split_part(k, '|', 1)), '\s+', ' ', 'g'))
+         || '|' ||
+         lower(regexp_replace(btrim(split_part(k, '|', 2)), '\s+', ' ', 'g')) = v_target_key
+         and coalesce(btrim(v), '') <> '' then
+        begin
+          return v::timestamptz;
+        exception when others then
+          null;
+        end;
+      end if;
+    end loop;
+  end if;
+
+  return p_default_due;
+end;
+$$;
+
+create or replace function public.can_submit(p_assignment uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1
+    from public.assignments x
+    join public.profiles p on p.id = auth.uid()
+    left join public.roster r on upper(trim(r.index_no)) = upper(trim(p.index_no))
+    cross join lateral (
+      select public.assignment_due_for(x.instructions, x.due_at, p.index_no, r.programme, r.stream) as eff_due
+    ) d
+    where x.id = p_assignment
+      and x.published
+      and public.is_enrolled(x.course_id)
+      and (
+        public.assignment_for(x.instructions, r.programme, r.stream)
+        or exists (
+          select 1 from public.submissions s0
+          where s0.assignment_id = x.id and s0.student_id = auth.uid()
+        )
+      )
+      and (d.eff_due is null or now() <= d.eff_due or x.allow_late)
+      and not exists (
+        select 1 from public.submissions s
+        where s.assignment_id = x.id and s.student_id = auth.uid() and s.marks is not null
+      )
+  );
+$$;
+
+create or replace function public.submit_assignment(
+  p_assignment uuid,
+  p_path text,
+  p_name text,
+  p_note text,
+  p_response_text text default '',
+  p_typing_meta jsonb default '{}'::jsonb
+) returns timestamptz
+language plpgsql security definer set search_path = public as $$
+declare
+  x public.assignments;
+  v_fmt_err text;
+  v_is_typed_only boolean := (p_path = 'typed:online');
+  v_idx_caller text;
+  v_prog text;
+  v_stream text;
+  v_due timestamptz;
+begin
+  if not public.can_submit(p_assignment) then
+    raise exception 'This assignment is closed or has already been marked.';
+  end if;
+  select * into x from public.assignments where id = p_assignment;
+
+  select p.index_no, r.programme, r.stream into v_idx_caller, v_prog, v_stream
+    from public.profiles p
+    left join public.roster r on upper(trim(r.index_no)) = upper(trim(p.index_no))
+   where p.id = auth.uid()
+   limit 1;
+  v_due := public.assignment_due_for(x.instructions, x.due_at, v_idx_caller, v_prog, v_stream);
+
+  if v_is_typed_only then
+    if coalesce(btrim(p_response_text), '') = '' then
+      raise exception 'Please type your response before submitting.';
+    end if;
+  else
+    if p_path is null or regexp_replace(p_path, '^r2:', '') not like p_assignment::text || '/' || auth.uid()::text || '/%' then
+      raise exception 'Upload location is not valid.';
+    end if;
+    v_fmt_err := public.assignment_allowed_file(x.instructions, p_name);
+    if v_fmt_err is not null then
+      raise exception '%', v_fmt_err;
+    end if;
+  end if;
+
+  insert into public.submissions (
+    assignment_id, student_id, file_path, file_name, note, response_text, typing_meta, submitted_at, is_late
+  )
+  values (
+    p_assignment, auth.uid(), p_path, coalesce(p_name, ''), coalesce(p_note, ''),
+    coalesce(p_response_text, ''), coalesce(p_typing_meta, '{}'::jsonb),
+    now(), v_due is not null and now() > v_due
+  )
+  on conflict (assignment_id, student_id) do update
+     set file_path = excluded.file_path,
+         file_name = excluded.file_name,
+         note = excluded.note,
+         response_text = excluded.response_text,
+         typing_meta = excluded.typing_meta,
+         submitted_at = now(),
+         is_late = excluded.is_late;
+  return now();
+end;
+$$;
+
+create or replace function public.submit_group_assignment(
+  p_assignment uuid,
+  p_path text,
+  p_name text,
+  p_note text,
+  p_member_indexes text[] default '{}',
+  p_response_text text default '',
+  p_typing_meta jsonb default '{}'::jsonb
+) returns timestamptz
+language plpgsql security definer set search_path = public as $$
+declare
+  x public.assignments;
+  v_late boolean;
+  v_member_uid uuid;
+  v_idx text;
+  v_fmt_err text;
+  v_is_typed_only boolean := (p_path = 'typed:online');
+  v_idx_caller text;
+  v_prog text;
+  v_stream text;
+  v_due timestamptz;
+begin
+  if not public.can_submit(p_assignment) then
+    raise exception 'This assignment is closed or has already been marked.';
+  end if;
+  select * into x from public.assignments where id = p_assignment;
+
+  select p.index_no, r.programme, r.stream into v_idx_caller, v_prog, v_stream
+    from public.profiles p
+    left join public.roster r on upper(trim(r.index_no)) = upper(trim(p.index_no))
+   where p.id = auth.uid()
+   limit 1;
+  v_due := public.assignment_due_for(x.instructions, x.due_at, v_idx_caller, v_prog, v_stream);
+
+  if v_is_typed_only then
+    if coalesce(btrim(p_response_text), '') = '' then
+      raise exception 'Please type your response before submitting.';
+    end if;
+  else
+    if p_path is null or regexp_replace(p_path, '^r2:', '') not like p_assignment::text || '/' || auth.uid()::text || '/%' then
+      raise exception 'Upload location is not valid.';
+    end if;
+    v_fmt_err := public.assignment_allowed_file(x.instructions, p_name);
+    if v_fmt_err is not null then
+      raise exception '%', v_fmt_err;
+    end if;
+  end if;
+
+  v_late := v_due is not null and now() > v_due;
+
+  insert into public.submissions (
+    assignment_id, student_id, file_path, file_name, note, response_text, typing_meta, submitted_at, is_late
+  )
+  values (
+    p_assignment, auth.uid(), p_path, coalesce(p_name, ''), coalesce(p_note, ''),
+    coalesce(p_response_text, ''), coalesce(p_typing_meta, '{}'::jsonb), now(), v_late
+  )
+  on conflict (assignment_id, student_id) do update
+     set file_path = excluded.file_path,
+         file_name = excluded.file_name,
+         note = excluded.note,
+         response_text = excluded.response_text,
+         typing_meta = excluded.typing_meta,
+         submitted_at = now(),
+         is_late = excluded.is_late;
+
+  if p_member_indexes is not null and coalesce(array_length(p_member_indexes, 1), 0) > 0 then
+    foreach v_idx in array p_member_indexes loop
+      select p.id into v_member_uid
+        from public.profiles p
+        join public.enrollments e on e.index_no = p.index_no
+       where e.course_id = x.course_id
+         and upper(trim(p.index_no)) = upper(trim(v_idx))
+         and p.id <> auth.uid()
+       limit 1;
+      if v_member_uid is not null then
+        insert into public.submissions (
+          assignment_id, student_id, file_path, file_name, note, response_text, typing_meta, submitted_at, is_late
+        )
+        values (
+          p_assignment, v_member_uid, p_path, coalesce(p_name, ''), coalesce(p_note, ''),
+          coalesce(p_response_text, ''), coalesce(p_typing_meta, '{}'::jsonb), now(), v_late
+        )
+        on conflict (assignment_id, student_id) do update
+           set file_path = excluded.file_path,
+               file_name = excluded.file_name,
+               note = excluded.note,
+               response_text = excluded.response_text,
+               typing_meta = excluded.typing_meta,
+               submitted_at = now(),
+               is_late = excluded.is_late
+         where public.submissions.marks is null;
+      end if;
+    end loop;
+  end if;
+  return now();
+end;
+$$;
+
+create or replace function public.my_assignments(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  r jsonb;
+  v_idx text;
+  v_prog text;
+  v_stream text;
+begin
+  if not public.is_enrolled(p_course) then return '[]'::jsonb; end if;
+  select p0.index_no, r0.programme, r0.stream into v_idx, v_prog, v_stream
+    from public.profiles p0
+    left join public.roster r0 on upper(trim(r0.index_no)) = upper(trim(p0.index_no))
+   where p0.id = auth.uid()
+   limit 1;
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'id', x.id, 'title', x.title, 'instructions', x.instructions, 'due_at', x.due_at,
+           'max_marks', x.max_marks, 'allow_late', x.allow_late,
+           'released', x.results_released,
+           'submission', (select jsonb_build_object(
+                                 'file_name', s.file_name, 'file_path', s.file_path,
+                                 'note', s.note,
+                                 'response_text', s.response_text,
+                                 'typing_meta', s.typing_meta,
+                                 'submitted_at', s.submitted_at, 'is_late', s.is_late,
+                                 'marked', s.marks is not null,
+                                 'marks', case when x.results_released then s.marks end,
+                                 'feedback', case when x.results_released then s.feedback end)
+                            from public.submissions s
+                           where s.assignment_id = x.id and s.student_id = auth.uid()))
+         order by public.assignment_due_for(x.instructions, x.due_at, v_idx, v_prog, v_stream) nulls last, x.created_at), '[]'::jsonb)
+    into r
+    from public.assignments x
+   where x.course_id = p_course
+     and x.published
+     and (
+       public.assignment_for(x.instructions, v_prog, v_stream)
+       or exists (
+         select 1 from public.submissions s0
+         where s0.assignment_id = x.id and s0.student_id = auth.uid()
+       )
+     );
+  return r;
+end;
+$$;
+
+create or replace function public.my_upcoming() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(t order by t.due), '[]'::jsonb) from (
+    select 'quiz' as kind, q.id, q.title, c.id as course_id, c.code as course_code, c.color,
+           case when w.opens_at > now() then w.opens_at else coalesce(w.closes_at, now()) end as due,
+           w.opens_at, w.closes_at, q.duration_minutes,
+           least((select count(*) from public.questions x where x.quiz_id = q.id),
+                 coalesce(nullif(q.pool_size, 0), 100000)) as question_count
+      from public.quizzes q join public.courses c on c.id = q.course_id
+      cross join lateral public.quiz_window_for(q.id, auth.uid()) w
+     where q.published and not q.is_practice and public.is_enrolled(c.id) and w.allowed
+       and (w.closes_at is null or w.closes_at > now())
+       and not exists (select 1 from public.attempts a where a.quiz_id = q.id
+                         and a.student_id = auth.uid() and a.status <> 'in_progress')
+    union all
+    select 'assignment', x.id, x.title, c.id, c.code, c.color,
+           d.eff_due, null, d.eff_due, null, null
+      from public.assignments x
+      join public.courses c on c.id = x.course_id
+      join public.profiles p on p.id = auth.uid()
+      left join public.roster r on upper(trim(r.index_no)) = upper(trim(p.index_no))
+      cross join lateral (
+        select public.assignment_due_for(x.instructions, x.due_at, p.index_no, r.programme, r.stream) as eff_due
+      ) d
+     where x.published and public.is_enrolled(c.id) and d.eff_due > now()
+       and public.assignment_for(x.instructions, r.programme, r.stream)
+       and not exists (select 1 from public.submissions s where s.assignment_id = x.id and s.student_id = auth.uid())
+  ) t;
+$$;
+
+-- Live In-Class Polls & 1-Minute Exit Tickets
+create table if not exists public.course_polls (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid not null references public.courses on delete cascade,
+  kind text not null default 'mcq' check (kind in ('mcq', 'exit_ticket')),
+  question text not null,
+  options jsonb not null default '[]'::jsonb,
+  is_open boolean not null default true,
+  show_results_to_students boolean not null default true,
+  created_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now(),
+  closed_at timestamptz
+);
+create index if not exists idx_course_polls_course on public.course_polls (course_id, created_at desc);
+
+create table if not exists public.poll_votes (
+  id uuid primary key default gen_random_uuid(),
+  poll_id uuid not null references public.course_polls(id) on delete cascade,
+  course_id uuid not null references public.courses on delete cascade,
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  option_index integer,
+  response_text text not null default '',
+  created_at timestamptz not null default now(),
+  unique (poll_id, student_id)
+);
+create index if not exists idx_poll_votes_poll on public.poll_votes (poll_id);
+
+alter table public.course_polls enable row level security;
+alter table public.poll_votes enable row level security;
+
+drop policy if exists "Staff manage course polls" on public.course_polls;
+create policy "Staff manage course polls" on public.course_polls
+  for all to authenticated
+  using (public.is_staff(course_id))
+  with check (public.is_staff(course_id));
+
+drop policy if exists "Enrolled read course polls" on public.course_polls;
+create policy "Enrolled read course polls" on public.course_polls
+  for select to authenticated
+  using (public.is_enrolled(course_id));
+
+drop policy if exists "Students read own poll votes" on public.poll_votes;
+create policy "Students read own poll votes" on public.poll_votes
+  for select to authenticated
+  using (student_id = auth.uid());
+
+create or replace function public.lecturer_course_polls(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.is_staff(p_course) then
+    raise exception 'Not allowed.';
+  end if;
+  return coalesce((
+    select jsonb_agg(
+      jsonb_build_object(
+        'id', p.id,
+        'course_id', p.course_id,
+        'kind', p.kind,
+        'question', p.question,
+        'options', p.options,
+        'is_open', p.is_open,
+        'show_results_to_students', p.show_results_to_students,
+        'created_at', p.created_at,
+        'closed_at', p.closed_at,
+        'total_votes', (select count(*) from public.poll_votes v where v.poll_id = p.id),
+        'option_counts', case when p.kind = 'mcq' then coalesce((
+          select jsonb_agg(
+            (select count(*) from public.poll_votes v where v.poll_id = p.id and v.option_index = idx - 1)
+            order by idx
+          )
+          from jsonb_array_elements(p.options) with ordinality as o(val, idx)
+        ), '[]'::jsonb) else '[]'::jsonb end,
+        'responses', case when p.kind = 'exit_ticket' then coalesce((
+          select jsonb_agg(jsonb_build_object('id', v.id, 'text', v.response_text, 'created_at', v.created_at) order by v.created_at desc)
+          from public.poll_votes v
+          where v.poll_id = p.id and coalesce(btrim(v.response_text), '') <> ''
+        ), '[]'::jsonb) else '[]'::jsonb end
+      )
+      order by p.is_open desc, p.created_at desc
+    )
+    from public.course_polls p
+    where p.course_id = p_course
+  ), '[]'::jsonb);
+end;
+$$;
+
+create or replace function public.student_course_polls(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.is_enrolled(p_course) then return '[]'::jsonb; end if;
+  return coalesce((
+    select jsonb_agg(
+      jsonb_build_object(
+        'id', p.id,
+        'kind', p.kind,
+        'question', p.question,
+        'options', p.options,
+        'is_open', p.is_open,
+        'show_results_to_students', p.show_results_to_students,
+        'created_at', p.created_at,
+        'my_option_index', myv.option_index,
+        'my_response_text', coalesce(myv.response_text, ''),
+        'total_votes', case when p.show_results_to_students and (myv.id is not null or not p.is_open)
+                            then (select count(*) from public.poll_votes v where v.poll_id = p.id)
+                            else 0 end,
+        'option_counts', case when p.kind = 'mcq' and p.show_results_to_students and (myv.id is not null or not p.is_open)
+                              then coalesce((
+                                select jsonb_agg(
+                                  (select count(*) from public.poll_votes v where v.poll_id = p.id and v.option_index = idx - 1)
+                                  order by idx
+                                )
+                                from jsonb_array_elements(p.options) with ordinality as o(val, idx)
+                              ), '[]'::jsonb)
+                              else '[]'::jsonb end
+      )
+      order by p.is_open desc, p.created_at desc
+    )
+    from public.course_polls p
+    left join public.poll_votes myv on myv.poll_id = p.id and myv.student_id = auth.uid()
+    where p.course_id = p_course
+      and (p.is_open or (p.show_results_to_students and p.created_at > now() - interval '48 hours'))
+  ), '[]'::jsonb);
+end;
+$$;
+
+create or replace function public.submit_poll_vote(
+  p_poll uuid,
+  p_option_index integer default null,
+  p_response_text text default ''
+) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  pl public.course_polls;
+begin
+  select * into pl from public.course_polls where id = p_poll;
+  if pl.id is null then
+    raise exception 'Poll not found.';
+  end if;
+  if not public.is_enrolled(pl.course_id) then
+    raise exception 'You are not enrolled in this course.';
+  end if;
+  if not pl.is_open then
+    raise exception 'This poll has been closed by the lecturer.';
+  end if;
+
+  if pl.kind = 'mcq' then
+    if p_option_index is null or p_option_index < 0 or p_option_index >= jsonb_array_length(pl.options) then
+      raise exception 'Please select a valid answer option.';
+    end if;
+  else
+    if coalesce(btrim(p_response_text), '') = '' then
+      raise exception 'Please enter a short response first.';
+    end if;
+  end if;
+
+  insert into public.poll_votes (poll_id, course_id, student_id, option_index, response_text)
+  values (pl.id, pl.course_id, auth.uid(), case when pl.kind = 'mcq' then p_option_index else null end, coalesce(btrim(p_response_text), ''))
+  on conflict (poll_id, student_id) do update
+     set option_index = excluded.option_index,
+         response_text = excluded.response_text,
+         created_at = now();
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- Anonymous TQM Mid-Semester / End-of-Course Feedback Survey
+create table if not exists public.course_feedback_settings (
+  course_id uuid primary key references public.courses on delete cascade,
+  mid_open boolean not null default false,
+  end_open boolean not null default false,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.course_feedback (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid not null references public.courses on delete cascade,
+  cycle text not null check (cycle in ('mid_semester', 'end_semester')),
+  student_hash text not null,
+  programme text not null default '',
+  stream text not null default '',
+  clarity integer not null check (clarity between 1 and 5),
+  pacing integer not null check (pacing between 1 and 5),
+  relevance integer not null check (relevance between 1 and 5),
+  materials integer not null check (materials between 1 and 5),
+  keep_doing text not null default '',
+  improve text not null default '',
+  stop_doing text not null default '',
+  submitted_at timestamptz not null default now(),
+  unique (course_id, cycle, student_hash)
+);
+create index if not exists idx_course_feedback_course on public.course_feedback (course_id, cycle);
+
+alter table public.course_feedback_settings enable row level security;
+alter table public.course_feedback enable row level security;
+
+drop policy if exists "Lecturers manage feedback settings" on public.course_feedback_settings;
+create policy "Lecturers manage feedback settings" on public.course_feedback_settings
+  for all to authenticated
+  using (public.is_lecturer())
+  with check (public.is_lecturer());
+
+drop policy if exists "Enrolled read feedback settings" on public.course_feedback_settings;
+create policy "Enrolled read feedback settings" on public.course_feedback_settings
+  for select to authenticated
+  using (public.is_enrolled(course_id));
+
+create or replace function public.course_feedback_status(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  st public.course_feedback_settings;
+  v_mid_hash text;
+  v_end_hash text;
+begin
+  if not public.is_enrolled(p_course) and not public.is_staff(p_course) then
+    return jsonb_build_object('mid_open', false, 'end_open', false, 'mid_submitted', false, 'end_submitted', false);
+  end if;
+  select * into st from public.course_feedback_settings where course_id = p_course;
+  v_mid_hash := md5(auth.uid()::text || ':' || p_course::text || ':mid_semester');
+  v_end_hash := md5(auth.uid()::text || ':' || p_course::text || ':end_semester');
+  return jsonb_build_object(
+    'mid_open', coalesce(st.mid_open, false),
+    'end_open', coalesce(st.end_open, false),
+    'mid_submitted', exists (select 1 from public.course_feedback f where f.course_id = p_course and f.cycle = 'mid_semester' and f.student_hash = v_mid_hash),
+    'end_submitted', exists (select 1 from public.course_feedback f where f.course_id = p_course and f.cycle = 'end_semester' and f.student_hash = v_end_hash)
+  );
+end;
+$$;
+
+create or replace function public.submit_course_feedback(
+  p_course uuid,
+  p_cycle text,
+  p_clarity integer,
+  p_pacing integer,
+  p_relevance integer,
+  p_materials integer,
+  p_keep text default '',
+  p_improve text default '',
+  p_stop text default ''
+) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  st public.course_feedback_settings;
+  v_hash text;
+  v_prog text := '';
+  v_stream text := '';
+begin
+  if not public.is_enrolled(p_course) then
+    raise exception 'Only enrolled students can submit course feedback.';
+  end if;
+  if p_cycle not in ('mid_semester', 'end_semester') then
+    raise exception 'Invalid feedback cycle.';
+  end if;
+  select * into st from public.course_feedback_settings where course_id = p_course;
+  if (p_cycle = 'mid_semester' and not coalesce(st.mid_open, false))
+     or (p_cycle = 'end_semester' and not coalesce(st.end_open, false)) then
+    raise exception 'This anonymous feedback window is currently closed.';
+  end if;
+
+  if p_clarity not between 1 and 5 or p_pacing not between 1 and 5
+     or p_relevance not between 1 and 5 or p_materials not between 1 and 5 then
+    raise exception 'All ratings must be between 1 and 5.';
+  end if;
+
+  select coalesce(r.programme, ''), coalesce(r.stream, '') into v_prog, v_stream
+    from public.profiles p
+    left join public.roster r on upper(trim(r.index_no)) = upper(trim(p.index_no))
+   where p.id = auth.uid()
+   limit 1;
+
+  v_hash := md5(auth.uid()::text || ':' || p_course::text || ':' || p_cycle);
+
+  if exists (select 1 from public.course_feedback f where f.course_id = p_course and f.cycle = p_cycle and f.student_hash = v_hash) then
+    raise exception 'You have already submitted anonymous feedback for this cycle.';
+  end if;
+
+  insert into public.course_feedback (
+    course_id, cycle, student_hash, programme, stream, clarity, pacing, relevance, materials, keep_doing, improve, stop_doing
+  ) values (
+    p_course, p_cycle, v_hash, coalesce(v_prog, ''), coalesce(v_stream, ''),
+    p_clarity, p_pacing, p_relevance, p_materials,
+    coalesce(btrim(p_keep), ''), coalesce(btrim(p_improve), ''), coalesce(btrim(p_stop), '')
+  );
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function public.course_feedback_summary(p_course uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  st public.course_feedback_settings;
+  v_mid jsonb;
+  v_end jsonb;
+begin
+  if not public.is_lecturer() then
+    raise exception 'Not allowed.';
+  end if;
+  select * into st from public.course_feedback_settings where course_id = p_course;
+
+  select jsonb_build_object(
+    'count', count(*),
+    'averages', jsonb_build_object(
+      'clarity', round(avg(clarity)::numeric, 2),
+      'pacing', round(avg(pacing)::numeric, 2),
+      'relevance', round(avg(relevance)::numeric, 2),
+      'materials', round(avg(materials)::numeric, 2)
+    ),
+    'cohorts', coalesce((
+      select jsonb_agg(row_to_json(c) order by c.count desc)
+      from (
+        select programme, stream, count(*)::int as count,
+               round(avg(clarity)::numeric, 2) as clarity,
+               round(avg(pacing)::numeric, 2) as pacing,
+               round(avg(relevance)::numeric, 2) as relevance,
+               round(avg(materials)::numeric, 2) as materials
+          from public.course_feedback
+         where course_id = p_course and cycle = 'mid_semester'
+         group by programme, stream
+        having count(*) >= 3
+      ) c
+    ), '[]'::jsonb),
+    'notes', coalesce((
+      select jsonb_agg(jsonb_build_object('keep_doing', keep_doing, 'improve', improve, 'stop_doing', stop_doing) order by submitted_at desc)
+      from public.course_feedback
+      where course_id = p_course and cycle = 'mid_semester'
+        and (keep_doing <> '' or improve <> '' or stop_doing <> '')
+    ), '[]'::jsonb)
+  ) into v_mid
+  from public.course_feedback
+  where course_id = p_course and cycle = 'mid_semester';
+
+  select jsonb_build_object(
+    'count', count(*),
+    'averages', jsonb_build_object(
+      'clarity', round(avg(clarity)::numeric, 2),
+      'pacing', round(avg(pacing)::numeric, 2),
+      'relevance', round(avg(relevance)::numeric, 2),
+      'materials', round(avg(materials)::numeric, 2)
+    ),
+    'cohorts', coalesce((
+      select jsonb_agg(row_to_json(c) order by c.count desc)
+      from (
+        select programme, stream, count(*)::int as count,
+               round(avg(clarity)::numeric, 2) as clarity,
+               round(avg(pacing)::numeric, 2) as pacing,
+               round(avg(relevance)::numeric, 2) as relevance,
+               round(avg(materials)::numeric, 2) as materials
+          from public.course_feedback
+         where course_id = p_course and cycle = 'end_semester'
+         group by programme, stream
+        having count(*) >= 3
+      ) c
+    ), '[]'::jsonb),
+    'notes', coalesce((
+      select jsonb_agg(jsonb_build_object('keep_doing', keep_doing, 'improve', improve, 'stop_doing', stop_doing) order by submitted_at desc)
+      from public.course_feedback
+      where course_id = p_course and cycle = 'end_semester'
+        and (keep_doing <> '' or improve <> '' or stop_doing <> '')
+    ), '[]'::jsonb)
+  ) into v_end
+  from public.course_feedback
+  where course_id = p_course and cycle = 'end_semester';
+
+  return jsonb_build_object(
+    'settings', jsonb_build_object(
+      'mid_open', coalesce(st.mid_open, false),
+      'end_open', coalesce(st.end_open, false)
+    ),
+    'mid_semester', v_mid,
+    'end_semester', v_end
+  );
+end;
+$$;
+
+do $$
+declare f text;
+begin
+  foreach f in array array[
+    'assignment_due_for(text, timestamptz, text, text, text)',
+    'can_submit(uuid)',
+    'submit_assignment(uuid, text, text, text, text, jsonb)',
+    'submit_group_assignment(uuid, text, text, text, text[], text, jsonb)',
+    'my_assignments(uuid)',
+    'my_upcoming()',
+    'lecturer_course_polls(uuid)',
+    'student_course_polls(uuid)',
+    'submit_poll_vote(uuid, integer, text)',
+    'course_feedback_status(uuid)',
+    'submit_course_feedback(uuid, text, integer, integer, integer, integer, text, text, text)',
+    'course_feedback_summary(uuid)'
+  ]
+  loop
+    execute format('revoke execute on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated', f);
+  end loop;
+end $$;

@@ -20,6 +20,7 @@ import {
   cleanCohortPart,
   filterStudentsForAssignment,
   formatAssignmentAudience,
+  hasDeadlineOverrides,
   hasAudienceFilter,
   normalizeIndexNo,
   parseAssignmentMeta,
@@ -103,7 +104,7 @@ export default function AssignmentsTab({ course, ta }) {
                         {meta.rubric.length > 0 ? ` · ${meta.rubric.length}-criterion rubric` : ''}
                         {meta.syndicate.enabled ? ` · Syndicate (${meta.syndicate.groups.length} groups)` : ''}
                       </div>
-                      {(hasFilter || meta.doc?.path || subRuleLabel) && (
+                      {(hasFilter || meta.doc?.path || subRuleLabel || hasDeadlineOverrides(meta)) && (
                         <div className="row-wrap" style={{ gap: 6, marginTop: 4 }}>
                           {hasFilter && (
                             <span className="badge badge-plum">
@@ -113,6 +114,11 @@ export default function AssignmentsTab({ course, ta }) {
                           {subRuleLabel && (
                             <span className="badge">
                               <Icon name={meta.submission?.mode === 'typed' ? 'edit' : 'file'} size={11} /> {subRuleLabel}
+                            </span>
+                          )}
+                          {hasDeadlineOverrides(meta) && (
+                            <span className="badge badge-amber">
+                              <Icon name="clock" size={11} /> Custom deadlines
                             </span>
                           )}
                           {meta.doc?.path && (
@@ -206,6 +212,16 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
   const [subFileFormat, setSubFileFormat] = useState(initialMeta.submission?.fileFormat || 'all');
   const [subAllowPaste, setSubAllowPaste] = useState(initialMeta.submission?.allowPaste !== false);
   const [saving, setSaving] = useState(false);
+  const [classDeadlines, setClassDeadlines] = useState(() => {
+    const out = {};
+    for (const [k, iso] of Object.entries(initialMeta.deadlines?.byClass || {})) {
+      out[k] = toLocalInput(iso);
+    }
+    return out;
+  });
+  const [showClassDeadlines, setShowClassDeadlines] = useState(
+    () => Object.keys(initialMeta.deadlines?.byClass || {}).length > 0
+  );
 
   useEffect(() => {
     let alive = true;
@@ -437,6 +453,14 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
           fileFormat: subFileFormat,
           allowPaste: subAllowPaste,
         },
+        deadlines: {
+          byClass: Object.fromEntries(
+            Object.entries(classDeadlines)
+              .map(([k, v]) => [k, fromLocalInput(v)])
+              .filter(([, iso]) => Boolean(iso))
+          ),
+          byStudent: initialMeta.deadlines?.byStudent || {},
+        },
       });
 
       const row = {
@@ -494,6 +518,62 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
           <Field label="Deadline"><input className="input" type="datetime-local" value={f.due_at} onChange={set('due_at')} /></Field>
           <Field label="Marks available"><input className="input" type="number" min="1" value={f.max_marks} onChange={set('max_marks')} /></Field>
         </div>
+        {(classOptions.length > 0 || Object.keys(classDeadlines).length > 0) && (
+          <div className="stack-sm" style={{ padding: '10px 14px', borderRadius: 10, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+            <div className="between" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <div>
+                <strong className="small">Per-class deadline overrides (optional)</strong>
+                <div className="tiny muted">Leave blank on a class to inherit the main deadline above. Individual student extensions can also be granted while marking.</div>
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setShowClassDeadlines((v) => !v)}
+              >
+                <Icon name="clock" size={14} /> {showClassDeadlines ? 'Hide class deadlines' : `Set per class (${Object.values(classDeadlines).filter(Boolean).length})`}
+              </button>
+            </div>
+            {showClassDeadlines && (
+              <div className="stack-sm" style={{ marginTop: 4 }}>
+                {(hasAudienceFilter(effectiveAudience) ? filterStudentsForAssignment(classOptions, effectiveAudience) : classOptions).map((c) => {
+                  const val = classDeadlines[c.key] || '';
+                  return (
+                    <div key={c.key} className="between" style={{ gap: 8, flexWrap: 'wrap', padding: '6px 10px', borderRadius: 8, background: 'var(--surface)', border: '1px solid var(--line-2)' }}>
+                      <span className="small">
+                        <strong>{[c.programme, c.stream].filter(Boolean).join(' · ') || 'Unassigned'}</strong>
+                        <span className="tiny muted"> ({c.students})</span>
+                      </span>
+                      <div className="row" style={{ gap: 6 }}>
+                        <input
+                          className="input"
+                          type="datetime-local"
+                          style={{ width: 'auto', minHeight: 34, fontSize: 13 }}
+                          value={val}
+                          onChange={(e) => setClassDeadlines((prev) => ({ ...prev, [c.key]: e.target.value }))}
+                        />
+                        {val && (
+                          <button
+                            type="button"
+                            className="icon-btn plain"
+                            title="Use default deadline"
+                            aria-label="Clear class deadline"
+                            onClick={() => setClassDeadlines((prev) => {
+                              const next = { ...prev };
+                              delete next[c.key];
+                              return next;
+                            })}
+                          >
+                            <Icon name="close" size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Target classes / cohorts */}
         <div className="stack-sm" style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>

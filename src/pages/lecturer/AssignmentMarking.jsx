@@ -2,10 +2,10 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
 import { useAuth } from '../../lib/auth.jsx';
-import { isViewOnlyPath, openStoredFile, setViewOnlyFlag } from '../../lib/files.js';
-import { fmtFull, fmtNumber, pct, relative } from '../../lib/format.js';
+import { getSignedFileUrl, isViewOnlyPath, openStoredFile, setViewOnlyFlag } from '../../lib/files.js';
+import { fmtDateTime, fmtFull, fmtNumber, fromLocalInput, pct, relative, toLocalInput } from '../../lib/format.js';
 import { downloadWorkbook } from '../../lib/sheets.js';
-import { assignmentMatchesStudent, findStudentSyndicate, formatAssignmentAudience, formatSubmissionRules, hasAudienceFilter, normalizeIndexNo, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
+import { assignmentMatchesStudent, findStudentSyndicate, formatAssignmentAudience, formatSubmissionRules, hasAudienceFilter, normalizeIndexNo, parseAssignmentMeta, resolveEffectiveDue, serializeAssignmentMeta } from '../../lib/assignmentMeta.js';
 import { ALL_NEW_FEATURES_SQL } from '../../lib/allFeaturesSql.js';
 import { ALL_GROUPS, GroupFilters, GroupSummaryTable, groupLabel, groupSummary, matchesGroup } from '../../components/Groups.jsx';
 import { SortSelect, SortTh } from '../../components/SortBar.jsx';
@@ -15,6 +15,8 @@ import { Topbar } from '../../components/Layout.jsx';
 import RubricGrader from '../../components/RubricGrader.jsx';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { AssignmentForm } from './course/AssignmentsTab.jsx';
+import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
+import { compareSubmissionTexts, extractAssignmentTexts } from '../../lib/similarity.js';
 
 const SecureSlideViewer = lazy(() => import('../../components/SecureSlideViewer.jsx'));
 
@@ -26,6 +28,26 @@ async function allSubmissions(assignmentId) {
     all = all.concat(page);
     if (page.length < 1000) return all;
   }
+}
+
+function hashSeed(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function synAlphaLabel(n) {
+  let num = n + 1;
+  let out = '';
+  while (num > 0) {
+    const rem = (num - 1) % 26;
+    out = String.fromCharCode(65 + rem) + out;
+    num = Math.floor((num - 1) / 26);
+  }
+  return `Syndicate ${out}`;
 }
 
 export default function AssignmentMarking() {
@@ -56,6 +78,10 @@ export default function AssignmentMarking() {
   const [showSql, setShowSql] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
   const [act, busy] = useAction();
+  const [blindMode, setBlindMode] = useState(false);
+  const [extTarget, setExtTarget] = useState(null);
+  const [nudging, setNudging] = useState(false);
+  const [checkingSim, setCheckingSim] = useState(false);
 
   const assignMeta = useMemo(() => parseAssignmentMeta(data?.a), [data?.a]);
 
@@ -117,9 +143,37 @@ export default function AssignmentMarking() {
         }
       }
       const peer = peerStatsByIndex.get(normalizeIndexNo(r.index_no)) || null;
-      return { ...r, _syn: syn, _synLeaderSub: synLeaderSub, _peer: peer };
+      const dueInfo = resolveEffectiveDue(data.a, assignMeta, r);
+      const effSub = r.sub || synLeaderSub;
+      const isLate = effSub
+        ? (dueInfo.source !== 'default' && dueInfo.dueAt
+            ? new Date(effSub.submitted_at) > new Date(dueInfo.dueAt)
+            : Boolean(effSub.is_late))
+        : false;
+      return { ...r, _syn: syn, _synLeaderSub: synLeaderSub, _peer: peer, _dueInfo: dueInfo, _isLate: isLate };
     });
   }, [data, assignMeta, peerStatsByIndex]);
+
+  const blindMap = useMemo(() => {
+    const map = new Map();
+    const aId = data?.a?.id || '';
+    const pad = Math.max(2, String(enrichedRows.length).length);
+    const shuffled = [...enrichedRows].sort((x, y) =>
+      hashSeed(`${aId}:${x.index_no}`) - hashSeed(`${aId}:${y.index_no}`)
+    );
+    shuffled.forEach((r, idx) => {
+      map.set(normalizeIndexNo(r.index_no), {
+        num: idx + 1,
+        label: `Candidate #${String(idx + 1).padStart(pad, '0')}`,
+      });
+    });
+    const synMap = new Map();
+    const syns = [...(assignMeta.syndicate?.groups || [])].sort((x, y) =>
+      hashSeed(`${aId}:${x.id}`) - hashSeed(`${aId}:${y.id}`)
+    );
+    syns.forEach((g, idx) => synMap.set(g.id, synAlphaLabel(idx)));
+    return { students: map, syndicates: synMap };
+  }, [enrichedRows, data?.a?.id, assignMeta.syndicate?.groups]);
 
   const shown = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -129,20 +183,39 @@ export default function AssignmentMarking() {
       if (filter === 'tomark' && !(effectiveSub && (r.sub ? r.sub.marks === null : true))) return false;
       if (filter === 'marked' && !(r.sub && r.sub.marks !== null)) return false;
       if (filter === 'missing' && effectiveSub) return false;
-      if (filter === 'late' && !effectiveSub?.is_late) return false;
+      if (filter === 'late' && !r._isLate) return false;
       if (term) {
-        const hay = [r.full_name, r.index_no, r.programme, r.stream, r._syn?.name].filter(Boolean).join(' ').toLowerCase();
-        if (!hay.includes(term)) return false;
+        if (blindMode) {
+          const blindInfo = blindMap.students.get(normalizeIndexNo(r.index_no));
+          const blindSyn = r._syn ? (blindMap.syndicates.get(r._syn.id) || '') : '';
+          const hay = [blindInfo?.label, blindSyn].filter(Boolean).join(' ').toLowerCase();
+          if (!hay.includes(term)) return false;
+        } else {
+          const hay = [r.full_name, r.index_no, r.programme, r.stream, r._syn?.name].filter(Boolean).join(' ').toLowerCase();
+          if (!hay.includes(term)) return false;
+        }
       }
       return true;
     });
     return [...filtered].sort((a, b) => {
+      const blindCmp = () => {
+        const na = blindMap.students.get(normalizeIndexNo(a.index_no))?.num ?? 0;
+        const nb = blindMap.students.get(normalizeIndexNo(b.index_no))?.num ?? 0;
+        return na - nb;
+      };
+      if (blindMode && ['name_asc', 'name_desc', 'index_asc', 'index_desc', 'prog_asc', 'prog_desc', 'stream_asc'].includes(sort)) {
+        return blindCmp();
+      }
       switch (sort) {
-        case 'syn_asc': return compareText(a._syn?.name || 'zzz', b._syn?.name || 'zzz', 'asc') || byNameIndex(a, b);
-        case 'marks_desc': return compareNumber(a.sub?.marks, b.sub?.marks, 'desc') || byNameIndex(a, b);
-        case 'marks_asc': return compareNumber(a.sub?.marks, b.sub?.marks, 'asc') || byNameIndex(a, b);
-        case 'sub_desc': return compareDate((a.sub || a._synLeaderSub)?.submitted_at, (b.sub || b._synLeaderSub)?.submitted_at, 'desc') || byNameIndex(a, b);
-        case 'sub_asc': return compareDate((a.sub || a._synLeaderSub)?.submitted_at, (b.sub || b._synLeaderSub)?.submitted_at, 'asc') || byNameIndex(a, b);
+        case 'syn_asc': return compareText(
+          blindMode ? (blindMap.syndicates.get(a._syn?.id) || 'zzz') : (a._syn?.name || 'zzz'),
+          blindMode ? (blindMap.syndicates.get(b._syn?.id) || 'zzz') : (b._syn?.name || 'zzz'),
+          'asc'
+        ) || (blindMode ? blindCmp() : byNameIndex(a, b));
+        case 'marks_desc': return compareNumber(a.sub?.marks, b.sub?.marks, 'desc') || (blindMode ? blindCmp() : byNameIndex(a, b));
+        case 'marks_asc': return compareNumber(a.sub?.marks, b.sub?.marks, 'asc') || (blindMode ? blindCmp() : byNameIndex(a, b));
+        case 'sub_desc': return compareDate((a.sub || a._synLeaderSub)?.submitted_at, (b.sub || b._synLeaderSub)?.submitted_at, 'desc') || (blindMode ? blindCmp() : byNameIndex(a, b));
+        case 'sub_asc': return compareDate((a.sub || a._synLeaderSub)?.submitted_at, (b.sub || b._synLeaderSub)?.submitted_at, 'asc') || (blindMode ? blindCmp() : byNameIndex(a, b));
         case 'name_desc': return compareText(a.full_name, b.full_name, 'desc') || compareText(a.index_no, b.index_no, 'asc');
         case 'index_asc': return compareText(a.index_no, b.index_no, 'asc') || byNameIndex(a, b);
         case 'index_desc': return compareText(a.index_no, b.index_no, 'desc') || byNameIndex(a, b);
@@ -153,7 +226,7 @@ export default function AssignmentMarking() {
         default: return byNameIndex(a, b);
       }
     });
-  }, [enrichedRows, filter, q, group, sort]);
+  }, [enrichedRows, filter, q, group, sort, blindMode, blindMap]);
 
   if (loading) return <Loading />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
@@ -162,8 +235,9 @@ export default function AssignmentMarking() {
   const rows = enrichedRows.filter((r) => matchesGroup(r, group));
   const summary = groupSummary(enrichedRows, (r) => !!r.sub && r.sub.marks !== null, (r) => pct(r.sub.marks, a.max_marks));
   const submitted = rows.filter((r) => r.sub || r._synLeaderSub);
+  const missingRows = rows.filter((r) => !(r.sub || r._synLeaderSub));
   const marked = rows.filter((r) => r.sub && r.sub.marks !== null);
-  const late = submitted.filter((r) => (r.sub || r._synLeaderSub)?.is_late);
+  const late = submitted.filter((r) => r._isLate);
   const showPeerCol = assignMeta.syndicate.enabled && assignMeta.syndicate.peerCheck !== false;
   const flaggedPeerCount = showPeerCol ? rows.filter((r) => r._peer?.flagged).length : 0;
   const subRuleLabel = formatSubmissionRules(assignMeta);
@@ -308,7 +382,7 @@ export default function AssignmentMarking() {
               <label className="search">
                 <span className="sr-only">Search</span>
                 <Icon name="search" size={16} />
-                <input className="input" style={{ width: 230, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, index, syndicate, stream" />
+                <input className="input" style={{ width: 230, minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder={blindMode ? "Candidate # (blind mode)" : "Name, index, syndicate, stream"} />
               </label>
               <div className="chips" role="group" aria-label="Filter">
                 {[['tomark', `To mark · ${Math.max(0, submitted.length - marked.length)}`], ['marked', 'Marked'], ['late', 'Late'], ['missing', 'Not submitted'], ['all', 'All']].map(([id, label]) => (
@@ -333,7 +407,37 @@ export default function AssignmentMarking() {
                 ]}
               />
             </div>
-            <button type="button" className="btn btn-sm" onClick={exportXlsx}><Icon name="download" size={16} /> Export to Excel</button>
+            <div className="row-wrap" style={{ gap: 8 }}>
+              <button
+                type="button"
+                className={`btn btn-sm ${blindMode ? 'btn-primary' : ''}`}
+                onClick={() => { setBlindMode((v) => !v); setQ(''); }}
+                title="Mask student names and index numbers during grading to reduce bias"
+              >
+                <Icon name={blindMode ? 'eyeOff' : 'eye'} size={15} /> {blindMode ? 'Blind mode ON' : 'Blind marking'}
+              </button>
+              {submitted.length >= 2 && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setCheckingSim(true)}
+                  title="Compare submitted texts, PDFs, and Word docs for collusion"
+                >
+                  <Icon name="shield" size={15} /> Check similarities
+                </button>
+              )}
+              {!isTA && missingRows.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setNudging(true)}
+                  title="Send personalized reminder messages to eligible students who have not submitted"
+                >
+                  <Icon name="mail" size={15} /> Nudge missing ({missingRows.length})
+                </button>
+              )}
+              <button type="button" className="btn btn-sm" onClick={exportXlsx}><Icon name="download" size={16} /> Export to Excel</button>
+            </div>
           </div>
 
           {shown.length === 0 ? <Empty icon="inbox">{filter === 'tomark' ? 'Nothing waiting to be marked.' : 'No students match.'}</Empty> : (
@@ -354,13 +458,17 @@ export default function AssignmentMarking() {
                 <tbody>
                   {shown.slice(0, 400).map((r, i) => {
                     const effectiveSub = r.sub || r._synLeaderSub;
+                    const blindInfo = blindMap.students.get(normalizeIndexNo(r.index_no));
+                    const displayIdx = blindMode ? (blindInfo?.label || 'Candidate') : r.index_no;
+                    const displayName = blindMode ? 'Anonymous candidate' : r.full_name;
+                    const displaySyn = r._syn ? (blindMode ? (blindMap.syndicates.get(r._syn.id) || 'Syndicate') : r._syn.name) : '';
                     return (
                       <tr key={r.index_no}>
-                        <td className="mono small">{r.index_no}</td>
-                        <td>{r.full_name}</td>
+                        <td className="mono small">{displayIdx}</td>
+                        <td className={blindMode ? 'muted' : ''}>{displayName}</td>
                         {assignMeta.syndicate.enabled && (
                           <td>
-                            {r._syn ? <span className="badge badge-blue">{r._syn.name}</span> : <span className="tiny muted">—</span>}
+                            {r._syn ? <span className="badge badge-blue">{displaySyn}</span> : <span className="tiny muted">—</span>}
                           </td>
                         )}
                         {showPeerCol && (
@@ -374,36 +482,64 @@ export default function AssignmentMarking() {
                             )}
                           </td>
                         )}
-                        <td className="small muted hide-sm">{[r.programme, r.stream].filter(Boolean).join(' · ') || '—'}</td>
+                        <td className="small muted hide-sm">{blindMode ? 'Hidden' : ([r.programme, r.stream].filter(Boolean).join(' · ') || '—')}</td>
                         <td className="small">
                           {effectiveSub ? (
                             <>
-                              {relative(effectiveSub.submitted_at)} {effectiveSub.is_late && <span className="badge badge-amber">Late</span>}
+                              {relative(effectiveSub.submitted_at)} {r._isLate && <span className="badge badge-amber">Late</span>}
                               {!r.sub && r._synLeaderSub && <span className="badge" style={{ marginLeft: 4 }}>Group file</span>}
+                              {r._dueInfo?.source !== 'default' && (
+                                <span className={`badge ${r._dueInfo.source === 'student' ? 'badge-plum' : ''}`} style={{ marginLeft: 4 }} title={r._dueInfo.dueAt ? fmtFull(r._dueInfo.dueAt) : ''}>
+                                  {r._dueInfo.source === 'student' ? 'Extended' : 'Class due'}
+                                </span>
+                              )}
                               <div className="tiny muted" style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 {effectiveSub.response_text
                                   ? `Typed (${effectiveSub.response_text.trim().split(/\s+/).filter(Boolean).length} words)${effectiveSub.file_path && effectiveSub.file_path !== 'typed:online' ? ` + ${effectiveSub.file_name}` : ''}`
                                   : effectiveSub.file_name}
                               </div>
                             </>
-                          ) : <span className="muted">Not submitted</span>}
+                          ) : (
+                            <>
+                              <span className="muted">Not submitted</span>
+                              {r._dueInfo?.source !== 'default' && r._dueInfo.dueAt && (
+                                <div className="tiny" style={{ color: 'var(--teal-dark)' }}>
+                                  {r._dueInfo.source === 'student' ? 'Extended' : 'Class due'}: {fmtDateTime(r._dueInfo.dueAt)}
+                                </div>
+                              )}
+                            </>
+                          )}
                         </td>
                         <td className="num">{r.sub?.marks !== null && r.sub?.marks !== undefined ? `${fmtNumber(r.sub.marks)} / ${fmtNumber(a.max_marks)}` : '—'}</td>
                         <td>
-                          {effectiveSub && (
-                            <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
-                              {effectiveSub.file_path === 'presentation:in-class' ? (
-                                <span className="badge badge-teal" title="Graded live in class">In-class</span>
-                              ) : effectiveSub.file_path === 'typed:online' ? (
-                                <button type="button" className="icon-btn plain" aria-label="Read typed response" title="Read typed response" onClick={() => setMarking(i)}><Icon name="eye" /></button>
-                              ) : effectiveSub.file_path ? (
-                                <button type="button" className="icon-btn plain" aria-label="Open file" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}><Icon name="eye" /></button>
-                              ) : null}
-                              <button type="button" className="btn btn-sm btn-primary" onClick={() => setMarking(i)}>
-                                {r.sub?.marks !== null && r.sub?.marks !== undefined ? 'Edit mark' : 'Mark'}
+                          <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
+                            {!isTA && (
+                              <button
+                                type="button"
+                                className="icon-btn plain"
+                                aria-label="Grant deadline extension"
+                                title={r._dueInfo?.source === 'student' ? `Extended: ${fmtDateTime(r._dueInfo.dueAt)}` : 'Grant individual deadline extension'}
+                                onClick={() => setExtTarget(r)}
+                                style={r._dueInfo?.source === 'student' ? { color: 'var(--teal)' } : undefined}
+                              >
+                                <Icon name="clock" size={15} />
                               </button>
-                            </div>
-                          )}
+                            )}
+                            {effectiveSub && (
+                              <>
+                                {effectiveSub.file_path === 'presentation:in-class' ? (
+                                  <span className="badge badge-teal" title="Graded live in class">In-class</span>
+                                ) : effectiveSub.file_path === 'typed:online' ? (
+                                  <button type="button" className="icon-btn plain" aria-label="Read typed response" title="Read typed response" onClick={() => setMarking(i)}><Icon name="eye" /></button>
+                                ) : effectiveSub.file_path ? (
+                                  <button type="button" className="icon-btn plain" aria-label="Open file" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}><Icon name="eye" /></button>
+                                ) : null}
+                                <button type="button" className="btn btn-sm btn-primary" onClick={() => setMarking(i)}>
+                                  {r.sub?.marks !== null && r.sub?.marks !== undefined ? 'Edit mark' : 'Mark'}
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -422,6 +558,8 @@ export default function AssignmentMarking() {
           assignMeta={assignMeta}
           allRows={enrichedRows}
           row={shown[marking]}
+          blindMode={blindMode}
+          blindMap={blindMap}
           hasNext={shown.slice(marking + 1).some((r) => r.sub || r._synLeaderSub)}
           onShowSql={() => setShowSql(true)}
           onClose={() => setMarking(null)}
@@ -460,6 +598,50 @@ export default function AssignmentMarking() {
           onSaved={reload}
         />
       )}
+      {extTarget && (
+        <ExtensionModal
+          a={a}
+          assignMeta={assignMeta}
+          row={extTarget}
+          onClose={() => setExtTarget(null)}
+          onSaved={reload}
+        />
+      )}
+
+      {checkingSim && (
+        <SimilarityModal
+          a={a}
+          assignMeta={assignMeta}
+          rows={enrichedRows}
+          blindMode={blindMode}
+          blindMap={blindMap}
+          onClose={() => setCheckingSim(false)}
+        />
+      )}
+
+      {nudging && (
+        <BulkNudgeModal
+          courseId={a.course_id}
+          courseCode={a.courses?.code || ''}
+          title={`Nudge non-submitters · ${a.title}`}
+          subtitle={`Eligible enrolled students with no submission recorded yet for "${a.title}".`}
+          students={missingRows}
+          defaultSubject={`Assignment Reminder: ${a.title} ({course})`}
+          defaultMessage={[
+            'Dear {name},',
+            '',
+            `We noticed you have not yet submitted "${a.title}" in {course}.`,
+            a.due_at ? `Default deadline: ${fmtDateTime(a.due_at)}.` : '',
+            '',
+            'Please submit your work on the portal as soon as possible, or reply to this message if you are experiencing any difficulty.',
+            '',
+            'Regards,',
+            'Course Lecturer',
+          ].filter((line, idx, arr) => !(line === '' && arr[idx - 1] === '')).join('\n')}
+          onClose={() => setNudging(false)}
+        />
+      )}
+
       {showSql && (
         <Modal title="Enable Syndicate Group Sync in Supabase" onClose={() => setShowSql(false)} wide>
           <p className="small muted">
@@ -480,7 +662,7 @@ export default function AssignmentMarking() {
   );
 }
 
-function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, onSaved }) {
+function MarkModal({ a, assignMeta, allRows, row, blindMode = false, blindMap = null, hasNext, onShowSql, onClose, onSaved }) {
   const toast = useToast();
   const [act] = useAction();
   const effectiveSub = row.sub || row._synLeaderSub;
@@ -632,7 +814,11 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
 
   return (
     <Modal
-      title={syndicate ? `${row.full_name} · ${syndicate.name}` : row.full_name}
+      title={(() => {
+        const bStud = blindMode ? (blindMap?.students?.get(normalizeIndexNo(row.index_no))?.label || 'Candidate') : row.full_name;
+        const bSyn = syndicate ? (blindMode ? (blindMap?.syndicates?.get(syndicate.id) || 'Syndicate') : syndicate.name) : '';
+        return syndicate ? `${bStud} · ${bSyn}` : bStud;
+      })()}
       wide
       onClose={onClose}
       footer={
@@ -692,7 +878,7 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
         <div className="stack-sm" style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--teal-50)', border: '1px solid var(--teal)' }}>
           <div className="between" style={{ flexWrap: 'wrap', gap: 6 }}>
             <strong className="small" style={{ color: 'var(--teal-dark)' }}>
-              {syndicate.name} ({syndicatePeers.length} members)
+              {blindMode ? (blindMap?.syndicates?.get(syndicate.id) || 'Syndicate') : syndicate.name} ({syndicatePeers.length} members)
             </strong>
             {assignMeta.syndicate.peerCheck !== false && syndicatePeers.length > 1 && (
               <label className="check" style={{ gap: 6 }}>
@@ -722,8 +908,8 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
               >
                 <div className="stack-sm" style={{ gap: 2, flex: 1, minWidth: 200 }}>
                   <div className="row-wrap" style={{ gap: 6 }}>
-                    <span className="mono strong small">{m.index_no}</span>
-                    {m.full_name && m.full_name !== m.index_no && <span className="small">{m.full_name}</span>}
+                    <span className="mono strong small">{blindMode ? (blindMap?.students?.get(normalizeIndexNo(m.index_no))?.label || 'Candidate') : m.index_no}</span>
+                    {!blindMode && m.full_name && m.full_name !== m.index_no && <span className="small">{m.full_name}</span>}
                     {m._peer && (
                       <span className={`badge ${m._peer.flagged ? 'badge-red' : 'badge-teal'}`}>
                         Peer: {m._peer.avgScore}/5 ({m._peer.count}){m._peer.flagged ? ' · Low contribution' : ''}
@@ -734,7 +920,7 @@ function MarkModal({ a, assignMeta, allRows, row, hasNext, onShowSql, onClose, o
                     <div className="stack-sm" style={{ gap: 2, marginTop: 2 }}>
                       {m._peer.notes.map((n, ni) => (
                         <span key={ni} className="tiny muted">
-                          From {n.fromName} ({n.score}/5){n.note ? `: “${n.note}”` : ''}
+                          From {blindMode ? 'Teammate' : n.fromName} ({n.score}/5){n.note ? `: “${n.note}”` : ''}
                         </span>
                       ))}
                     </div>
@@ -1020,6 +1206,277 @@ function PresentationModal({ a, assignMeta, allRows, onClose, onSaved }) {
       <Field label="Feedback for group" hint="shown when marks are released">
         <textarea className="textarea" rows={3} value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="Strong analytical structure and clear delivery…" />
       </Field>
+    </Modal>
+  );
+}
+
+
+function ExtensionModal({ a, assignMeta, row, onClose, onSaved }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const existingOverride = assignMeta.deadlines?.byStudent?.[normalizeIndexNo(row.index_no)] || '';
+  const defaultBase = existingOverride || row._dueInfo?.dueAt || a.due_at || new Date(Date.now() + 2 * 86400000).toISOString();
+  const [dueLocal, setDueLocal] = useState(() => toLocalInput(defaultBase));
+
+  function bumpHours(hours) {
+    const baseMs = dueLocal ? new Date(dueLocal).getTime() : Date.now();
+    const validMs = Number.isNaN(baseMs) ? Date.now() : Math.max(baseMs, Date.now());
+    setDueLocal(toLocalInput(new Date(validMs + hours * 3600000).toISOString()));
+  }
+
+  async function saveExtension(clear = false) {
+    const nextIso = clear ? null : fromLocalInput(dueLocal);
+    if (!clear && !nextIso) {
+      toast('Choose a valid extension date and time.', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const nextByStudent = { ...(assignMeta.deadlines?.byStudent || {}) };
+      const key = normalizeIndexNo(row.index_no);
+      if (clear) delete nextByStudent[key];
+      else nextByStudent[key] = nextIso;
+
+      const encoded = serializeAssignmentMeta(assignMeta.cleanInstructions, {
+        ...assignMeta,
+        deadlines: {
+          byClass: assignMeta.deadlines?.byClass || {},
+          byStudent: nextByStudent,
+        },
+      });
+      await run(supabase.from('assignments').update({ instructions: encoded }).eq('id', a.id));
+      toast(clear ? `Cleared custom extension for ${row.full_name}.` : `Extension saved for ${row.full_name}.`);
+      onClose();
+      onSaved();
+    } catch (e) {
+      toast(e.message || 'Could not update deadline extension.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={`Deadline extension · ${row.full_name}`}
+      onClose={() => !busy && onClose()}
+      footer={
+        <>
+          {existingOverride && (
+            <button type="button" className="btn" style={{ marginRight: 'auto', color: 'var(--red-ink)' }} onClick={() => saveExtension(true)} disabled={busy}>
+              Remove extension
+            </button>
+          )}
+          <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="btn btn-primary" onClick={() => saveExtension(false)} disabled={busy || !dueLocal}>
+            {busy ? 'Saving…' : 'Save extension'}
+          </button>
+        </>
+      }
+    >
+      <div className="stack">
+        <div className="notice notice-info small">
+          <strong>{row.full_name}</strong> (<span className="mono">{row.index_no}</span>)
+          {[row.programme, row.stream].filter(Boolean).length ? ` · ${[row.programme, row.stream].filter(Boolean).join(' · ')}` : ''}
+          <div className="tiny muted" style={{ marginTop: 2 }}>
+            {a.due_at ? `Course deadline: ${fmtDateTime(a.due_at)}` : 'No course-wide deadline set'}
+          </div>
+        </div>
+
+        <Field label="Extended deadline for this student">
+          <input className="input" type="datetime-local" value={dueLocal} onChange={(e) => setDueLocal(e.target.value)} />
+        </Field>
+
+        <div className="row-wrap" style={{ gap: 6 }}>
+          <span className="tiny muted">Quick add:</span>
+          <button type="button" className="btn btn-sm" onClick={() => bumpHours(24)}>+24 hours</button>
+          <button type="button" className="btn btn-sm" onClick={() => bumpHours(48)}>+48 hours</button>
+          <button type="button" className="btn btn-sm" onClick={() => bumpHours(7 * 24)}>+7 days</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function SimilarityModal({ a, assignMeta, rows, blindMode, blindMap, onClose }) {
+  const [threshold, setThreshold] = useState(45);
+  const [phase, setPhase] = useState('scanning');
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [extracted, setExtracted] = useState(null);
+  const [scanError, setScanError] = useState('');
+  const [expandedId, setExpandedId] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    setPhase('scanning');
+    setScanError('');
+    extractAssignmentTexts(rows, getSignedFileUrl, (p) => {
+      if (alive) setProgress(p);
+    })
+      .then((res) => {
+        if (!alive) return;
+        setExtracted(res);
+        setPhase('done');
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setScanError(e.message || 'Could not scan submissions.');
+        setPhase('error');
+      });
+    return () => { alive = false; };
+  }, [a.id]);
+
+  const report = useMemo(() => {
+    if (!extracted?.docs) return null;
+    return compareSubmissionTexts(extracted.docs, {
+      boilerplateText: assignMeta.cleanInstructions,
+      thresholdPct: threshold,
+    });
+  }, [extracted, assignMeta.cleanInstructions, threshold]);
+
+  function displayParticipant(p) {
+    if (blindMode) {
+      return p.syndicateName
+        ? 'Syndicate group'
+        : (blindMap?.students?.get(normalizeIndexNo(p.indexNo))?.label || 'Candidate');
+    }
+    return p.syndicateName ? p.syndicateName : `${p.fullName} (${p.indexNo})`;
+  }
+
+  return (
+    <Modal
+      title="Submission Similarity & Collusion Check"
+      onClose={onClose}
+      wide
+      footer={<button type="button" className="btn" onClick={onClose}>Close</button>}
+    >
+      <div className="stack">
+        {phase === 'scanning' && (
+          <div className="stack-sm" style={{ padding: '18px 14px', borderRadius: 10, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+            <div className="between">
+              <strong className="small">Extracting text from typed responses, PDFs, and Word docs…</strong>
+              <span className="mono small">{progress.done} / {progress.total}</span>
+            </div>
+            <div style={{ height: 8, borderRadius: 99, background: 'var(--line)', overflow: 'hidden' }}>
+              <div
+                style={{
+                  height: '100%',
+                  width: `${progress.total ? Math.round((progress.done / progress.total) * 100) : 10}%`,
+                  background: 'var(--teal)',
+                  transition: 'width 0.2s ease',
+                }}
+              />
+            </div>
+            <p className="tiny muted" style={{ margin: 0 }}>
+              Runs privately inside your browser — prompt instructions and same-syndicate teammates are automatically excluded.
+            </p>
+          </div>
+        )}
+
+        {phase === 'error' && <div className="notice notice-warn small">{scanError}</div>}
+
+        {phase === 'done' && report && (
+          <>
+            <div className="between" style={{ flexWrap: 'wrap', gap: 12, padding: '10px 14px', borderRadius: 10, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+              <div className="row-wrap" style={{ gap: 10 }}>
+                <span className="badge badge-teal">{report.checkedCount} compared</span>
+                <span className={`badge ${report.pairs.length > 0 ? 'badge-red' : ''}`}>
+                  {report.pairs.length} pair{report.pairs.length === 1 ? '' : 's'} ≥ {threshold}%
+                </span>
+                {extracted.skipped.length > 0 && (
+                  <span className="badge badge-amber">{extracted.skipped.length} unsupported/unreadable file{extracted.skipped.length === 1 ? '' : 's'}</span>
+                )}
+              </div>
+              <label className="row small" style={{ gap: 8 }}>
+                <span className="tiny muted">Flag threshold:</span>
+                <input
+                  type="range"
+                  min={25}
+                  max={85}
+                  step={5}
+                  value={threshold}
+                  onChange={(e) => setThreshold(Number(e.target.value))}
+                />
+                <span className="mono strong">{threshold}%</span>
+              </label>
+            </div>
+
+            {report.pairs.length === 0 ? (
+              <div className="card">
+                <Empty icon="check" title={`No pairs above ${threshold}% similarity`}>
+                  No non-syndicate submissions exceeded the {threshold}% overlap threshold after stripping assignment prompt boilerplate.
+                </Empty>
+              </div>
+            ) : (
+              <div className="stack-sm" style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 4 }}>
+                {report.pairs.map((pair) => {
+                  const isOpen = expandedId === pair.id;
+                  const sevClass = pair.scorePct >= 75 ? 'badge-red' : 'badge-amber';
+                  return (
+                    <div key={pair.id} className="card stack-sm" style={{ borderColor: pair.scorePct >= 75 ? 'var(--red-ink)' : 'var(--line)' }}>
+                      <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                        <div className="stack-sm" style={{ gap: 2 }}>
+                          <div className="row-wrap" style={{ gap: 6, alignItems: 'center' }}>
+                            <span className={`badge ${sevClass} mono`}>{pair.scorePct}% overlap</span>
+                            <strong className="small">{displayParticipant(pair.a)}</strong>
+                            <span className="tiny muted">↔</span>
+                            <strong className="small">{displayParticipant(pair.b)}</strong>
+                          </div>
+                          <span className="tiny muted">
+                            Containment: {pair.containmentPct}% · Jaccard: {pair.jaccardPct}% · {pair.sharedCount} shared phrases
+                          </span>
+                        </div>
+                        <button type="button" className="btn btn-sm" onClick={() => setExpandedId(isOpen ? null : pair.id)}>
+                          {isOpen ? 'Hide match' : 'Compare passages'}
+                        </button>
+                      </div>
+
+                      {isOpen && (
+                        <div className="stack-sm" style={{ paddingTop: 8, borderTop: '1px solid var(--line-2)' }}>
+                          {pair.snippets.length > 0 && (
+                            <div className="stack-sm" style={{ gap: 4 }}>
+                              <span className="tiny strong muted">Longest matched sequences:</span>
+                              {pair.snippets.map((snip, idx) => (
+                                <div key={idx} className="tiny" style={{ padding: '6px 10px', borderRadius: 6, background: '#fef3c7', color: '#78350f', border: '1px solid #fcd34d' }}>
+                                  “{snip}”
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          <div className="two-col" style={{ gap: 10 }}>
+                            <div className="stack-sm">
+                              <span className="tiny strong">{displayParticipant(pair.a)} ({pair.a.wordCount} words)</span>
+                              <div className="pre tiny" style={{ maxHeight: 160, overflowY: 'auto', padding: 8, borderRadius: 6, background: 'var(--surface-2)', border: '1px solid var(--line-2)' }}>
+                                {pair.a.text.slice(0, 1500)}{pair.a.text.length > 1500 ? '…' : ''}
+                              </div>
+                            </div>
+                            <div className="stack-sm">
+                              <span className="tiny strong">{displayParticipant(pair.b)} ({pair.b.wordCount} words)</span>
+                              <div className="pre tiny" style={{ maxHeight: 160, overflowY: 'auto', padding: 8, borderRadius: 6, background: 'var(--surface-2)', border: '1px solid var(--line-2)' }}>
+                                {pair.b.text.slice(0, 1500)}{pair.b.text.length > 1500 ? '…' : ''}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {extracted.skipped.length > 0 && (
+              <details className="tiny muted">
+                <summary style={{ cursor: 'pointer' }}>{extracted.skipped.length} submission file(s) skipped (.doc, images, spreadsheets, or empty)</summary>
+                <div style={{ marginTop: 4 }}>
+                  {extracted.skipped.map((sk, idx) => (
+                    <div key={idx}>{blindMode ? 'Submission' : sk.name} — {sk.fileName}: {sk.reason}</div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </>
+        )}
+      </div>
     </Modal>
   );
 }
