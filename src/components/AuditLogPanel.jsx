@@ -6,16 +6,29 @@ import { Empty, Loading, useLoad, useToast } from './ui.jsx';
 
 const ACTION_LABELS = {
   roster_import: 'Class list',
+  roster_remove: 'Removed student',
   password_reset: 'Password reset',
   mark_quiz_response: 'Marked quiz',
   mark_assignment: 'Marked assignment',
+  mark_syndicate_assignment: 'Marked syndicate',
   attendance_start: 'Attendance opened',
   attendance_manual: 'Attendance edit',
+  attendance_manual_rollcall: 'Manual roll-call',
   forum_answer: 'Q&A reply',
   announcement: 'Announcement',
   quiz_extend_time: 'Extended quiz time',
   quiz_reopen_attempt: 'Resumed attempt',
   quiz_force_submit: 'Force-submitted quiz',
+  quiz_regrade: 'Regraded quiz',
+  quiz_accept_short: 'Accepted short answer',
+  quiz_import_bank: 'Imported from bank',
+  excuse_approved: 'Approved excuse',
+  excuse_rejected: 'Declined excuse',
+  mark_review_approved: 'Approved mark review',
+  mark_review_declined: 'Declined mark review',
+  assignment_exemplar_added: 'Added exemplar',
+  booking_event_created: 'Created slot schedule',
+  exam_seating_saved: 'Saved exam seating',
 };
 
 const AUDIT_SQL_SNIPPET = `create table if not exists public.course_audit_logs (
@@ -36,12 +49,24 @@ create policy lecturer_all on public.course_audit_logs for all to authenticated 
 
 create or replace function public.log_course_audit(p_course uuid, p_action text, p_summary text, p_details jsonb default '{}'::jsonb) returns void
 language plpgsql security definer set search_path = public as $$
-declare v_name text; v_role text;
+declare v_name text; v_role text; v_resolved_role text;
 begin
   if p_course is null then return; end if;
   select full_name, role into v_name, v_role from public.profiles where id = auth.uid();
+  if nullif(trim(coalesce(v_name, '')), '') is null then
+    select nullif(trim(full_name), '') into v_name
+      from public.course_staff
+     where course_id = p_course and user_id = auth.uid()
+     limit 1;
+  end if;
+  v_resolved_role := case
+    when v_role in ('ta', 'lecturer') then v_role
+    when public.is_ta(p_course) then 'ta'
+    when public.is_lecturer() then 'lecturer'
+    else 'staff'
+  end;
   insert into public.course_audit_logs (course_id, actor_id, actor_name, actor_role, action, summary, details)
-  values (p_course, auth.uid(), coalesce(nullif(trim(v_name), ''), 'Staff'), coalesce(v_role, 'staff'), p_action, p_summary, coalesce(p_details, '{}'::jsonb));
+  values (p_course, auth.uid(), coalesce(nullif(trim(v_name), ''), 'Staff'), v_resolved_role, p_action, p_summary, coalesce(p_details, '{}'::jsonb));
 exception when others then null;
 end;
 $$;
@@ -65,6 +90,60 @@ begin
      where l.course_id = p_course
      order by l.created_at desc
      limit greatest(1, least(coalesce(p_limit, 150), 500));
+end;
+$$;
+
+revoke execute on function public.log_course_action(uuid, text, text, jsonb) from public, anon;
+grant execute on function public.log_course_action(uuid, text, text, jsonb) to authenticated;
+create or replace function public.import_roster(p_course uuid, p_rows jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r jsonb; v_idx text; v_name text; v_prog text; v_stream text;
+        n_new int := 0; n_enrolled int := 0; n_skipped int := 0;
+        v_indexes text[] := '{}'; v_summary text;
+begin
+  perform public.require_staff(p_course);
+  for r in select * from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) loop
+    v_idx := public.norm_index(r->>'index_no');
+    v_name := trim(coalesce(r->>'full_name', ''));
+    v_prog := trim(coalesce(r->>'programme', ''));
+    v_stream := trim(coalesce(r->>'stream', ''));
+    if v_idx = '' then n_skipped := n_skipped + 1; continue; end if;
+    if cardinality(v_indexes) < 5 then v_indexes := array_append(v_indexes, v_idx); end if;
+    if not exists (select 1 from public.roster where index_no = v_idx) then
+      insert into public.roster (index_no, full_name, programme, stream)
+      values (v_idx, coalesce(nullif(v_name, ''), v_idx), v_prog, v_stream);
+      n_new := n_new + 1;
+    else
+      update public.roster
+         set full_name = coalesce(nullif(v_name, ''), full_name),
+             programme = coalesce(nullif(v_prog, ''), programme),
+             stream    = coalesce(nullif(v_stream, ''), stream)
+       where index_no = v_idx;
+      if v_name <> '' then update public.profiles set full_name = v_name where index_no = v_idx; end if;
+    end if;
+    insert into public.enrollments (course_id, index_no) values (p_course, v_idx)
+    on conflict do nothing;
+    if found then n_enrolled := n_enrolled + 1; end if;
+    if v_prog <> '' then insert into public.group_options values ('programme', v_prog) on conflict do nothing; end if;
+    if v_stream <> '' then insert into public.group_options values ('stream', v_stream) on conflict do nothing; end if;
+  end loop;
+  if jsonb_array_length(coalesce(p_rows, '[]'::jsonb)) > 0 then
+    v_summary := case
+      when cardinality(v_indexes) > 0 and jsonb_array_length(coalesce(p_rows, '[]'::jsonb)) <= 5 then
+        format('Added/updated %s student%s (%s) — %s new, %s enrolled',
+               jsonb_array_length(coalesce(p_rows, '[]'::jsonb)),
+               case when jsonb_array_length(coalesce(p_rows, '[]'::jsonb)) = 1 then '' else 's' end,
+               array_to_string(v_indexes, ', '), n_new, n_enrolled)
+      else
+        format('Added/updated class list (%s rows: %s new, %s enrolled)',
+               jsonb_array_length(coalesce(p_rows, '[]'::jsonb)), n_new, n_enrolled)
+    end;
+    perform public.log_course_audit(
+      p_course, 'roster_import', v_summary,
+      jsonb_build_object('new_students', n_new, 'enrolled', n_enrolled, 'rows', jsonb_array_length(coalesce(p_rows, '[]'::jsonb)), 'indexes', to_jsonb(v_indexes))
+    );
+  end if;
+  return jsonb_build_object('new_students', n_new, 'enrolled', n_enrolled, 'skipped', n_skipped);
 end;
 $$;
 
@@ -187,7 +266,7 @@ export default function AuditLogPanel({ course }) {
                         <div className="row" style={{ gap: 6 }}>
                           <strong>{r.actor_name || 'Staff'}</strong>
                           <span className={`badge ${r.actor_role === 'ta' ? 'badge-amber' : 'badge-teal'}`} style={{ fontSize: 11 }}>
-                            {r.actor_role === 'ta' ? 'TA' : 'Lecturer'}
+                            {r.actor_role === 'ta' ? 'TA' : r.actor_role === 'lecturer' ? 'Lecturer' : 'Staff'}
                           </span>
                         </div>
                       </td>

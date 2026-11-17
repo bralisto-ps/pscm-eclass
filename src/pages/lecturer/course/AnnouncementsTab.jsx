@@ -69,8 +69,15 @@ export default function AnnouncementsTab({ course, ta }) {
     }, 'Announcement posted.');
 
     if (ok !== undefined) {
+      const postedTitle = title.trim();
+      rpc('log_course_action', {
+        p_course: course.id,
+        p_action: 'announcement',
+        p_summary: `Posted announcement "${postedTitle}"${pinned ? ' (pinned)' : ''}`,
+        p_details: { title: postedTitle, pinned },
+      }).catch(() => {});
       supabase.functions.invoke('notify-course', {
-        body: { course_id: course.id, title: title.trim(), body: body.trim() },
+        body: { course_id: course.id, title: postedTitle, body: body.trim() },
       }).catch(() => {});
       setTitle('');
       setBody('');

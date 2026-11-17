@@ -1126,29 +1126,41 @@ create policy lecturer_all on public.course_audit_logs for all to authenticated
   using (public.is_lecturer()) with check (public.is_lecturer());
 
 create or replace function public.log_course_audit(p_course uuid, p_action text, p_summary text, p_details jsonb default '{}'::jsonb) returns void
-language plpgsql security definer set search_path = public as $
-declare v_name text; v_role text;
+language plpgsql security definer set search_path = public as $$
+declare v_name text; v_role text; v_resolved_role text;
 begin
   if p_course is null then return; end if;
   select full_name, role into v_name, v_role from public.profiles where id = auth.uid();
+  if nullif(trim(coalesce(v_name, '')), '') is null then
+    select nullif(trim(full_name), '') into v_name
+      from public.course_staff
+     where course_id = p_course and user_id = auth.uid()
+     limit 1;
+  end if;
+  v_resolved_role := case
+    when v_role in ('ta', 'lecturer') then v_role
+    when public.is_ta(p_course) then 'ta'
+    when public.is_lecturer() then 'lecturer'
+    else 'staff'
+  end;
   insert into public.course_audit_logs (course_id, actor_id, actor_name, actor_role, action, summary, details)
-  values (p_course, auth.uid(), coalesce(nullif(trim(v_name), ''), 'Staff'), coalesce(v_role, 'staff'), p_action, p_summary, coalesce(p_details, '{}'::jsonb));
+  values (p_course, auth.uid(), coalesce(nullif(trim(v_name), ''), 'Staff'), v_resolved_role, p_action, p_summary, coalesce(p_details, '{}'::jsonb));
 exception when others then
   null;
 end;
-$;
+$$;
 
 create or replace function public.log_course_action(p_course uuid, p_action text, p_summary text, p_details jsonb default '{}'::jsonb) returns void
-language plpgsql security definer set search_path = public as $
+language plpgsql security definer set search_path = public as $$
 begin
   perform public.require_staff(p_course);
   perform public.log_course_audit(p_course, p_action, p_summary, p_details);
 end;
-$;
+$$;
 
 create or replace function public.course_audit_log_list(p_course uuid, p_limit int default 150)
 returns table (id uuid, actor_name text, actor_role text, action text, summary text, details jsonb, created_at timestamptz)
-language plpgsql stable security definer set search_path = public as $
+language plpgsql stable security definer set search_path = public as $$
 begin
   perform public.require_lecturer();
   return query
@@ -1158,22 +1170,26 @@ begin
      order by l.created_at desc
      limit greatest(1, least(coalesce(p_limit, 150), 500));
 end;
-$;
+$$;
 
 -- Add or update students on a course from a class list (lecturer or course TA).
 -- p_rows: [{"index_no":"4021180","full_name":"Kofi Mensah"}, ...]
 create or replace function public.import_roster(p_course uuid, p_rows jsonb) returns jsonb
-language plpgsql security definer set search_path = public as $
+language plpgsql security definer set search_path = public as $$
 declare r jsonb; v_idx text; v_name text; v_prog text; v_stream text;
         n_new int := 0; n_enrolled int := 0; n_skipped int := 0;
+        v_indexes text[] := '{}'; v_summary text;
 begin
   perform public.require_staff(p_course);
-  for r in select * from jsonb_array_elements(p_rows) loop
+  for r in select * from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) loop
     v_idx := public.norm_index(r->>'index_no');
     v_name := trim(coalesce(r->>'full_name', ''));
     v_prog := trim(coalesce(r->>'programme', ''));
     v_stream := trim(coalesce(r->>'stream', ''));
     if v_idx = '' then n_skipped := n_skipped + 1; continue; end if;
+    if cardinality(v_indexes) < 5 then
+      v_indexes := array_append(v_indexes, v_idx);
+    end if;
     if not exists (select 1 from public.roster where index_no = v_idx) then
       insert into public.roster (index_no, full_name, programme, stream)
       values (v_idx, coalesce(nullif(v_name, ''), v_idx), v_prog, v_stream);
@@ -1193,16 +1209,27 @@ begin
     if v_stream <> '' then insert into public.group_options values ('stream', v_stream) on conflict do nothing; end if;
   end loop;
   if jsonb_array_length(coalesce(p_rows, '[]'::jsonb)) > 0 then
+    v_summary := case
+      when cardinality(v_indexes) > 0 and jsonb_array_length(coalesce(p_rows, '[]'::jsonb)) <= 5 then
+        format('Added/updated %s student%s (%s) — %s new, %s enrolled',
+               jsonb_array_length(coalesce(p_rows, '[]'::jsonb)),
+               case when jsonb_array_length(coalesce(p_rows, '[]'::jsonb)) = 1 then '' else 's' end,
+               array_to_string(v_indexes, ', '),
+               n_new, n_enrolled)
+      else
+        format('Added/updated class list (%s rows: %s new, %s enrolled)',
+               jsonb_array_length(coalesce(p_rows, '[]'::jsonb)), n_new, n_enrolled)
+    end;
     perform public.log_course_audit(
       p_course,
       'roster_import',
-      format('Added/updated class list (%s new, %s enrolled)', n_new, n_enrolled),
-      jsonb_build_object('new_students', n_new, 'enrolled', n_enrolled, 'rows', jsonb_array_length(p_rows))
+      v_summary,
+      jsonb_build_object('new_students', n_new, 'enrolled', n_enrolled, 'rows', jsonb_array_length(coalesce(p_rows, '[]'::jsonb)), 'indexes', to_jsonb(v_indexes))
     );
   end if;
   return jsonb_build_object('new_students', n_new, 'enrolled', n_enrolled, 'skipped', n_skipped);
 end;
-$;
+$$;
 
 -- The programmes and streams present on a course's class list.
 create or replace function public.course_groups(p_course uuid) returns jsonb
@@ -1445,7 +1472,7 @@ begin
     jsonb_build_object('response_id', p_response, 'marks', p_marks, 'max', v_max)
   );
 end;
-$;
+$$;
 
 -- Marks and feedback for one assignment submission (lecturer or TA).
 create or replace function public.mark_submission(p_submission uuid, p_marks numeric, p_feedback text) returns void
@@ -2594,7 +2621,7 @@ create table if not exists public.course_messages (
 );
 
 -- Ensure foreign key constraint for PostgREST schema cache if student_id was referencing auth.users
-do $ begin
+do $$ begin
   if not exists (
     select 1 from information_schema.table_constraints
     where constraint_name = 'course_messages_student_id_profiles_fkey'
@@ -2607,7 +2634,7 @@ do $ begin
       null;
     end;
   end if;
-end $;
+end $$;
 alter table public.course_messages enable row level security;
 
 drop policy if exists student_messages_policy on public.course_messages;

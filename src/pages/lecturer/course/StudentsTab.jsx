@@ -200,7 +200,16 @@ export default function StudentsTab({ course, ta }) {
   const toggleAll = () => setSelected(allShownSelected ? new Set() : new Set(rows.map((r) => r.index_no)));
 
   async function remove() {
-    await act(() => run(supabase.from('enrollments').delete().eq('course_id', course.id).eq('index_no', removing.index_no)), 'Removed from course.');
+    const target = removing;
+    const ok = await act(() => run(supabase.from('enrollments').delete().eq('course_id', course.id).eq('index_no', target.index_no)), 'Removed from course.');
+    if (ok !== undefined) {
+      rpc('log_course_action', {
+        p_course: course.id,
+        p_action: 'roster_remove',
+        p_summary: `Removed ${target.full_name} (${target.index_no}) from course`,
+        p_details: { index_no: target.index_no },
+      }).catch(() => {});
+    }
     setRemoving(null);
     reload();
   }
@@ -439,17 +448,21 @@ export default function StudentsTab({ course, ta }) {
 }
 
 const TA_IMPORT_SQL = `create or replace function public.import_roster(p_course uuid, p_rows jsonb) returns jsonb
-language plpgsql security definer set search_path = public as $
+language plpgsql security definer set search_path = public as $$
 declare r jsonb; v_idx text; v_name text; v_prog text; v_stream text;
         n_new int := 0; n_enrolled int := 0; n_skipped int := 0;
+        v_indexes text[] := '{}'; v_summary text;
 begin
   perform public.require_staff(p_course);
-  for r in select * from jsonb_array_elements(p_rows) loop
+  for r in select * from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) loop
     v_idx := public.norm_index(r->>'index_no');
     v_name := trim(coalesce(r->>'full_name', ''));
     v_prog := trim(coalesce(r->>'programme', ''));
     v_stream := trim(coalesce(r->>'stream', ''));
     if v_idx = '' then n_skipped := n_skipped + 1; continue; end if;
+    if cardinality(v_indexes) < 5 then
+      v_indexes := array_append(v_indexes, v_idx);
+    end if;
     if not exists (select 1 from public.roster where index_no = v_idx) then
       insert into public.roster (index_no, full_name, programme, stream)
       values (v_idx, coalesce(nullif(v_name, ''), v_idx), v_prog, v_stream);
@@ -468,9 +481,28 @@ begin
     if v_prog <> '' then insert into public.group_options values ('programme', v_prog) on conflict do nothing; end if;
     if v_stream <> '' then insert into public.group_options values ('stream', v_stream) on conflict do nothing; end if;
   end loop;
+  if jsonb_array_length(coalesce(p_rows, '[]'::jsonb)) > 0 then
+    v_summary := case
+      when cardinality(v_indexes) > 0 and jsonb_array_length(coalesce(p_rows, '[]'::jsonb)) <= 5 then
+        format('Added/updated %s student%s (%s) — %s new, %s enrolled',
+               jsonb_array_length(coalesce(p_rows, '[]'::jsonb)),
+               case when jsonb_array_length(coalesce(p_rows, '[]'::jsonb)) = 1 then '' else 's' end,
+               array_to_string(v_indexes, ', '),
+               n_new, n_enrolled)
+      else
+        format('Added/updated class list (%s rows: %s new, %s enrolled)',
+               jsonb_array_length(coalesce(p_rows, '[]'::jsonb)), n_new, n_enrolled)
+    end;
+    perform public.log_course_audit(
+      p_course,
+      'roster_import',
+      v_summary,
+      jsonb_build_object('new_students', n_new, 'enrolled', n_enrolled, 'rows', jsonb_array_length(coalesce(p_rows, '[]'::jsonb)), 'indexes', to_jsonb(v_indexes))
+    );
+  end if;
   return jsonb_build_object('new_students', n_new, 'enrolled', n_enrolled, 'skipped', n_skipped);
 end;
-$;`;
+$$;`;
 
 function ImportModal({ course, ta, onClose, onDone }) {
   const toast = useToast();
