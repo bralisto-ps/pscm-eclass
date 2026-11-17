@@ -91,6 +91,10 @@ export default function StudentHome() {
     });
   }, [upcomingList, dlFilter]);
 
+  const weekCount = useMemo(() => {
+    const cutoff = Date.now() + 7 * 24 * 3600 * 1000;
+    return upcomingList.filter((u) => new Date(u.due).getTime() <= cutoff).length;
+  }, [upcomingList]);
   const urgentCount = useMemo(
     () => upcomingList.filter((u) => urgencyBucket(u.due) === 'urgent').length,
     [upcomingList],
@@ -145,6 +149,26 @@ export default function StudentHome() {
                 </section>
               )}
 
+              {data.courses.length > 0 && (
+                <section className="student-summary-bar" aria-label="Academic snapshot">
+                  <div className="student-summary-cell">
+                    <span className="v">{data.courses.length}</span>
+                    <span className="l">Enrolled courses</span>
+                  </div>
+                  <div className="student-summary-cell">
+                    <span className="v" style={urgentCount > 0 ? { color: 'var(--amber-ink)' } : undefined}>{weekCount}</span>
+                    <span className="l">{urgentCount > 0 ? `Due this week (${urgentCount} urgent)` : 'Due this week'}</span>
+                  </div>
+                  <div className="student-summary-cell">
+                    <span className="v">{(data.slots || []).length}</span>
+                    <span className="l">Booked slots</span>
+                  </div>
+                  <div className="student-summary-cell">
+                    <span className="v">{(data.seats || []).length}</span>
+                    <span className="l">Assigned exam halls</span>
+                  </div>
+                </section>
+              )}
               {((data.slots?.length || 0) > 0 || (data.seats?.length || 0) > 0) && (
                 <section className="card-flush">
                   <div className="card-head">
@@ -202,30 +226,39 @@ export default function StudentHome() {
                 ) : (
                   <div className="grid-2">
                     {data.courses.map((c) => {
-                      const next = data.upcoming.find((u) => u.course_id === c.id);
+                      const courseDue = data.upcoming.filter((u) => u.course_id === c.id);
+                      const next = courseDue[0];
                       const urgent = next && urgencyBucket(next.due) === 'urgent';
                       return (
-                        <Link key={c.id} to={`/course/${c.id}`} className="course-card-ed">
-                          <div className="course-card-band" style={{ backgroundColor: c.color }}>
-                            <div className="course-card-meta">
-                              <span className="mono">{c.code}{c.semester ? ` · ${c.semester}` : ''}</span>
-                              {next && (
-                                <span className="nowrap" style={{ color: urgent ? '#fde68a' : 'rgba(255,255,255,0.9)', fontWeight: 500 }}>
-                                  {relative(next.due)}
-                                </span>
-                              )}
+                        <article key={c.id} className="course-card-ed">
+                          <Link to={`/course/${c.id}`} className="course-card-band-link">
+                            <div className="course-card-band" style={{ backgroundColor: c.color }}>
+                              <div className="course-card-meta">
+                                <span className="mono">{c.code}{c.semester ? ` · ${c.semester}` : ''}</span>
+                                {next && (
+                                  <span className="nowrap" style={{ color: urgent ? '#fde68a' : 'rgba(255,255,255,0.92)', fontWeight: 500 }}>
+                                    {relative(next.due)}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="course-card-title">{c.title}</div>
                             </div>
-                            <div className="course-card-title">{c.title}</div>
-                          </div>
-                          <div className="course-card-body" style={{ padding: '14px 20px' }}>
+                          </Link>
+                          <div className="course-card-body" style={{ padding: '14px 20px', gap: 10 }}>
                             <div className="course-card-foot">
                               <span style={{ color: urgent ? 'var(--amber-ink)' : 'var(--muted)', fontWeight: urgent ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {next ? `Next: ${next.title}` : 'All upcoming work completed'}
+                                {next ? `Next: ${next.title}${courseDue.length > 1 ? ` (+${courseDue.length - 1} more)` : ''}` : 'All upcoming work completed'}
                               </span>
-                              <span className="course-card-cta">Open <Icon name="chevronRight" size={14} /></span>
+                              <Link to={`/course/${c.id}`} className="course-card-cta">Open <Icon name="chevronRight" size={14} /></Link>
+                            </div>
+                            <div className="course-card-links">
+                              <Link to={`/course/${c.id}?tab=materials`}>Materials</Link>
+                              <Link to={`/course/${c.id}?tab=quizzes`}>Quizzes</Link>
+                              <Link to={`/course/${c.id}?tab=assignments`}>Assignments</Link>
+                              <Link to={`/course/${c.id}?tab=slots`}>Slots</Link>
                             </div>
                           </div>
-                        </Link>
+                        </article>
                       );
                     })}
                   </div>

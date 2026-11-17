@@ -86,17 +86,14 @@ export function Loading({ label = 'Loading…' }) {
 export function DashboardSkeleton() {
   return (
     <div className="stack-lg" aria-hidden="true">
-      <div className="grid-4">
-        {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="skel-card">
-            <div className="between">
-              <div className="skel" style={{ width: '48%', height: 13 }} />
-              <div className="skel" style={{ width: 28, height: 28, borderRadius: 8 }} />
-            </div>
-            <div className="skel" style={{ width: '36%', height: 28 }} />
-            <div className="skel" style={{ width: '62%', height: 11 }} />
-          </div>
-        ))}
+      <div className="skel-card" style={{ minHeight: 156, justifyContent: 'space-between', padding: '24px 26px' }}>
+        <div className="skel" style={{ width: '22%', height: 12 }} />
+        <div className="skel" style={{ width: '54%', height: 26 }} />
+        <div className="grid-4" style={{ marginTop: 8 }}>
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="skel" style={{ width: '80%', height: 22 }} />
+          ))}
+        </div>
       </div>
       <div className="grid-2">
         {[0, 1, 2, 3].map((i) => (
