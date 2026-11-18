@@ -884,7 +884,7 @@ begin
   if v_staff_role not in ('ta', 'co_lecturer', 'external_examiner') then
     raise exception 'Invalid staff role.';
   end if;
-  if v_email !~ () => targetGood then raise exception 'Enter a valid email address.'; end if;
+  if v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'Enter a valid email address.'; end if;
   if v_email = lower((select value from public.app_settings where key = 'lecturer_email')) then
     raise exception 'That is your own lecturer account.';
   end if;
