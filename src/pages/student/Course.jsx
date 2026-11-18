@@ -52,35 +52,64 @@ export default function StudentCourse() {
 
   useEffect(() => {
     if (!courseId || liveModalOpen) return undefined;
-    const ch = supabase.channel(`live-slides:${courseId}`);
-    const readPresenter = () => {
+    let alive = true;
+    let ch = null;
+    const topic = `live-slides:${courseId}`;
+
+    async function connect() {
       try {
-        const state = ch.presenceState();
-        let active = null;
-        for (const entries of Object.values(state || {})) {
-          for (const e of entries || []) {
-            if (e?.role === 'presenter' && e?.materialId) {
-              active = e;
+        const existing = supabase.getChannels?.().find((c) => c.topic === `realtime:${topic}`);
+        if (existing) {
+          await supabase.removeChannel(existing).catch(() => {});
+          try { existing.teardown?.(); } catch { /* ignore */ }
+        }
+        if (!alive) return;
+
+        ch = supabase.channel(topic);
+        const readPresenter = () => {
+          try {
+            if (!ch || !alive) return;
+            const state = ch.presenceState();
+            let active = null;
+            for (const entries of Object.values(state || {})) {
+              for (const e of entries || []) {
+                if (e?.role === 'presenter' && e?.materialId) {
+                  active = e;
+                }
+              }
             }
-          }
-        }
-        setLiveSession(active);
-      } catch { /* ignore */ }
-    };
-    ch.on('presence', { event: 'sync' }, readPresenter)
-      .on('broadcast', { event: 'slide-sync' }, ({ payload }) => {
-        if (payload?.materialId) {
-          setLiveSession({
-            role: 'presenter',
-            materialId: payload.materialId,
-            title: payload.title || 'Live lecture slides',
-            page: payload.page || 1,
-          });
-        }
-      })
-      .subscribe();
+            setLiveSession(active);
+          } catch { /* ignore */ }
+        };
+        ch.on('presence', { event: 'sync' }, readPresenter)
+          .on('broadcast', { event: 'slide_state' }, ({ payload }) => {
+            if (!alive || !payload) return;
+            if (payload.ended) {
+              setLiveSession(null);
+              return;
+            }
+            if (payload.materialId) {
+              setLiveSession({
+                role: 'presenter',
+                materialId: payload.materialId,
+                title: payload.title || 'Live lecture slides',
+                page: payload.page || 1,
+              });
+            }
+          })
+          .subscribe();
+      } catch {
+        // Never crash Course view if Realtime fails
+      }
+    }
+
+    connect();
     return () => {
-      supabase.removeChannel(ch);
+      alive = false;
+      if (ch) {
+        supabase.removeChannel(ch).catch(() => {});
+        try { ch.teardown?.(); } catch { /* ignore */ }
+      }
     };
   }, [courseId, liveModalOpen]);
 

@@ -17,7 +17,7 @@ export function quizStatus(q) {
   return { label: 'Open now', cls: 'badge-teal' };
 }
 
-export default function QuizzesTab({ course, ta }) {
+export default function QuizzesTab({ course, ta, readOnly = false }) {
   const [view, setView] = useState('quizzes');
   if (ta) return <QuizList course={course} ta />;
   return (
@@ -215,7 +215,7 @@ function QuizList({ course, ta }) {
                       <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
                         <Link to={`/teach/quiz/${q.id}/results`} className="btn btn-sm">Results</Link>
                         {!ta && <Link to={`/teach/quiz/${q.id}`} className="btn btn-sm btn-ghost">Edit</Link>}
-                        <button type="button" className="btn btn-sm btn-ghost" title="Assign exam halls & seats" onClick={() => setSeatingQuiz(q)}><Icon name="grid" size={14} /> Seating</button>
+                        {!readOnly && <button type="button" className="btn btn-sm btn-ghost" title="Assign exam halls & seats" onClick={() => setSeatingQuiz(q)}><Icon name="grid" size={14} /> Seating</button>}
                         {q.published && <button type="button" className="icon-btn plain" title="Share on WhatsApp" aria-label="Share on WhatsApp"
                           onClick={() => shareWhatsApp(`*${course.code}: ${q.title}*\n${q.opens_at ? `Opens ${fmtDateTime(q.opens_at)}` : 'Open now'}${q.closes_at ? `, closes ${fmtDateTime(q.closes_at)}` : ''} · ${q.duration_minutes} minutes`)}>
                           <Icon name="megaphone" /></button>}

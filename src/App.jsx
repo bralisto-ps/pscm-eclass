@@ -74,7 +74,7 @@ function Gate() {
               <>
                 <Route index element={<Dashboard />} />
                 <Route path="teach/course/:courseId" element={<ManageCourse />} />
-                {isLecturer && <Route path="teach/quiz/:quizId" element={<QuizBuilder />} />}
+                <Route path="teach/quiz/:quizId" element={<QuizBuilder />} />
                 <Route path="teach/quiz/:quizId/results" element={<QuizResults />} />
                 <Route path="teach/assignment/:assignmentId" element={<AssignmentMarking />} />
               </>

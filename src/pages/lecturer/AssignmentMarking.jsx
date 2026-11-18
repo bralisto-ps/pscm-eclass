@@ -119,7 +119,8 @@ export default function AssignmentMarking() {
   const [checkingSim, setCheckingSim] = useState(false);
   const [annotating, setAnnotating] = useState(null);
   const isExaminer = data?.staffRole === 'external_examiner';
-  const restrictedEdit = isTA || isExaminer;
+  const isPureTA = isTA && data?.staffRole !== 'co_lecturer' && !isExaminer;
+  const restrictedEdit = isPureTA || isExaminer;
 
   const assignMeta = useMemo(() => parseAssignmentMeta(data?.a), [data?.a]);
 

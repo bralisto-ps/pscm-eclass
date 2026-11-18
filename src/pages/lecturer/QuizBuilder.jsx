@@ -52,14 +52,15 @@ export default function QuizBuilder() {
     const { count } = await supabase.from('attempts').select('id', { count: 'exact', head: true }).eq('quiz_id', quizId);
     const windows = await run(supabase.from('quiz_windows').select('*').eq('quiz_id', quizId));
     const opts = await run(supabase.from('group_options').select('name').eq('kind', 'stream').order('name'));
-    const [classes, outcomesRes] = quiz
+    const [classes, outcomesRes, staffRole] = quiz
       ? await Promise.all([
           rpcAll('course_classes', { p_course: quiz.course_id }),
           supabase.from('course_outcomes').select('code, title').eq('course_id', quiz.course_id).order('code').then((r) => r.data || [], () => []),
+          rpc('my_course_staff_role', { p_course: quiz.course_id }).catch(() => ''),
         ])
-      : [[], []];
+      : [[], [], ''];
     const groups = { streams: opts.map((o) => o.name), classes };
-    return { quiz, questions, attempts: count || 0, windows, groups, outcomes: Array.isArray(outcomesRes) ? outcomesRes : [] };
+    return { quiz, questions, attempts: count || 0, windows, groups, outcomes: Array.isArray(outcomesRes) ? outcomesRes : [], staffRole: staffRole || '' };
   }, [quizId]);
   const [editing, setEditing] = useState(null); // question id or 'new'
   const [draft, setDraft] = useState(null);
@@ -72,6 +73,17 @@ export default function QuizBuilder() {
   if (loading) return <Loading />;
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
   if (!data.quiz) return <div className="page"><div className="card"><Empty title="Quiz not found" /></div></div>;
+  if (data.staffRole && !['lecturer', 'co_lecturer'].includes(data.staffRole)) {
+    return (
+      <div className="page page-narrow">
+        <div className="card stack">
+          <h2>Quiz editing restricted</h2>
+          <p className="small muted">Only the course lecturer or a co-lecturer can edit quiz questions and settings. You can open Results to mark or inspect scripts.</p>
+          <div><Link to={`/teach/quiz/${data.quiz.id}/results`} className="btn btn-primary">Open Quiz Results</Link></div>
+        </div>
+      </div>
+    );
+  }
 
   const { quiz, questions } = data;
   const total = questions.reduce((s, q) => s + Number(q.marks || 0), 0);

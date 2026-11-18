@@ -587,6 +587,7 @@ language plpgsql security definer set search_path = public as $$
 declare
   v_cnt int := 0;
   v_rows int := 0;
+  v_att record;
 begin
   -- 1. 24-hour assignment deadline reminder (not yet submitted)
   insert into public.notifications (user_id, course_id, kind, title, body, link)
@@ -617,20 +618,14 @@ begin
   v_cnt := v_cnt + v_rows;
 
   -- 2. Auto-finalize expired in-progress quiz attempts past deadline
-  update public.attempts a
-     set status = case
-           when exists (
-             select 1 from public.responses r
-             join public.questions q on q.id = r.question_id
-             where r.attempt_id = a.id and q.kind = 'essay' and r.marks_awarded is null
-           ) then 'needs_marking'
-           else 'marked'
-         end,
-         submitted_at = coalesce(a.submitted_at, a.deadline_at),
-         score = coalesce((select sum(coalesce(r.marks_awarded, 0)) from public.responses r where r.attempt_id = a.id), 0),
-         max_score = coalesce((select sum(q.marks) from public.questions q where q.quiz_id = a.quiz_id), 0)
-   where a.status = 'in_progress'
-     and a.deadline_at < now() - interval '2 minutes';
+  for v_att in
+    select a.id
+      from public.attempts a
+     where a.status = 'in_progress'
+       and a.deadline_at < now() - interval '2 minutes'
+  loop
+    perform public.finalize_attempt(v_att.id);
+  end loop;
 
   return v_cnt;
 end;

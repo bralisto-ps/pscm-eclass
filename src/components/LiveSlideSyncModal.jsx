@@ -111,79 +111,106 @@ export default function LiveSlideSyncModal({
   }, [page, numPages, loading]);
 
   useEffect(() => {
-    const ch = supabase.channel(`live-slides:${course.id}`, {
-      config: { presence: { key: isPresenter ? 'presenter' : `s_${Math.random().toString(36).slice(2, 8)}` } },
-    });
-    channelRef.current = ch;
+    let alive = true;
+    let ch = null;
+    const topic = `live-slides:${course.id}`;
 
-    ch.on('broadcast', { event: 'slide_state' }, ({ payload }) => {
-      if (!payload || isPresenter) return;
-      if (payload.ended) {
-        toast('Live slide session ended.');
-        onClose();
-        return;
-      }
-      if (payload.page) {
-        setPresenterPage(payload.page);
-        if (followingRef.current) setPage(payload.page);
-      }
-      if (payload.prompt !== undefined) setPrompt(payload.prompt || '');
-      if (payload.resetPulse) setMyPulse('');
-    });
-
-    ch.on('broadcast', { event: 'student_pulse' }, ({ payload }) => {
-      if (!isPresenter || !payload) return;
-      setPulse((prev) => ({
-        got_it: prev.got_it + (payload.vote === 'got_it' ? 1 : 0),
-        recap: prev.recap + (payload.vote === 'recap' ? 1 : 0),
-      }));
-    });
-
-    ch.on('presence', { event: 'sync' }, () => {
-      const state = ch.presenceState();
-      const count = Object.keys(state || {}).filter((k) => k !== 'presenter').length;
-      setViewers(count);
-      if (isPresenter) {
-        ch.send({
-          type: 'broadcast',
-          event: 'slide_state',
-          payload: {
-            materialId: material.id,
-            title: material.title,
-            storage_path: material.storage_path,
-            page: pageRef.current,
-            numPages: numPagesRef.current,
-            prompt: promptRef.current,
-          },
-        }).catch(() => {});
-      }
-    });
-
-    ch.subscribe(async (status) => {
-      if (status === 'SUBSCRIBED') {
-        await ch.track({ role: isPresenter ? 'presenter' : 'student', at: Date.now() }).catch(() => {});
-        if (isPresenter) {
-          ch.send({
-            type: 'broadcast',
-            event: 'slide_state',
-            payload: {
-              materialId: material.id,
-              title: material.title,
-              storage_path: material.storage_path,
-              page: pageRef.current,
-              numPages: numPagesRef.current,
-              prompt: promptRef.current,
-            },
-          }).catch(() => {});
+    async function connect() {
+      try {
+        const existing = supabase.getChannels?.().find((c) => c.topic === `realtime:${topic}`);
+        if (existing) {
+          await supabase.removeChannel(existing).catch(() => {});
+          try { existing.teardown?.(); } catch { /* ignore */ }
         }
+        if (!alive) return;
+
+        ch = supabase.channel(topic, {
+          config: { presence: { key: isPresenter ? 'presenter' : `s_${Math.random().toString(36).slice(2, 8)}` } },
+        });
+        channelRef.current = ch;
+
+        ch.on('broadcast', { event: 'slide_state' }, ({ payload }) => {
+          if (!payload || isPresenter) return;
+          if (payload.ended) {
+            toast('Live slide session ended.');
+            onClose();
+            return;
+          }
+          if (payload.page) {
+            setPresenterPage(payload.page);
+            if (followingRef.current) setPage(payload.page);
+          }
+          if (payload.prompt !== undefined) setPrompt(payload.prompt || '');
+          if (payload.resetPulse) setMyPulse('');
+        });
+
+        ch.on('broadcast', { event: 'student_pulse' }, ({ payload }) => {
+          if (!isPresenter || !payload) return;
+          setPulse((prev) => ({
+            got_it: prev.got_it + (payload.vote === 'got_it' ? 1 : 0),
+            recap: prev.recap + (payload.vote === 'recap' ? 1 : 0),
+          }));
+        });
+
+        ch.on('presence', { event: 'sync' }, () => {
+          if (!ch) return;
+          const state = ch.presenceState();
+          const count = Object.keys(state || {}).filter((k) => k !== 'presenter').length;
+          setViewers(count);
+          if (isPresenter) {
+            ch.send({
+              type: 'broadcast',
+              event: 'slide_state',
+              payload: {
+                materialId: material.id,
+                title: material.title,
+                storage_path: material.storage_path,
+                page: pageRef.current,
+                numPages: numPagesRef.current,
+                prompt: promptRef.current,
+              },
+            }).catch(() => {});
+          }
+        });
+
+        ch.subscribe(async (status) => {
+          if (status === 'SUBSCRIBED' && alive && ch) {
+            const presenceData = isPresenter
+              ? { role: 'presenter', materialId: material.id, title: material.title, page: pageRef.current, numPages: numPagesRef.current, at: Date.now() }
+              : { role: 'student', at: Date.now() };
+            await ch.track(presenceData).catch(() => {});
+            if (isPresenter) {
+              ch.send({
+                type: 'broadcast',
+                event: 'slide_state',
+                payload: {
+                  materialId: material.id,
+                  title: material.title,
+                  storage_path: material.storage_path,
+                  page: pageRef.current,
+                  numPages: numPagesRef.current,
+                  prompt: promptRef.current,
+                },
+              }).catch(() => {});
+            }
+          }
+        });
+      } catch {
+        // Ignore transient realtime setup errors
       }
-    });
+    }
+
+    connect();
 
     return () => {
-      if (isPresenter) {
-        ch.send({ type: 'broadcast', event: 'slide_state', payload: { ended: true } }).catch(() => {});
+      alive = false;
+      if (ch) {
+        if (isPresenter) {
+          ch.send({ type: 'broadcast', event: 'slide_state', payload: { ended: true } }).catch(() => {});
+        }
+        supabase.removeChannel(ch).catch(() => {});
+        try { ch.teardown?.(); } catch { /* ignore */ }
       }
-      supabase.removeChannel(ch);
       channelRef.current = null;
     };
   }, [course.id, isPresenter, material.id, material.title, material.storage_path]);
@@ -191,6 +218,14 @@ export default function LiveSlideSyncModal({
   useEffect(() => {
     if (!isPresenter || !channelRef.current) return;
     setPulse({ got_it: 0, recap: 0 });
+    channelRef.current.track?.({
+      role: 'presenter',
+      materialId: material.id,
+      title: material.title,
+      page,
+      numPages,
+      at: Date.now(),
+    }).catch(() => {});
     channelRef.current.send({
       type: 'broadcast',
       event: 'slide_state',

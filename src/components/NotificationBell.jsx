@@ -1,77 +1,145 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { rpc, supabase } from '../lib/supabase.js';
 import { relative } from '../lib/format.js';
 import Icon from './Icon.jsx';
 
+// Shared singleton store per user so multiple mounted <NotificationBell /> instances
+// (desktop Topbar, mobile header, course pages) share ONE Realtime channel and stay in sync.
+let channelSeq = 0;
+const stores = new Map();
+
+function getStore(uid) {
+  let s = stores.get(uid);
+  if (s) return s;
+  s = {
+    uid,
+    items: [],
+    supported: true,
+    loaded: false,
+    listeners: new Set(),
+    channel: null,
+    cleanupTimer: null,
+    emit() {
+      for (const fn of this.listeners) fn({ items: this.items, supported: this.supported });
+    },
+    async load() {
+      try {
+        const list = await rpc('my_notifications', { p_limit: 40 });
+        this.items = Array.isArray(list) ? list : [];
+        this.supported = true;
+      } catch {
+        this.supported = false;
+      }
+      this.loaded = true;
+      this.emit();
+    },
+    ensureSubscribed() {
+      if (this.cleanupTimer) {
+        clearTimeout(this.cleanupTimer);
+        this.cleanupTimer = null;
+      }
+      if (this.channel || !supabase) return;
+      try {
+        const topic = `notifications:${this.uid}:${++channelSeq}`;
+        const ch = supabase
+          .channel(topic)
+          .on(
+            'postgres_changes',
+            { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${this.uid}` },
+            (payload) => {
+              const row = payload?.new;
+              if (!row) return;
+              if (!this.items.some((x) => x.id === row.id)) {
+                this.items = [row, ...this.items].slice(0, 40);
+                this.emit();
+              }
+              if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
+                try {
+                  new Notification(row.title, { body: row.body || '' });
+                } catch { /* ignore */ }
+              }
+            }
+          )
+          .subscribe();
+        this.channel = ch;
+      } catch {
+        // Never crash UI if Realtime fails to initialize
+      }
+    },
+    subscribe(listener) {
+      this.listeners.add(listener);
+      this.ensureSubscribed();
+      if (!this.loaded) this.load();
+      else listener({ items: this.items, supported: this.supported });
+      return () => {
+        this.listeners.delete(listener);
+        if (this.listeners.size === 0) {
+          this.cleanupTimer = setTimeout(() => {
+            if (this.listeners.size === 0 && this.channel) {
+              const ch = this.channel;
+              this.channel = null;
+              try {
+                supabase?.removeChannel?.(ch)?.catch?.(() => {});
+                ch?.teardown?.();
+              } catch { /* ignore */ }
+              stores.delete(this.uid);
+            }
+          }, 250);
+        }
+      };
+    },
+    markRead(id) {
+      const now = new Date().toISOString();
+      this.items = this.items.map((x) => (x.id === id ? { ...x, read_at: x.read_at || now } : x));
+      this.emit();
+      rpc('mark_notification_read', { p_id: id }).catch(() => {});
+    },
+    async markAllRead() {
+      const now = new Date().toISOString();
+      this.items = this.items.map((x) => ({ ...x, read_at: x.read_at || now }));
+      this.emit();
+      await rpc('mark_all_notifications_read').catch(() => {});
+    },
+  };
+  stores.set(uid, s);
+  return s;
+}
+
 export default function NotificationBell({ dark = false }) {
   const { session } = useAuth();
   const navigate = useNavigate();
+  const [state, setState] = useState({ items: [], supported: true });
   const [open, setOpen] = useState(false);
-  const [items, setItems] = useState([]);
-  const [supported, setSupported] = useState(true);
   const [pushPerm, setPushPerm] = useState(() =>
-    typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
+    typeof Notification === 'undefined' ? 'unsupported' : Notification.permission
   );
 
-  const load = useCallback(async () => {
-    if (!session?.user?.id) return;
-    try {
-      const list = await rpc('my_notifications', { p_limit: 40 });
-      setItems(Array.isArray(list) ? list : []);
-      setSupported(true);
-    } catch {
-      setSupported(false);
+  const uid = session?.user?.id;
+
+  useEffect(() => {
+    if (!uid) {
+      setState({ items: [], supported: true });
+      return undefined;
     }
-  }, [session?.user?.id]);
+    const store = getStore(uid);
+    return store.subscribe(setState);
+  }, [uid]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  if (!state.supported) return null;
 
-  useEffect(() => {
-    const uid = session?.user?.id;
-    if (!uid) return;
-    const ch = supabase
-      .channel(`notifications:${uid}`)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${uid}` },
-        (payload) => {
-          const row = payload?.new;
-          if (!row) return;
-          setItems((prev) => (prev.some((x) => x.id === row.id) ? prev : [row, ...prev].slice(0, 40)));
-          if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
-            try {
-              new Notification(row.title, { body: row.body || '' });
-            } catch { /* ignore */ }
-          }
-        }
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
-  }, [session?.user?.id]);
-
-  if (!supported) return null;
-
+  const items = state.items;
   const unread = items.filter((i) => !i.read_at).length;
 
-  async function openItem(n) {
-    if (!n.read_at) {
-      setItems((prev) => prev.map((x) => (x.id === n.id ? { ...x, read_at: new Date().toISOString() } : x)));
-      rpc('mark_notification_read', { p_id: n.id }).catch(() => {});
-    }
+  function openItem(n) {
+    if (!n.read_at && uid) getStore(uid).markRead(n.id);
     setOpen(false);
     if (n.link) navigate(n.link);
   }
 
   async function markAll() {
-    const now = new Date().toISOString();
-    setItems((prev) => prev.map((x) => ({ ...x, read_at: x.read_at || now })));
-    await rpc('mark_all_notifications_read').catch(() => {});
+    if (uid) await getStore(uid).markAllRead();
   }
 
   async function enableAlerts() {

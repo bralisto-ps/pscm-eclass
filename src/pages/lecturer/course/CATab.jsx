@@ -851,9 +851,11 @@ function CAInner({ course, data, reload, onCourseChanged }) {
             {avg !== null && <span className="small muted">Class CA Avg: {fmtNumber(avg, 1)} / 40</span>}
             <button type="button" className="btn btn-sm" onClick={() => setPrintingReport(true)} disabled={!saved.length}><Icon name="file" size={16} /> Print / PDF Sign-Off</button>
             <button type="button" className="btn btn-sm" onClick={exportOfficialXlsx} disabled={!saved.length}><Icon name="download" size={16} /> Export Excel (CA 1 & 2)</button>
-            <button type="button" className={`btn btn-sm ${course.ca_released ? '' : 'btn-primary'}`} onClick={toggleRelease} disabled={!saved.length}>
-              {course.ca_released ? 'Hide CA from students' : 'Show CA to students'}
-            </button>
+            {!readOnly && (
+              <button type="button" className={`btn btn-sm ${course.ca_released ? '' : 'btn-primary'}`} onClick={toggleRelease} disabled={!saved.length}>
+                {course.ca_released ? 'Hide CA from students' : 'Show CA to students'}
+              </button>
+            )}
           </div>
         </div>
         {hasFilters && data.rows.length > 0 && (

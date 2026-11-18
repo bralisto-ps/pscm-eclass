@@ -131,7 +131,7 @@ export default function ManageCourse() {
         ) : (
         <ErrorBoundary key={tab}>
           {tab === 'materials' && !isPureTA && !isExaminer && <MaterialsTab course={course} />}
-          {tab === 'quizzes' && <QuizzesTab course={course} ta={isPureTA || isExaminer} />}
+          {tab === 'quizzes' && <QuizzesTab course={course} ta={isPureTA || isExaminer} readOnly={isExaminer} />}
           {tab === 'assignments' && <AssignmentsTab course={course} ta={isPureTA || isExaminer} />}
           {tab === 'attendance' && !isExaminer && <AttendanceTab course={course} />}
           {tab === 'slots' && !isExaminer && <SlotsPanel course={course} staff />}
@@ -205,7 +205,7 @@ function SettingsTab({ course, staffRole = 'lecturer', reload }) {
 
       <AuditLogPanel course={course} />
 
-      {(isOwner || isCoLecturer) && (
+      {isOwner && (
         <section className="card stack">
           <h2>Clone course for new semester</h2>
           <p className="small muted">

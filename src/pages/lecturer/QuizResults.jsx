@@ -67,7 +67,7 @@ export default function QuizResults() {
       reviews: Array.isArray(reviews) ? reviews : [],
       photos,
       photoMeta,
-      staffRole: staffRole || 'lecturer',
+      staffRole: staffRole || (isTA ? 'ta' : 'lecturer'),
       modMap: modMap && typeof modMap === 'object' ? modMap : {},
     };
   }, [quizId]);
@@ -82,7 +82,9 @@ export default function QuizResults() {
 
   const { quiz, rows, queue, reviews } = data;
   const isExaminer = data.staffRole === 'external_examiner';
-  const restricted = isTA || isExaminer;
+  const isCoLecturer = data.staffRole === 'co_lecturer';
+  const isPureTA = isTA && !isCoLecturer && !isExaminer;
+  const restricted = isPureTA || isExaminer;
   const pendingReviews = (reviews || []).filter((r) => r.status === 'pending').length;
   const pending = queue.filter((r) => r.marks_awarded === null).length;
   const activeCount = rows.filter((r) => r.status === 'in_progress').length;
@@ -153,16 +155,17 @@ export default function QuizResults() {
             { id: 'marking', label: 'Written answers', count: pending },
             ...(reviews?.length ? [{ id: 'reviews', label: 'Mark reviews', count: pendingReviews }] : []),
           ]),
-          ...(isTA ? [] : [{ id: 'analysis', label: 'Question analysis' }, { id: 'integrity', label: 'Integrity checks' }]),
+          ...(!isPureTA ? [{ id: 'analysis', label: 'Question analysis' }] : []),
+          ...(!restricted ? [{ id: 'integrity', label: 'Integrity checks' }] : []),
         ]} value={tab}
           onChange={(t) => { setTab(t); if (t === 'gradebook') reload(); }} />
         {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} ta={restricted} isExaminer={isExaminer} modMap={data.modMap || {}} photos={photoMap} photoMeta={photoMeta} />}
-        {tab === 'live' && !isExaminer && <LiveQuizMonitor quiz={quiz} isTA={isTA} onMutate={reload} />}
+        {tab === 'live' && !isExaminer && <LiveQuizMonitor quiz={quiz} isTA={isPureTA} onMutate={reload} />}
         {tab === 'short' && !isExaminer && <ShortAnswerClusterTab quiz={quiz} onUpdated={reload} onShowSql={() => setShowFeaturesSql(true)} />}
-        {tab === 'marking' && !isExaminer && <Marking quiz={quiz} isTA={isTA} queue={queue} onQuizUpdated={(nextQ) => setData((d) => ({ ...d, quiz: nextQ }))} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
+        {tab === 'marking' && !isExaminer && <Marking quiz={quiz} isTA={isPureTA} queue={queue} onQuizUpdated={(nextQ) => setData((d) => ({ ...d, quiz: nextQ }))} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
         {tab === 'reviews' && !isExaminer && <MarkReviewQueue reviews={reviews || []} onResolved={reload} title="Quiz mark review requests" />}
-        {tab === 'analysis' && !isTA && <ItemAnalysis quiz={quiz} />}
-        {tab === 'integrity' && !isTA && <Integrity quiz={quiz} rows={rows} photos={photoMap} onShowSql={() => setShowFeaturesSql(true)} />}
+        {tab === 'analysis' && !isPureTA && <ItemAnalysis quiz={quiz} />}
+        {tab === 'integrity' && !restricted && <Integrity quiz={quiz} rows={rows} photos={photoMap} onShowSql={() => setShowFeaturesSql(true)} />}
       </div>
       {regrading && (
         <Confirm

@@ -976,17 +976,19 @@ function EditModal({ student, programmes, streams, onClose, onSaved }) {
   const [act, busy] = useAction();
   const [f, setF] = useState({ index_no: student.index_no, name: student.full_name, programme: student.programme || '', stream: student.stream || '' });
   async function save() {
-    const idx = f.index_no.trim();
-    const name = f.name.trim();
-    if (!idx) throw new Error('Index number cannot be empty.');
-    if (!name) throw new Error('Full name cannot be empty.');
-    const ok = await act(() => rpc('update_student', {
-      p_index: student.index_no,
-      p_name: name,
-      p_programme: f.programme,
-      p_stream: f.stream,
-      p_new_index: idx !== student.index_no ? idx : null
-    }), 'Student updated.');
+    const ok = await act(async () => {
+      const idx = f.index_no.trim();
+      const name = f.name.trim();
+      if (!idx) throw new Error('Index number cannot be empty.');
+      if (!name) throw new Error('Full name cannot be empty.');
+      await rpc('update_student', {
+        p_index: student.index_no,
+        p_name: name,
+        p_programme: f.programme,
+        p_stream: f.stream,
+        p_new_index: idx !== student.index_no ? idx : null
+      });
+    }, 'Student updated.');
     if (ok !== undefined) { onSaved(); onClose(); }
   }
   return (
