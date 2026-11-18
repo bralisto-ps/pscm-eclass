@@ -19,19 +19,19 @@ export function quizStatus(q) {
 
 export default function QuizzesTab({ course, ta, readOnly = false }) {
   const [view, setView] = useState('quizzes');
-  if (ta) return <QuizList course={course} ta />;
+  if (ta) return <QuizList course={course} ta readOnly={readOnly} />;
   return (
     <div className="stack">
       <div className="chips" role="tablist" aria-label="Quizzes or question bank">
         <button type="button" className="chip" aria-pressed={view === 'quizzes'} onClick={() => setView('quizzes')}>Quizzes</button>
         <button type="button" className="chip" aria-pressed={view === 'bank'} onClick={() => setView('bank')}>Question bank</button>
       </div>
-      {view === 'quizzes' ? <QuizList course={course} /> : <QuestionBank course={course} />}
+      {view === 'quizzes' ? <QuizList course={course} readOnly={readOnly} /> : <QuestionBank course={course} />}
     </div>
   );
 }
 
-function QuizList({ course, ta }) {
+function QuizList({ course, ta, readOnly = false }) {
   const navigate = useNavigate();
   const toast = useToast();
   const [act, busy] = useAction();

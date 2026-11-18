@@ -90,10 +90,10 @@ export default function CATab({ course, readOnly = false, onCourseChanged }) {
 
   if (loading) return <Loading label="Working out CA scores…" />;
   if (error) return <ErrorNote error={error} onRetry={reload} />;
-  return <CAInner key={data.components.map((c) => c.id).join()} course={data.course} data={data} reload={reload} onCourseChanged={onCourseChanged} />;
+  return <CAInner key={data.components.map((c) => c.id).join()} course={data.course} data={data} reload={reload} readOnly={readOnly} onCourseChanged={onCourseChanged} />;
 }
 
-function CAInner({ course, data, reload, onCourseChanged }) {
+function CAInner({ course, data, reload, readOnly = false, onCourseChanged }) {
   const toast = useToast();
   const [act, busy] = useAction();
   const [comps, setComps] = useState(data.components);
