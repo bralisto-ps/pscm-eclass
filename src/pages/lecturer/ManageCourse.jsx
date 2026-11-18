@@ -22,6 +22,8 @@ import CloneCourseModal from '../../components/CloneCourseModal.jsx';
 import AuditLogPanel from '../../components/AuditLogPanel.jsx';
 import StudentPreview from '../../components/StudentPreview.jsx';
 import SlotsPanel from '../../components/SlotsPanel.jsx';
+import NotificationBell from '../../components/NotificationBell.jsx';
+import OutcomesPanel from '../../components/OutcomesPanel.jsx';
 
 const TABS = [
   { id: 'materials', label: 'Materials' },
@@ -31,6 +33,7 @@ const TABS = [
   { id: 'slots', label: 'Slots' },
   { id: 'polls', label: 'Polls & Feedback' },
   { id: 'ca', label: 'CA' },
+  { id: 'outcomes', label: 'Outcomes & CLO' },
   { id: 'students', label: 'Students' },
   { id: 'qa', label: 'Q&A' },
   { id: 'announcements', label: 'Announcements' },
@@ -39,6 +42,8 @@ const TABS = [
 ];
 // What a teaching assistant sees.
 const TA_TABS = ['quizzes', 'assignments', 'attendance', 'slots', 'polls', 'students', 'qa', 'messages', 'announcements'];
+// What an external examiner sees (read-only institutional governance & moderation).
+const EXAMINER_TABS = ['quizzes', 'assignments', 'ca', 'outcomes', 'students', 'settings'];
 
 export default function ManageCourse() {
   const { courseId } = useParams();
@@ -46,18 +51,28 @@ export default function ManageCourse() {
   const [params, setParams] = useSearchParams();
   const [previewStudent, setPreviewStudent] = useState(false);
   const { data: loaded, error, loading, reload } = useLoad(async () => {
-    const [courseRow, countsRow] = await Promise.all([
+    const [courseRow, countsRow, staffRole] = await Promise.all([
       run(supabase.from('courses').select('*').eq('id', courseId).maybeSingle()),
       rpc('course_attention_counts', { p_course: courseId }).catch(() => null),
+      rpc('my_course_staff_role', { p_course: courseId }).catch(() => null),
     ]);
     return {
       course: courseRow,
       counts: countsRow || { unreplied_messages: 0, unanswered_qa: 0, pending_excuses: 0, pending_reviews: 0 },
+      staffRole: staffRole || '',
     };
   }, [courseId]);
   const course = loaded?.course;
   const counts = loaded?.counts || { unreplied_messages: 0, unanswered_qa: 0, pending_excuses: 0, pending_reviews: 0 };
-  const rawTabs = isTA ? TABS.filter((t) => TA_TABS.includes(t.id)) : TABS;
+  const effectiveRole = loaded?.staffRole || (isTA ? 'ta' : 'lecturer');
+  const isExaminer = effectiveRole === 'external_examiner';
+  const isCoLecturer = effectiveRole === 'co_lecturer';
+  const isPureTA = isTA && !isCoLecturer && !isExaminer;
+  const rawTabs = isExaminer
+    ? TABS.filter((t) => EXAMINER_TABS.includes(t.id))
+    : isPureTA
+      ? TABS.filter((t) => TA_TABS.includes(t.id))
+      : TABS;
   const tabs = rawTabs.map((t) => {
     if (t.id === 'attendance' && counts.pending_excuses > 0) return { ...t, count: counts.pending_excuses };
     if (t.id === 'qa' && counts.unanswered_qa > 0) return { ...t, count: counts.unanswered_qa };
@@ -77,12 +92,17 @@ export default function ManageCourse() {
         <div className="between">
           <Link to="/" className="small">← Dashboard</Link>
           <div className="row-wrap">
-            {isTA && <span className="band-chip">Teaching assistant</span>}
+            {isExaminer && <span className="band-chip">External Examiner · Read-Only</span>}
+            {isCoLecturer && <span className="band-chip">Co-Lecturer</span>}
+            {isPureTA && <span className="band-chip">Teaching assistant</span>}
             {course.semester && <span className="band-chip">{course.semester}</span>}
             {course.archived && <span className="band-chip">Archived</span>}
-            <button type="button" className="btn btn-sm" style={{ background: previewStudent ? '#fff' : 'rgba(0,0,0,0.22)', color: previewStudent ? '#090e17' : '#fff', borderColor: 'transparent' }} onClick={() => setPreviewStudent((v) => !v)}>
-              <Icon name="eye" size={15} /> {previewStudent ? 'Exit student preview' : 'Preview as student'}
-            </button>
+            <NotificationBell dark />
+            {!isExaminer && (
+              <button type="button" className="btn btn-sm" style={{ background: previewStudent ? '#fff' : 'rgba(0,0,0,0.22)', color: previewStudent ? '#090e17' : '#fff', borderColor: 'transparent' }} onClick={() => setPreviewStudent((v) => !v)}>
+                <Icon name="eye" size={15} /> {previewStudent ? 'Exit student preview' : 'Preview as student'}
+              </button>
+            )}
           </div>
         </div>
         <div style={{ marginTop: 12 }}>
@@ -92,7 +112,7 @@ export default function ManageCourse() {
         {!previewStudent && <Tabs dark tabs={tabs} value={tab} onChange={(t) => setParams({ tab: t }, { replace: true })} />}
       </header>
       <div className="page">
-        {!previewStudent && counts.pending_reviews > 0 && (
+        {!previewStudent && !isExaminer && counts.pending_reviews > 0 && (
           <div className="notice notice-warn between small" style={{ marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
             <div className="row" style={{ gap: 8 }}>
               <Icon name="flag" size={16} />
@@ -106,22 +126,23 @@ export default function ManageCourse() {
             </div>
           </div>
         )}
-        {previewStudent ? (
+        {previewStudent && !isExaminer ? (
           <StudentPreview course={course} onExit={() => setPreviewStudent(false)} />
         ) : (
         <ErrorBoundary key={tab}>
-          {tab === 'materials' && <MaterialsTab course={course} />}
-          {tab === 'quizzes' && <QuizzesTab course={course} ta={isTA} />}
-          {tab === 'assignments' && <AssignmentsTab course={course} ta={isTA} />}
-          {tab === 'attendance' && <AttendanceTab course={course} />}
-          {tab === 'slots' && <SlotsPanel course={course} staff />}
-          {tab === 'polls' && <PollsFeedbackTab course={course} ta={isTA} />}
-          {tab === 'ca' && <CATab course={course} onCourseChanged={reload} />}
-          {tab === 'students' && <StudentsTab course={course} ta={isTA} />}
-          {tab === 'qa' && <Forum course={course} lecturer canDelete={!isTA} />}
-          {tab === 'messages' && <Messages course={course} isLecturer />}
-          {tab === 'announcements' && <AnnouncementsTab course={course} ta={isTA} />}
-          {tab === 'settings' && !isTA && <SettingsTab course={course} reload={reload} />}
+          {tab === 'materials' && !isPureTA && !isExaminer && <MaterialsTab course={course} />}
+          {tab === 'quizzes' && <QuizzesTab course={course} ta={isPureTA || isExaminer} />}
+          {tab === 'assignments' && <AssignmentsTab course={course} ta={isPureTA || isExaminer} />}
+          {tab === 'attendance' && !isExaminer && <AttendanceTab course={course} />}
+          {tab === 'slots' && !isExaminer && <SlotsPanel course={course} staff />}
+          {tab === 'polls' && !isExaminer && <PollsFeedbackTab course={course} ta={isPureTA} />}
+          {tab === 'ca' && !isPureTA && <CATab course={course} readOnly={isExaminer} onCourseChanged={reload} />}
+          {tab === 'outcomes' && !isPureTA && <OutcomesPanel course={course} readOnly={isExaminer} />}
+          {tab === 'students' && <StudentsTab course={course} ta={isPureTA || isExaminer} readOnly={isExaminer} />}
+          {tab === 'qa' && !isExaminer && <Forum course={course} lecturer canDelete={!isPureTA} />}
+          {tab === 'messages' && !isExaminer && <Messages course={course} isLecturer />}
+          {tab === 'announcements' && !isExaminer && <AnnouncementsTab course={course} ta={isPureTA} />}
+          {tab === 'settings' && !isPureTA && <SettingsTab course={course} staffRole={effectiveRole} reload={reload} />}
         </ErrorBoundary>
         )}
       </div>
@@ -129,7 +150,10 @@ export default function ManageCourse() {
   );
 }
 
-function SettingsTab({ course, reload }) {
+function SettingsTab({ course, staffRole = 'lecturer', reload }) {
+  const isOwner = staffRole === 'lecturer';
+  const isCoLecturer = staffRole === 'co_lecturer';
+  const isExaminer = staffRole === 'external_examiner';
   const navigate = useNavigate();
   const [act, busy] = useAction();
   const [editing, setEditing] = useState(false);
@@ -164,7 +188,7 @@ function SettingsTab({ course, reload }) {
       <section className="card stack">
         <div className="between">
           <h2>Course details &amp; timetable</h2>
-          <button type="button" className="btn" onClick={() => setEditing(true)}>Edit details</button>
+          {!isExaminer && <button type="button" className="btn" onClick={() => setEditing(true)}>Edit details</button>}
         </div>
         <dl className="grid-2" style={{ margin: 0, gap: 14 }}>
           <div><dt className="eyebrow">Code</dt><dd className="mono" style={{ margin: 0 }}>{course.code}</dd></div>
@@ -177,38 +201,44 @@ function SettingsTab({ course, reload }) {
         </dl>
       </section>
 
-      <StaffPanel course={course} />
+      <StaffPanel course={course} canEdit={isOwner} />
 
       <AuditLogPanel course={course} />
 
-      <section className="card stack">
-        <h2>Clone course for new semester</h2>
-        <p className="small muted">
-          Create a fresh copy of {course.code} with your weekly modules, learning materials, quizzes, question bank, assignments, and CA structure — without copying old students, attempts, submissions, grades, or attendance.
-        </p>
-        <div>
-          <button type="button" className="btn" onClick={() => setCloning(true)}>
-            <Icon name="layers" size={16} /> Clone for new semester
-          </button>
-        </div>
-      </section>
+      {(isOwner || isCoLecturer) && (
+        <section className="card stack">
+          <h2>Clone course for new semester</h2>
+          <p className="small muted">
+            Create a fresh copy of {course.code} with your weekly modules, learning materials, quizzes, question bank, assignments, and CA structure — without copying old students, attempts, submissions, grades, or attendance.
+          </p>
+          <div>
+            <button type="button" className="btn" onClick={() => setCloning(true)}>
+              <Icon name="layers" size={16} /> Clone for new semester
+            </button>
+          </div>
+        </section>
+      )}
 
-      <section className="card stack">
-        <h2>{course.archived ? 'Restore course' : 'Archive course'}</h2>
-        <p className="small muted">
-          Archiving hides the course from the menu at the end of a semester. Nothing is deleted and you can restore it any time.
-        </p>
-        <div><button type="button" className="btn" onClick={toggleArchive} disabled={busy}>{course.archived ? 'Restore course' : 'Archive course'}</button></div>
-      </section>
+      {isOwner && (
+        <>
+          <section className="card stack">
+            <h2>{course.archived ? 'Restore course' : 'Archive course'}</h2>
+            <p className="small muted">
+              Archiving hides the course from the menu at the end of a semester. Nothing is deleted and you can restore it any time.
+            </p>
+            <div><button type="button" className="btn" onClick={toggleArchive} disabled={busy}>{course.archived ? 'Restore course' : 'Archive course'}</button></div>
+          </section>
 
-      <section className="card stack" style={{ borderColor: 'var(--red-ink)' }}>
-        <h2>Delete course</h2>
-        <p className="small muted">
-          Permanently deletes the course with all its materials, quizzes, attempts, assignments and grades. This cannot be undone —
-          export the gradebooks first.
-        </p>
-        <div><button type="button" className="btn btn-danger" onClick={() => setDeleting(true)}>Delete this course…</button></div>
-      </section>
+          <section className="card stack" style={{ borderColor: 'var(--red-ink)' }}>
+            <h2>Delete course</h2>
+            <p className="small muted">
+              Permanently deletes the course with all its materials, quizzes, attempts, assignments and grades. This cannot be undone —
+              export the gradebooks first.
+            </p>
+            <div><button type="button" className="btn btn-danger" onClick={() => setDeleting(true)}>Delete this course…</button></div>
+          </section>
+        </>
+      )}
 
       {editing && <CourseForm course={course} onClose={() => setEditing(false)} onSaved={reload} />}
       {cloning && <CloneCourseModal sourceCourse={course} onClose={() => setCloning(false)} />}
@@ -229,8 +259,14 @@ function SettingsTab({ course, reload }) {
   );
 }
 
-// Teaching assistants for this course.
-function StaffPanel({ course }) {
+const STAFF_ROLE_LABELS = {
+  ta: ['Teaching Assistant', 'badge'],
+  co_lecturer: ['Co-Lecturer', 'badge-blue'],
+  external_examiner: ['External Examiner (Read-Only)', 'badge-plum'],
+};
+
+// Teaching staff (TAs, Co-Lecturers & External Examiners) for this course.
+function StaffPanel({ course, canEdit = true }) {
   const { data, error, loading, reload } = useLoad(() => rpcAll('course_staff_list', { p_course: course.id }), [course.id]);
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState(null);
@@ -243,45 +279,56 @@ function StaffPanel({ course }) {
   }
 
   return (
-    <section className="card stack" aria-label="Teaching assistants">
+    <section className="card stack" aria-label="Course teaching staff and examiners">
       <div className="between">
-        <h2>Teaching assistants</h2>
-        <button type="button" className="btn btn-sm" onClick={() => setAdding(true)}><Icon name="plus" size={16} /> Add a TA</button>
+        <h2>Co-Lecturers, TAs &amp; External Examiners</h2>
+        {canEdit && (
+          <button type="button" className="btn btn-sm" onClick={() => setAdding(true)}>
+            <Icon name="plus" size={16} /> Add staff / examiner
+          </button>
+        )}
       </div>
       <p className="small muted">
-        A TA can take attendance, add students to the class list, mark written answers and assignments, see the class list and gradebooks, answer Q&amp;A,
-        post announcements and reset student passwords. A TA cannot see or change questions, release results or marks,
-        change the CA, delete anything or change course settings. Every mark records who gave it.
+        <strong>Co-Lecturers</strong> can manage materials, quizzes, rubrics, CA, and grades. <strong>Teaching Assistants</strong> handle attendance, marking, Q&amp;A, and roster updates.{' '}
+        <strong>External Examiners</strong> receive read-only governance access to scripts, gradebooks, audit trails, CLO attainment, and moderation sign-offs.
       </p>
       {loading && <Loading />}
       <ErrorNote error={error} onRetry={reload} />
-      {data && data.length === 0 && <span className="small muted">No teaching assistants on this course.</span>}
+      {data && data.length === 0 && <span className="small muted">No additional staff or examiners on this course.</span>}
       {data && data.length > 0 && (
         <div className="card-flush">
-          {data.map((t) => (
-            <div key={t.email} className="list-row">
-              <span className="list-main">
-                <span className="title">{t.full_name || t.email}</span>
-                <span className="tiny muted">{t.email}</span>
-              </span>
-              {t.activated
-                ? <span className="badge badge-teal" title={t.last_sign_in ? `Last signed in ${fmtDateTime(t.last_sign_in)}` : ''}>Active</span>
-                : <span className="badge badge-amber">Not set up yet</span>}
-              <button type="button" className="icon-btn plain" aria-label={`Remove ${t.full_name || t.email}`} onClick={() => setRemoving(t)}><Icon name="trash" /></button>
-            </div>
-          ))}
+          {data.map((t) => {
+            const [roleLabel, roleCls] = STAFF_ROLE_LABELS[t.staff_role || 'ta'] || STAFF_ROLE_LABELS.ta;
+            return (
+              <div key={t.email} className="list-row">
+                <span className="list-main">
+                  <span className="title row-wrap" style={{ gap: 6, alignItems: 'center' }}>
+                    <span>{t.full_name || t.email}</span>
+                    <span className={`badge ${roleCls}`}>{roleLabel}</span>
+                  </span>
+                  <span className="tiny muted">{t.email}</span>
+                </span>
+                {t.activated
+                  ? <span className="badge badge-teal" title={t.last_sign_in ? `Last signed in ${fmtDateTime(t.last_sign_in)}` : ''}>Active</span>
+                  : <span className="badge badge-amber">Not set up yet</span>}
+                {canEdit && (
+                  <button type="button" className="icon-btn plain" aria-label={`Remove ${t.full_name || t.email}`} onClick={() => setRemoving(t)}><Icon name="trash" /></button>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
       {data && data.some((t) => !t.activated) && (
         <p className="tiny muted">
-          Tell your TA: open the site, choose <strong>Teaching assistant? Set up your account</strong> under the sign-in form,
-          and use the same email address you entered here.
+          Invitees open the site, choose <strong>Teaching assistant? Set up your account</strong> under the sign-in form,
+          and sign up with the exact email address entered here.
         </p>
       )}
       {adding && <AddStaffModal course={course} onClose={() => setAdding(false)} onAdded={() => { setAdding(false); reload(); }} />}
       {removing && (
-        <Confirm title="Remove this TA?" confirmLabel="Remove" busy={busy} onClose={() => setRemoving(null)} onConfirm={remove}
-          message={`${removing.full_name || removing.email} will no longer see ${course.code}. Marks they already gave stay.`} />
+        <Confirm title="Remove staff member?" confirmLabel="Remove" busy={busy} onClose={() => setRemoving(null)} onConfirm={remove}
+          message={`${removing.full_name || removing.email} will no longer see ${course.code}. Marks and moderation notes they already recorded stay.`} />
       )}
     </section>
   );
@@ -291,19 +338,36 @@ function AddStaffModal({ course, onClose, onAdded }) {
   const [act, busy] = useAction();
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
+  const [staffRole, setStaffRole] = useState('ta');
   async function save() {
-    const ok = await act(() => rpc('add_staff', { p_course: course.id, p_email: email, p_name: name }), 'Teaching assistant added.');
+    const ok = await act(async () => {
+      try {
+        return await rpc('add_staff', { p_course: course.id, p_email: email, p_name: name, p_staff_role: staffRole });
+      } catch (err) {
+        if (staffRole === 'ta' && /add_staff|parameter|function/i.test(err?.message || '')) {
+          return await rpc('add_staff', { p_course: course.id, p_email: email, p_name: name });
+        }
+        throw err;
+      }
+    }, 'Course staff member added.');
     if (ok !== undefined) onAdded();
   }
   return (
-    <Modal title={`Add a teaching assistant to ${course.code}`} onClose={onClose}
+    <Modal title={`Add staff or examiner to ${course.code}`} onClose={onClose}
       footer={<><button type="button" className="btn" onClick={onClose}>Cancel</button>
         <button type="button" className="btn btn-primary" onClick={save} disabled={busy || !email.trim()}>Add</button></>}>
-      <Field label="Their email address" hint="their own Gmail or other email">
+      <Field label="Their email address" hint="their own Gmail or institutional email">
         <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus placeholder="name@gmail.com" />
       </Field>
       <Field label="Name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></Field>
-      <p className="tiny muted">You can add the same TA to more than one course. They set their own password the first time.</p>
+      <Field label="Role in this course">
+        <select className="select" value={staffRole} onChange={(e) => setStaffRole(e.target.value)}>
+          <option value="ta">Teaching Assistant — attendance, marking, Q&amp;A, roster</option>
+          <option value="co_lecturer">Co-Lecturer — full materials, quizzes, CA, and grades</option>
+          <option value="external_examiner">External Examiner — read-only scripts, CA &amp; moderation sign-off</option>
+        </select>
+      </Field>
+      <p className="tiny muted">You can assign the same staff member or examiner to multiple courses. They set their own password on first sign-in.</p>
     </Modal>
   );
 }

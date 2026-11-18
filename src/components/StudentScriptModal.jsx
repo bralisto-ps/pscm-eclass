@@ -83,7 +83,7 @@ async function loadDirectFallback(attemptId, quizTitle, student) {
   };
 }
 
-export default function StudentScriptModal({ attemptId, student, quiz, isTA, onClose, onMarked }) {
+export default function StudentScriptModal({ attemptId, student, quiz, isTA, readOnly = false, onClose, onMarked }) {
   const toast = useToast();
   const [filter, setFilter] = useState('all');
   const [editingId, setEditingId] = useState(null);
@@ -257,7 +257,7 @@ export default function StudentScriptModal({ attemptId, student, quiz, isTA, onC
                 const fullMarks = q.marks_awarded !== null && Number(q.marks_awarded) >= Number(q.marks);
                 const partialMarks = q.marks_awarded !== null && Number(q.marks_awarded) > 0 && Number(q.marks_awarded) < Number(q.marks);
                 const isEditing = editingId === q.id;
-                const canOverride = data.status !== 'in_progress' && Boolean(q.response_id);
+                const canOverride = !readOnly && data.status !== 'in_progress' && Boolean(q.response_id);
 
                 return (
                   <article key={q.id} className="card stack-sm" style={{ padding: 16 }}>

@@ -1649,3 +1649,157 @@ html.dark .live-pill-card {
   .student-summary-cell:nth-child(2n) { border-right: 0; }
   .student-summary-cell:nth-child(-n+2) { border-bottom: 1px solid var(--line-2); }
 }
+
+
+/* ---------- World-Class Packs: Notifications, PDF Annotator, Live Slide Sync ---------- */
+.notif-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 99px;
+  background: var(--red-ink, #dc2626);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+}
+
+.notif-popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(360px, calc(100vw - 24px));
+  z-index: 120;
+  padding: 14px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.notif-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s var(--ease), border-color 0.12s var(--ease);
+}
+
+.notif-item:hover {
+  background: var(--surface-2);
+  border-color: var(--line-2);
+}
+
+.notif-item.unread {
+  background: var(--teal-50);
+  border-color: rgba(13, 148, 136, 0.25);
+}
+
+html.dark .notif-item.unread {
+  background: rgba(13, 148, 136, 0.16);
+  border-color: rgba(45, 212, 191, 0.28);
+}
+
+.pdf-annotator-modal {
+  padding: 0;
+  overflow: hidden;
+}
+
+.pdf-annotator-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pdf-annotator-canvas-wrap {
+  overflow: auto;
+  padding: 18px;
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.pdf-stage {
+  position: relative;
+  display: inline-block;
+  border-radius: 8px;
+  overflow: visible;
+  box-shadow: var(--shadow);
+  background: #fff;
+}
+
+.pdf-stage.clickable {
+  cursor: crosshair;
+}
+
+.pdf-pin-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  transition: transform 0.12s var(--ease);
+}
+
+.pdf-pin-marker:hover,
+.pdf-pin-marker.active {
+  transform: translate(-50%, -50%) scale(1.18);
+  z-index: 4;
+}
+
+.pdf-annotator-side {
+  border-left: 1px solid var(--line-2);
+  padding: 16px;
+  overflow-y: auto;
+  background: var(--surface);
+}
+
+.live-sync-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 11px 16px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, rgba(13, 148, 136, 0.12), rgba(15, 76, 92, 0.14));
+  border: 1px solid rgba(13, 148, 136, 0.35);
+}
+
+@media (max-width: 860px) {
+  .pdf-annotator-body {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+  .pdf-annotator-side {
+    border-left: 0;
+    border-top: 1px solid var(--line-2);
+  }
+}

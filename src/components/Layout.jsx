@@ -8,6 +8,7 @@ import { supabase } from '../lib/supabase.js';
 import { initials } from '../lib/format.js';
 import { OfflineIndicator, PWAInstallButton } from './PWABanner.jsx';
 import QuickJumpModal from './QuickJumpModal.jsx';
+import NotificationBell from './NotificationBell.jsx';
 
 export function Topbar({ title, sub, children }) {
   const [theme, , toggleTheme] = useTheme();
@@ -19,6 +20,7 @@ export function Topbar({ title, sub, children }) {
       </div>
       <div className="row-wrap">
         {children}
+        <NotificationBell />
         <button
           type="button"
           className="icon-btn"
@@ -164,6 +166,7 @@ export default function Layout() {
           >
             <Icon name="search" size={17} />
           </button>
+          <NotificationBell dark />
           <button
             type="button"
             className="icon-btn-dark"

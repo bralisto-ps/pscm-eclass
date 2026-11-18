@@ -102,7 +102,7 @@ export default function AssignmentsTab({ course, ta }) {
                         {a.allow_late ? ' · late allowed' : ''}
                         {a.results_released ? ' · marks released' : ''}
                         {meta.rubric.length > 0 ? ` · ${meta.rubric.length}-criterion rubric` : ''}
-                        {meta.syndicate.enabled ? ` · Syndicate (${meta.syndicate.groups.length} groups)` : ''}
+                        {meta.syndicate.enabled ? ` · Syndicate (${meta.syndicate.groups.length} groups)` : ''}{a.clo_code ? ` · ${a.clo_code}` : ''}
                       </div>
                       {(hasFilter || meta.doc?.path || subRuleLabel || hasDeadlineOverrides(meta)) && (
                         <div className="row-wrap" style={{ gap: 6, marginTop: 4 }}>
@@ -177,7 +177,9 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
     max_marks: a.max_marks ?? 100,
     allow_late: a.allow_late ?? false,
     published: a.published ?? true,
+    clo_code: a.clo_code || '',
   });
+  const [outcomes, setOutcomes] = useState([]);
   const [rubric, setRubric] = useState(initialMeta.rubric);
   const [syndicateEnabled, setSyndicateEnabled] = useState(initialMeta.syndicate.enabled);
   const [peerCheck, setPeerCheck] = useState(initialMeta.syndicate.peerCheck !== false);
@@ -226,6 +228,8 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
   useEffect(() => {
     let alive = true;
     setClassesLoading(true);
+    supabase.from('course_outcomes').select('code, title').eq('course_id', course.id).order('code')
+      .then((r) => { if (alive && Array.isArray(r.data)) setOutcomes(r.data); }, () => {});
     rpcAll('course_classes', { p_course: course.id })
       .then((rows) => {
         if (alive) setClasses(rows || []);
@@ -463,7 +467,7 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
         },
       });
 
-      const row = {
+      const baseRow = {
         course_id: course.id,
         title: f.title.trim(),
         instructions: encodedInstructions,
@@ -472,8 +476,17 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
         allow_late: f.allow_late,
         published: f.published,
       };
+      const rowWithClo = { ...baseRow, clo_code: (f.clo_code || '').trim() };
 
-      await run(a.id ? supabase.from('assignments').update(row).eq('id', a.id) : supabase.from('assignments').insert(row));
+      try {
+        await run(a.id ? supabase.from('assignments').update(rowWithClo).eq('id', a.id) : supabase.from('assignments').insert(rowWithClo));
+      } catch (colErr) {
+        if (!rowWithClo.clo_code && /clo_code|column/i.test(colErr?.message || '')) {
+          await run(a.id ? supabase.from('assignments').update(baseRow).eq('id', a.id) : supabase.from('assignments').insert(baseRow));
+        } else {
+          throw colErr;
+        }
+      }
 
       // Clean up superseded document cleanly in background
       if (oldDocPath && stripViewOnly(oldDocPath) !== stripViewOnly(nextDoc?.path || '')) {
@@ -518,6 +531,18 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
           <Field label="Deadline"><input className="input" type="datetime-local" value={f.due_at} onChange={set('due_at')} /></Field>
           <Field label="Marks available"><input className="input" type="number" min="1" value={f.max_marks} onChange={set('max_marks')} /></Field>
         </div>
+        <Field label="Course Learning Outcome (CLO)" hint="optional — links this assignment to CLO attainment analytics">
+          {outcomes.length > 0 ? (
+            <select className="select" value={f.clo_code || ''} onChange={set('clo_code')}>
+              <option value="">Not tagged to a CLO</option>
+              {outcomes.map((o) => (
+                <option key={o.code} value={o.code}>{o.code} — {o.title}</option>
+              ))}
+            </select>
+          ) : (
+            <input className="input" value={f.clo_code || ''} onChange={set('clo_code')} placeholder="e.g. CLO1 (define outcomes under Outcomes & CLO tab)" />
+          )}
+        </Field>
         {(classOptions.length > 0 || Object.keys(classDeadlines).length > 0) && (
           <div className="stack-sm" style={{ padding: '10px 14px', borderRadius: 10, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
             <div className="between" style={{ gap: 8, flexWrap: 'wrap' }}>

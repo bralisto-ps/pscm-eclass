@@ -17,7 +17,8 @@ import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast }
 import { AssignmentForm } from './course/AssignmentsTab.jsx';
 import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
 import MarkReviewQueue from '../../components/MarkReviewQueue.jsx';
-import { compareSubmissionTexts, extractAssignmentTexts } from '../../lib/similarity.js';
+import PdfAnnotatorModal from '../../components/PdfAnnotatorModal.jsx';
+import { compareArchiveTexts, compareSubmissionTexts, extractAssignmentTexts } from '../../lib/similarity.js';
 
 const SecureSlideViewer = lazy(() => import('../../components/SecureSlideViewer.jsx'));
 
@@ -65,7 +66,7 @@ export default function AssignmentMarking() {
   const toast = useToast();
   const { data, error, loading, reload, setData } = useLoad(async () => {
     const a = await run(supabase.from('assignments').select('*, courses(id, code, title)').eq('id', assignmentId).single());
-    const [students, subs, peerData, reviews, courseExemplars, snippetRes, bookingEvents] = await Promise.all([
+    const [students, subs, peerData, reviews, courseExemplars, snippetRes, bookingEvents, staffRole, annMap] = await Promise.all([
       rpcAll('course_students', { p_course: a.course_id }),
       allSubmissions(assignmentId),
       rpc('assignment_peer_reviews', { p_assignment: assignmentId }).catch(() => ({ reviews: [], _missing: true })),
@@ -73,6 +74,8 @@ export default function AssignmentMarking() {
       rpc('course_assignment_exemplars', { p_course: a.course_id }).catch(() => []),
       supabase.from('grading_snippets').select('id, label, body').order('created_at', { ascending: false }).then((r) => r.data || [], () => []),
       rpc('course_booking_events', { p_course: a.course_id }).catch(() => []),
+      rpc('my_course_staff_role', { p_course: a.course_id }).catch(() => null),
+      rpc('assignment_annotations_map', { p_assignment: assignmentId }).catch(() => ({})),
     ]);
     const byIndex = new Map(subs.map((s) => [s.profiles?.index_no, s]));
     const rows = students.map((st) => ({ ...st, sub: byIndex.get(st.index_no) || null }));
@@ -94,6 +97,8 @@ export default function AssignmentMarking() {
       exemplars,
       customSnippets,
       bookingEvents: Array.isArray(bookingEvents) ? bookingEvents : [],
+      staffRole: staffRole || 'lecturer',
+      annMap: annMap && typeof annMap === 'object' ? annMap : {},
     };
   }, [assignmentId]);
 
@@ -112,6 +117,9 @@ export default function AssignmentMarking() {
   const [extTarget, setExtTarget] = useState(null);
   const [nudging, setNudging] = useState(false);
   const [checkingSim, setCheckingSim] = useState(false);
+  const [annotating, setAnnotating] = useState(null);
+  const isExaminer = data?.staffRole === 'external_examiner';
+  const restrictedEdit = isTA || isExaminer;
 
   const assignMeta = useMemo(() => parseAssignmentMeta(data?.a), [data?.a]);
 
@@ -362,8 +370,9 @@ export default function AssignmentMarking() {
     <>
       <Topbar title={a.title} sub={`${a.courses.code} · ${a.due_at ? `due ${fmtFull(a.due_at)}` : 'no deadline'} · ${fmtNumber(a.max_marks)} marks`}>
         <Link to={`/teach/course/${a.course_id}?tab=assignments`} className="btn"><Icon name="chevronLeft" /> Assignments</Link>
-        {!isTA && <button type="button" className="btn" onClick={() => setEditing(true)}><Icon name="edit" /> Edit</button>}
-        {!isTA && (
+        {isExaminer && <span className="badge badge-plum">External Examiner · Read-Only</span>}
+        {!restrictedEdit && <button type="button" className="btn" onClick={() => setEditing(true)}><Icon name="edit" /> Edit</button>}
+        {!restrictedEdit && (
           <button type="button" className={`btn ${a.results_released ? '' : 'btn-primary'}`} onClick={toggleRelease} disabled={busy}>
             {a.results_released ? 'Hide marks' : 'Release marks'}
           </button>
@@ -371,7 +380,12 @@ export default function AssignmentMarking() {
       </Topbar>
 
       <div className="page stack">
-        {data.reviews?.length > 0 && (
+        {isExaminer && (
+          <div className="notice notice-info small">
+            <strong>External Examiner Mode:</strong> You can inspect submissions, inline PDF annotations, similarity reports, and marks in read-only mode. Editing marks or releasing grades is disabled.
+          </div>
+        )}
+        {!isExaminer && data.reviews?.length > 0 && (
           <MarkReviewQueue reviews={data.reviews} onResolved={reload} title="Assignment mark review requests" />
         )}
 
@@ -424,7 +438,7 @@ export default function AssignmentMarking() {
               {assignMeta.syndicate.enabled && (
                 <span className="tiny muted">Marking one group submission can apply scores across every member in that syndicate.</span>
               )}
-              {!isTA && assignMeta.syndicate.enabled && assignMeta.syndicate.groups.length > 0 && (
+              {!restrictedEdit && assignMeta.syndicate.enabled && assignMeta.syndicate.groups.length > 0 && (
                 <button type="button" className="btn btn-sm btn-primary" onClick={() => setGradingPres(true)}>
                   <Icon name="award" size={14} /> Grade live presentation
                 </button>
@@ -516,7 +530,7 @@ export default function AssignmentMarking() {
                   <Icon name="shield" size={15} /> Check similarities
                 </button>
               )}
-              {!isTA && missingRows.length > 0 && (
+              {!restrictedEdit && missingRows.length > 0 && (
                 <button
                   type="button"
                   className="btn btn-sm"
@@ -603,7 +617,7 @@ export default function AssignmentMarking() {
                         <td className="num">{r.sub?.marks !== null && r.sub?.marks !== undefined ? `${fmtNumber(r.sub.marks)} / ${fmtNumber(a.max_marks)}` : '—'}</td>
                         <td>
                           <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
-                            {!isTA && (
+                            {!restrictedEdit && (
                               <button
                                 type="button"
                                 className="icon-btn plain"
@@ -615,20 +629,37 @@ export default function AssignmentMarking() {
                                 <Icon name="clock" size={15} />
                               </button>
                             )}
-                            {effectiveSub && (
-                              <>
-                                {effectiveSub.file_path === 'presentation:in-class' ? (
-                                  <span className="badge badge-teal" title="Graded live in class">In-class</span>
-                                ) : effectiveSub.file_path === 'typed:online' ? (
-                                  <button type="button" className="icon-btn plain" aria-label="Read typed response" title="Read typed response" onClick={() => setMarking(i)}><Icon name="eye" /></button>
-                                ) : effectiveSub.file_path ? (
-                                  <button type="button" className="icon-btn plain" aria-label="Open file" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}><Icon name="eye" /></button>
-                                ) : null}
-                                <button type="button" className="btn btn-sm btn-primary" onClick={() => setMarking(i)}>
-                                  {r.sub?.marks !== null && r.sub?.marks !== undefined ? 'Edit mark' : 'Mark'}
-                                </button>
-                              </>
-                            )}
+                            {effectiveSub && (() => {
+                              const isPdfSub = effectiveSub.file_path && !['presentation:in-class', 'typed:online'].includes(effectiveSub.file_path) && /\.pdf(?:$|\?|#)/i.test(effectiveSub.file_name || effectiveSub.file_path);
+                              const annCount = Array.isArray(data.annMap?.[effectiveSub.id]) ? data.annMap[effectiveSub.id].length : 0;
+                              return (
+                                <>
+                                  {effectiveSub.file_path === 'presentation:in-class' ? (
+                                    <span className="badge badge-teal" title="Graded live in class">In-class</span>
+                                  ) : effectiveSub.file_path === 'typed:online' ? (
+                                    <button type="button" className="icon-btn plain" aria-label="Read typed response" title="Read typed response" onClick={() => setMarking(i)}><Icon name="eye" /></button>
+                                  ) : effectiveSub.file_path ? (
+                                    <button type="button" className="icon-btn plain" aria-label="Open file" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}><Icon name="eye" /></button>
+                                  ) : null}
+                                  {isPdfSub && (
+                                    <button
+                                      type="button"
+                                      className="btn btn-sm"
+                                      title={isExaminer ? 'View inline PDF annotations' : 'Annotate PDF submission inline'}
+                                      onClick={() => setAnnotating({
+                                        sub: effectiveSub,
+                                        studentLabel: blindMode ? (blindMap.students.get(normalizeIndexNo(r.index_no))?.label || 'Candidate') : `${r.full_name} (${r.index_no})`,
+                                      })}
+                                    >
+                                      <Icon name="pin" size={14} /> {annCount > 0 ? annCount : (isExaminer ? 'Pins' : 'Annotate')}
+                                    </button>
+                                  )}
+                                  <button type="button" className={`btn btn-sm ${isExaminer ? '' : 'btn-primary'}`} onClick={() => setMarking(i)}>
+                                    {isExaminer ? 'View' : (r.sub?.marks !== null && r.sub?.marks !== undefined ? 'Edit mark' : 'Mark')}
+                                  </button>
+                                </>
+                              );
+                            })()}
                           </div>
                         </td>
                       </tr>
@@ -650,6 +681,9 @@ export default function AssignmentMarking() {
           row={shown[marking]}
           blindMode={blindMode}
           blindMap={blindMap}
+          readOnly={isExaminer}
+          annMap={data.annMap || {}}
+          onOpenAnnotator={(targetSub, sLabel) => setAnnotating({ sub: targetSub, studentLabel: sLabel })}
           hasNext={shown.slice(marking + 1).some((r) => r.sub || r._synLeaderSub)}
           exemplars={data.exemplars || []}
           snippets={[...(data.customSnippets || []), ...DEFAULT_PSCM_SNIPPETS]}
@@ -715,6 +749,25 @@ export default function AssignmentMarking() {
         />
       )}
 
+      {annotating?.sub && (
+        <PdfAnnotatorModal
+          submissionId={annotating.sub.id}
+          filePath={annotating.sub.file_path}
+          fileName={annotating.sub.file_name}
+          studentLabel={annotating.studentLabel}
+          initialAnnotations={data.annMap?.[annotating.sub.id] || []}
+          snippets={[...(data.customSnippets || []), ...DEFAULT_PSCM_SNIPPETS]}
+          readOnly={isExaminer}
+          onSaved={(savedPins) => {
+            setData((d) => ({
+              ...d,
+              annMap: { ...(d.annMap || {}), [annotating.sub.id]: savedPins },
+            }));
+          }}
+          onClose={() => setAnnotating(null)}
+        />
+      )}
+
       {nudging && (
         <BulkNudgeModal
           courseId={a.course_id}
@@ -758,7 +811,7 @@ export default function AssignmentMarking() {
   );
 }
 
-function MarkModal({ a, assignMeta, allRows, row, blindMode = false, blindMap = null, hasNext, exemplars = [], snippets = DEFAULT_PSCM_SNIPPETS, onAddSnippet, onDeleteSnippet, onExemplarChanged, onShowSql, onClose, onSaved }) {
+function MarkModal({ a, assignMeta, allRows, row, blindMode = false, blindMap = null, readOnly = false, annMap = {}, onOpenAnnotator, hasNext, exemplars = [], snippets = DEFAULT_PSCM_SNIPPETS, onAddSnippet, onDeleteSnippet, onExemplarChanged, onShowSql, onClose, onSaved }) {
   const toast = useToast();
   const [act] = useAction();
   const effectiveSub = row.sub || row._synLeaderSub;
@@ -925,17 +978,17 @@ function MarkModal({ a, assignMeta, allRows, row, blindMode = false, blindMap = 
       onClose={onClose}
       footer={
         <>
-          <span className="tiny muted hide-sm" style={{ marginRight: 'auto' }}>Tip: Ctrl/Cmd + ↵ to save &amp; continue</span>
+          {!readOnly && <span className="tiny muted hide-sm" style={{ marginRight: 'auto' }}>Tip: Ctrl/Cmd + ↵ to save &amp; continue</span>}
           <button type="button" className="btn" onClick={onClose}>Close</button>
-          {row.sub?.id && (
+          {!readOnly && row.sub?.id && (
             <button type="button" className="btn" onClick={() => save(false, false)} disabled={busy}>Save single</button>
           )}
-          {syndicate && syndicatePeers.length > 1 && (
+          {!readOnly && syndicate && syndicatePeers.length > 1 && (
             <button type="button" className="btn btn-primary" onClick={() => save(hasNext, true)} disabled={busy}>
               {hasNext ? `Save & apply to group (${syndicatePeers.length}) →` : `Save & apply to all ${syndicatePeers.length} members`}
             </button>
           )}
-          {(!syndicate || syndicatePeers.length <= 1) && (
+          {!readOnly && (!syndicate || syndicatePeers.length <= 1) && (
             <>
               {!hasNext && <button type="button" className="btn btn-primary" onClick={() => save(false, false)} disabled={busy}>Save</button>}
               {hasNext && <button type="button" className="btn btn-primary" onClick={() => save(true, false)} disabled={busy}>Save and next</button>}
@@ -950,6 +1003,16 @@ function MarkModal({ a, assignMeta, allRows, row, blindMode = false, blindMap = 
           <strong>{isTypedOnly ? `Typed online response (${typedWords} words)` : effectiveSub.file_name}</strong><br />
           <span className="small">Submitted {fmtFull(effectiveSub.submitted_at)}{effectiveSub.is_late ? ' · LATE' : ''}</span>
         </span>
+        {!isInClass && !isTypedOnly && effectiveSub.file_path && /\.pdf(?:$|\?|#)/i.test(effectiveSub.file_name || effectiveSub.file_path) && onOpenAnnotator && (
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={() => onOpenAnnotator(effectiveSub, blindMode ? (blindMap?.students?.get(normalizeIndexNo(row.index_no))?.label || 'Candidate') : `${row.full_name} (${row.index_no})`)}
+          >
+            <Icon name="pin" size={14} /> {readOnly ? 'View PDF pins' : 'Annotate PDF'}
+            {Array.isArray(annMap?.[effectiveSub.id]) && annMap[effectiveSub.id].length > 0 ? ` (${annMap[effectiveSub.id].length})` : ''}
+          </button>
+        )}
         {!isInClass && !isTypedOnly && effectiveSub.file_path && (
           <button type="button" className="btn btn-sm" onClick={() => act(() => openStoredFile('submissions', effectiveSub.file_path))}>Open file</button>
         )}
@@ -1596,6 +1659,9 @@ function SimilarityModal({ a, assignMeta, rows, blindMode, blindMap, onClose }) 
   const [extracted, setExtracted] = useState(null);
   const [scanError, setScanError] = useState('');
   const [expandedId, setExpandedId] = useState(null);
+  const [includeArchive, setIncludeArchive] = useState(true);
+  const [archiveRows, setArchiveRows] = useState([]);
+  const [archiveSupported, setArchiveSupported] = useState(true);
 
   useEffect(() => {
     let alive = true;
@@ -1604,10 +1670,29 @@ function SimilarityModal({ a, assignMeta, rows, blindMode, blindMap, onClose }) 
     extractAssignmentTexts(rows, getSignedFileUrl, (p) => {
       if (alive) setProgress(p);
     })
-      .then((res) => {
+      .then(async (res) => {
         if (!alive) return;
         setExtracted(res);
         setPhase('done');
+        if (res?.docs?.length) {
+          const archivePayload = res.docs.map((d) => ({
+            index_no: d.indexNo || d.id,
+            student_name: d.fullName || '',
+            title: a.title || '',
+            text: (d.text || '').slice(0, 12000),
+            word_count: d.wordCount || 0,
+          }));
+          rpc('save_submission_archive_texts', { p_assignment: a.id, p_rows: archivePayload }).catch(() => {});
+        }
+        try {
+          const past = await rpc('past_similarity_texts', { p_course: a.course_id, p_assignment: a.id });
+          if (alive) {
+            setArchiveRows(Array.isArray(past) ? past : []);
+            setArchiveSupported(true);
+          }
+        } catch {
+          if (alive) setArchiveSupported(false);
+        }
       })
       .catch((e) => {
         if (!alive) return;
@@ -1615,7 +1700,7 @@ function SimilarityModal({ a, assignMeta, rows, blindMode, blindMap, onClose }) 
         setPhase('error');
       });
     return () => { alive = false; };
-  }, [a.id]);
+  }, [a.id, a.course_id, a.title]);
 
   const report = useMemo(() => {
     if (!extracted?.docs) return null;
@@ -1624,6 +1709,14 @@ function SimilarityModal({ a, assignMeta, rows, blindMode, blindMap, onClose }) 
       thresholdPct: threshold,
     });
   }, [extracted, assignMeta.cleanInstructions, threshold]);
+
+  const archiveReport = useMemo(() => {
+    if (!includeArchive || !extracted?.docs || !archiveRows.length) return { checkedArchiveCount: 0, matches: [] };
+    return compareArchiveTexts(extracted.docs, archiveRows, {
+      boilerplateText: assignMeta.cleanInstructions,
+      thresholdPct: threshold,
+    });
+  }, [includeArchive, extracted, archiveRows, assignMeta.cleanInstructions, threshold]);
 
   function displayParticipant(p) {
     if (blindMode) {
@@ -1674,6 +1767,12 @@ function SimilarityModal({ a, assignMeta, rows, blindMode, blindMap, onClose }) 
                 <span className={`badge ${report.pairs.length > 0 ? 'badge-red' : ''}`}>
                   {report.pairs.length} pair{report.pairs.length === 1 ? '' : 's'} ≥ {threshold}%
                 </span>
+                {archiveSupported && archiveRows.length > 0 && (
+                  <label className="check small" style={{ margin: 0 }}>
+                    <input type="checkbox" checked={includeArchive} onChange={(e) => setIncludeArchive(e.target.checked)} />
+                    <span>Past semesters ({archiveRows.length})</span>
+                  </label>
+                )}
                 {extracted.skipped.length > 0 && (
                   <span className="badge badge-amber">{extracted.skipped.length} unsupported/unreadable file{extracted.skipped.length === 1 ? '' : 's'}</span>
                 )}
@@ -1748,6 +1847,47 @@ function SimilarityModal({ a, assignMeta, rows, blindMode, blindMap, onClose }) 
                               </div>
                             </div>
                           </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {includeArchive && archiveReport.matches.length > 0 && (
+              <div className="stack-sm" style={{ marginTop: 8 }}>
+                <div className="between">
+                  <strong className="small">Cross-Semester Archive Matches ({archiveReport.matches.length})</strong>
+                  <span className="tiny muted">Checked against {archiveReport.checkedArchiveCount} prior submission{archiveReport.checkedArchiveCount === 1 ? '' : 's'}</span>
+                </div>
+                {archiveReport.matches.slice(0, 30).map((m) => {
+                  const isOpen = expandedId === m.id;
+                  return (
+                    <div key={m.id} className="card stack-sm" style={{ borderColor: m.scorePct >= 75 ? 'var(--red-ink)' : 'var(--amber)' }}>
+                      <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                        <div className="stack-sm" style={{ gap: 2 }}>
+                          <div className="row-wrap" style={{ gap: 6, alignItems: 'center' }}>
+                            <span className={`badge ${m.scorePct >= 75 ? 'badge-red' : 'badge-amber'} mono`}>{m.scorePct}% past match</span>
+                            <strong className="small">{displayParticipant(m.current)}</strong>
+                            <span className="tiny muted">↔</span>
+                            <strong className="small">{blindMode ? 'Prior cohort script' : `${m.archive.fullName || m.archive.indexNo} (${m.archive.indexNo})`}</strong>
+                          </div>
+                          <span className="tiny muted">
+                            Prior archive: {m.archive.courseCode} {m.archive.semester ? `(${m.archive.semester}) ` : ''}· {m.archive.title} · {m.sharedCount} shared phrases
+                          </span>
+                        </div>
+                        <button type="button" className="btn btn-sm" onClick={() => setExpandedId(isOpen ? null : m.id)}>
+                          {isOpen ? 'Hide match' : 'Compare passages'}
+                        </button>
+                      </div>
+                      {isOpen && m.snippets?.length > 0 && (
+                        <div className="stack-sm" style={{ paddingTop: 8, borderTop: '1px solid var(--line-2)', gap: 4 }}>
+                          {m.snippets.map((snip, idx) => (
+                            <div key={idx} className="tiny" style={{ padding: '6px 10px', borderRadius: 6, background: '#fef3c7', color: '#78350f', border: '1px solid #fcd34d' }}>
+                              “{snip}”
+                            </div>
+                          ))}
                         </div>
                       )}
                     </div>

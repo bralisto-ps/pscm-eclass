@@ -48,17 +48,28 @@ export default function QuizResults() {
   const [copiedSql, setCopiedSql] = useState(false);
   const { data, error, loading, reload, setData } = useLoad(async () => {
     const quiz = await run(supabase.from('quizzes').select('*, courses(id, code, title)').eq('id', quizId).single());
-    const [rows, queue, reviews] = await Promise.all([
+    const [rows, queue, reviews, staffRole, modMap] = await Promise.all([
       rpcAll('quiz_gradebook', { p_quiz: quizId }),
       rpcAll('marking_queue', { p_quiz: quizId }),
       rpc('course_mark_reviews', { p_course: quiz.course_id, p_quiz: quizId }).catch(() => []),
+      rpc('my_course_staff_role', { p_course: quiz.course_id }).catch(() => null),
+      rpc('quiz_moderation_map', { p_quiz: quizId }).catch(() => ({})),
     ]);
     const { photos, meta: photoMeta } = await loadQuizProctorPhotos({
       courseId: quiz.course_id,
       quizId: quiz.id,
       rows,
     });
-    return { quiz, rows, queue, reviews: Array.isArray(reviews) ? reviews : [], photos, photoMeta };
+    return {
+      quiz,
+      rows,
+      queue,
+      reviews: Array.isArray(reviews) ? reviews : [],
+      photos,
+      photoMeta,
+      staffRole: staffRole || 'lecturer',
+      modMap: modMap && typeof modMap === 'object' ? modMap : {},
+    };
   }, [quizId]);
 
   const photoMap = data?.photos || new Map();
@@ -70,6 +81,8 @@ export default function QuizResults() {
   if (error) return <div className="page"><ErrorNote error={error} onRetry={reload} /></div>;
 
   const { quiz, rows, queue, reviews } = data;
+  const isExaminer = data.staffRole === 'external_examiner';
+  const restricted = isTA || isExaminer;
   const pendingReviews = (reviews || []).filter((r) => r.status === 'pending').length;
   const pending = queue.filter((r) => r.marks_awarded === null).length;
   const activeCount = rows.filter((r) => r.status === 'in_progress').length;
@@ -108,7 +121,8 @@ export default function QuizResults() {
   return (
     <>
       <Topbar title={quiz.title} sub={`${quiz.courses.code} · results`}>
-        {isTA ? (
+        {isExaminer && <span className="badge badge-plum">External Examiner · Read-Only</span>}
+        {restricted ? (
           <Link to={`/teach/course/${quiz.courses.id}?tab=quizzes`} className="btn"><Icon name="chevronLeft" /> Quizzes</Link>
         ) : (
           <>
@@ -123,23 +137,30 @@ export default function QuizResults() {
         )}
       </Topbar>
       <div className="page stack">
+        {isExaminer && (
+          <div className="notice notice-info small">
+            <strong>External Examiner View:</strong> Inspect scripts, question analytics, and submit double-blind moderation sign-offs. Score changes and grade release are locked.
+          </div>
+        )}
         {quiz.results_released
           ? <div className="notice notice-info">Results are released. Students can see their scores{quiz.show_answers ? ' and the correct answers' : ''}.</div>
-          : <div className="notice notice-warn">Results are hidden. Students only see "submitted" until {isTA ? 'the lecturer releases' : 'you release'} them.</div>}
+          : <div className="notice notice-warn">Results are hidden. Students only see "submitted" until {restricted ? 'the lecturer releases' : 'you release'} them.</div>}
         <Tabs tabs={[
           { id: 'gradebook', label: 'Gradebook' },
-          { id: 'live', label: 'Live monitor', count: activeCount },
-          { id: 'short', label: 'Short answers' },
-          { id: 'marking', label: 'Written answers', count: pending },
-          ...(reviews?.length ? [{ id: 'reviews', label: 'Mark reviews', count: pendingReviews }] : []),
+          ...(isExaminer ? [] : [
+            { id: 'live', label: 'Live monitor', count: activeCount },
+            { id: 'short', label: 'Short answers' },
+            { id: 'marking', label: 'Written answers', count: pending },
+            ...(reviews?.length ? [{ id: 'reviews', label: 'Mark reviews', count: pendingReviews }] : []),
+          ]),
           ...(isTA ? [] : [{ id: 'analysis', label: 'Question analysis' }, { id: 'integrity', label: 'Integrity checks' }]),
         ]} value={tab}
           onChange={(t) => { setTab(t); if (t === 'gradebook') reload(); }} />
-        {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} ta={isTA} photos={photoMap} photoMeta={photoMeta} />}
-        {tab === 'live' && <LiveQuizMonitor quiz={quiz} isTA={isTA} onMutate={reload} />}
-        {tab === 'short' && <ShortAnswerClusterTab quiz={quiz} onUpdated={reload} onShowSql={() => setShowFeaturesSql(true)} />}
-        {tab === 'marking' && <Marking quiz={quiz} isTA={isTA} queue={queue} onQuizUpdated={(nextQ) => setData((d) => ({ ...d, quiz: nextQ }))} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
-        {tab === 'reviews' && <MarkReviewQueue reviews={reviews || []} onResolved={reload} title="Quiz mark review requests" />}
+        {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} ta={restricted} isExaminer={isExaminer} modMap={data.modMap || {}} photos={photoMap} photoMeta={photoMeta} />}
+        {tab === 'live' && !isExaminer && <LiveQuizMonitor quiz={quiz} isTA={isTA} onMutate={reload} />}
+        {tab === 'short' && !isExaminer && <ShortAnswerClusterTab quiz={quiz} onUpdated={reload} onShowSql={() => setShowFeaturesSql(true)} />}
+        {tab === 'marking' && !isExaminer && <Marking quiz={quiz} isTA={isTA} queue={queue} onQuizUpdated={(nextQ) => setData((d) => ({ ...d, quiz: nextQ }))} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
+        {tab === 'reviews' && !isExaminer && <MarkReviewQueue reviews={reviews || []} onResolved={reload} title="Quiz mark review requests" />}
         {tab === 'analysis' && !isTA && <ItemAnalysis quiz={quiz} />}
         {tab === 'integrity' && !isTA && <Integrity quiz={quiz} rows={rows} photos={photoMap} onShowSql={() => setShowFeaturesSql(true)} />}
       </div>
@@ -179,7 +200,7 @@ function exitText(r) {
   return (r.exit_log || []).map((e) => `${new Date(e.at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} — ${kinds[e.kind] || e.kind}`).join('\n');
 }
 
-function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoMeta = new Map() }) {
+function Gradebook({ quiz, rows: allRows, reload, ta, isExaminer = false, modMap = {}, photos = new Map(), photoMeta = new Map() }) {
   const [filter, setFilter] = useState('all');
   const [scoreBand, setScoreBand] = useState('all');
   const [group, setGroup] = useState(ALL_GROUPS);
@@ -189,9 +210,24 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoM
   const [showLog, setShowLog] = useState(null);
   const [viewPhoto, setViewPhoto] = useState(null);
   const [viewScript, setViewScript] = useState(null);
+  const [modTarget, setModTarget] = useState(null);
+  const [modStatus, setModStatus] = useState('verified');
+  const [modNote, setModNote] = useState('');
   const [purgingPhotos, setPurgingPhotos] = useState(false);
   const [act, busy] = useAction();
   const [nudging, setNudging] = useState(false);
+
+  async function saveModeration() {
+    if (!modTarget?.attempt_id) return;
+    const ok = await act(
+      () => rpc('save_attempt_moderation', { p_attempt: modTarget.attempt_id, p_status: modStatus, p_note: modNote }),
+      modStatus ? `Moderation saved (${modStatus}).` : 'Moderation sign-off cleared.',
+    );
+    if (ok !== undefined) {
+      setModTarget(null);
+      reload();
+    }
+  }
 
   async function deleteSinglePhoto(item) {
     if (!item?.student) return;
@@ -525,12 +561,39 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoM
                           {!r.exits && r.devices <= 1 && <span className="muted small">—</span>}
                         </div>
                       </td>
-                      <td><span className={`badge ${cls}`}>{label}</span></td>
+                      <td>
+                        <div className="row-wrap" style={{ gap: 4 }}>
+                          <span className={`badge ${cls}`}>{label}</span>
+                          {r.attempt_id && modMap?.[r.attempt_id]?.status && (
+                            <span
+                              className={`badge ${modMap[r.attempt_id].status === 'verified' ? 'badge-teal' : 'badge-red'}`}
+                              title={modMap[r.attempt_id].note || `Moderated by ${modMap[r.attempt_id].moderator_name}`}
+                            >
+                              {modMap[r.attempt_id].status === 'verified' ? 'Moderated ✓' : 'Flagged'}
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td style={{ whiteSpace: 'nowrap' }}>
                         <div className="row" style={{ gap: 4 }}>
                           {r.attempt_id && (
                             <button type="button" className="btn btn-sm btn-ghost" onClick={() => setViewScript(r)} title="View every question and student answer choice">
                               <Icon name="eye" size={14} /> View script
+                            </button>
+                          )}
+                          {r.attempt_id && r.status !== 'in_progress' && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-ghost"
+                              title="Record moderation sign-off (verified or flagged)"
+                              onClick={() => {
+                                const cur = modMap?.[r.attempt_id];
+                                setModStatus(cur?.status || 'verified');
+                                setModNote(cur?.note || '');
+                                setModTarget(r);
+                              }}
+                            >
+                              <Icon name="shield" size={14} /> Moderate
                             </button>
                           )}
                           {!ta && r.attempts_used > 0 && (
@@ -590,9 +653,48 @@ function Gradebook({ quiz, rows: allRows, reload, ta, photos = new Map(), photoM
           student={viewScript}
           quiz={quiz}
           isTA={ta}
+          readOnly={isExaminer}
           onClose={() => setViewScript(null)}
           onMarked={reload}
         />
+      )}
+      {modTarget && (
+        <Modal
+          title={`Moderation Sign-Off · ${modTarget.full_name}`}
+          onClose={() => setModTarget(null)}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={() => setModTarget(null)}>Cancel</button>
+              <button type="button" className="btn btn-primary" onClick={saveModeration} disabled={busy}>
+                {busy ? 'Saving…' : 'Save sign-off'}
+              </button>
+            </>
+          }
+        >
+          <div className="stack">
+            <p className="small muted" style={{ margin: 0 }}>
+              Record independent second-marker or external-examiner verification for {modTarget.index_no} ({fmtNumber(modTarget.score)} / {fmtNumber(modTarget.max_score)}).
+            </p>
+            <div className="row-wrap" style={{ gap: 10 }}>
+              {[['verified', 'Verified (approve grading)'], ['flagged', 'Flag for review'], ['', 'Clear moderation']].map(([val, lbl]) => (
+                <label key={val || 'clear'} className="row small" style={{ gap: 6, cursor: 'pointer' }}>
+                  <input type="radio" name="mod-status" checked={modStatus === val} onChange={() => setModStatus(val)} />
+                  <span>{lbl}</span>
+                </label>
+              ))}
+            </div>
+            <label className="stack-sm" style={{ gap: 4 }}>
+              <span className="small strong">Moderation note (internal faculty / examiner log)</span>
+              <textarea
+                className="textarea"
+                rows={3}
+                value={modNote}
+                onChange={(e) => setModNote(e.target.value)}
+                placeholder="Optional note on marking consistency, borderline adjustment, or sampling check…"
+              />
+            </label>
+          </div>
+        </Modal>
       )}
       {viewPhoto && (
         <Modal title={`Verification Photo · ${viewPhoto.student.full_name}`} onClose={() => setViewPhoto(null)}>

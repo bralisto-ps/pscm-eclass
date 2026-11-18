@@ -52,9 +52,14 @@ export default function QuizBuilder() {
     const { count } = await supabase.from('attempts').select('id', { count: 'exact', head: true }).eq('quiz_id', quizId);
     const windows = await run(supabase.from('quiz_windows').select('*').eq('quiz_id', quizId));
     const opts = await run(supabase.from('group_options').select('name').eq('kind', 'stream').order('name'));
-    const classes = quiz ? await rpcAll('course_classes', { p_course: quiz.course_id }) : [];
+    const [classes, outcomesRes] = quiz
+      ? await Promise.all([
+          rpcAll('course_classes', { p_course: quiz.course_id }),
+          supabase.from('course_outcomes').select('code, title').eq('course_id', quiz.course_id).order('code').then((r) => r.data || [], () => []),
+        ])
+      : [[], []];
     const groups = { streams: opts.map((o) => o.name), classes };
-    return { quiz, questions, attempts: count || 0, windows, groups };
+    return { quiz, questions, attempts: count || 0, windows, groups, outcomes: Array.isArray(outcomesRes) ? outcomesRes : [] };
   }, [quizId]);
   const [editing, setEditing] = useState(null); // question id or 'new'
   const [draft, setDraft] = useState(null);
@@ -144,7 +149,7 @@ export default function QuizBuilder() {
 
             {questions.map((q, i) =>
               editing === q.id ? (
-                <QuestionEditor key={q.id} number={i + 1} initial={q} quizId={quiz.id} courseId={quiz.courses.id}
+                <QuestionEditor key={q.id} number={i + 1} initial={q} quizId={quiz.id} courseId={quiz.courses.id} outcomes={data.outcomes || []}
                   onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); reload(); }} />
               ) : (
                 <div key={q.id} className="q-edit">
@@ -153,6 +158,7 @@ export default function QuizBuilder() {
                     <span className="badge">{kindName(q.kind)}</span>
                     {q.kind === 'numeric' && q.formula && <span className="badge badge-blue">Unique figures</span>}
                     {q.topic && <span className="badge badge-plum">{q.topic}</span>}
+                    {q.clo_code && <span className="badge badge-teal">{q.clo_code}</span>}
                     <span className="spacer" />
                     <span className="small muted nowrap">{fmtNumber(q.marks)} mark{Number(q.marks) === 1 ? '' : 's'}</span>
                     <button type="button" className="icon-btn plain" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}><Icon name="arrowUp" /></button>
@@ -172,7 +178,7 @@ export default function QuizBuilder() {
             )}
 
             {editing === 'new' && draft && (
-              <QuestionEditor number={questions.length + 1} initial={draft} quizId={quiz.id} courseId={quiz.courses.id} isNew
+              <QuestionEditor number={questions.length + 1} initial={draft} quizId={quiz.id} courseId={quiz.courses.id} outcomes={data.outcomes || []} isNew
                 onCancel={() => { setEditing(null); setDraft(null); }}
                 onSaved={(again) => { setDraft(null); reload(); if (again) startNew(again); else setEditing(null); }} />
             )}
@@ -354,7 +360,7 @@ const PSCM_FORMULA_PRESETS = [
 ];
 
 // ---------------- question editor ----------------
-function QuestionEditor({ number, initial, quizId, courseId, isNew, onCancel, onSaved }) {
+function QuestionEditor({ number, initial, quizId, courseId, outcomes = [], isNew, onCancel, onSaved }) {
   const toast = useToast();
   const diagramInputRef = useRef(null);
   const [q, setQ] = useState(() => ({
@@ -382,6 +388,7 @@ function QuestionEditor({ number, initial, quizId, courseId, isNew, onCancel, on
   function buildRow() {
     const row = {
       quiz_id: quizId, kind: q.kind, prompt: q.prompt.trim(), marks: Number(q.marks) || 0, explanation: q.explanation || '', topic: (q.topic || '').trim(),
+      clo_code: (q.clo_code || '').trim(),
       position: q.position, options: [], answer: {}, params: {}, formula: null, unit: q.unit || '',
       decimals: Number(q.decimals) || 0, tolerance: Number(q.tolerance) || 0, tolerance_type: q.tolerance_type || 'abs',
     };
@@ -512,8 +519,18 @@ function QuestionEditor({ number, initial, quizId, courseId, isNew, onCancel, on
         const r = await rpc('test_formula', { p_formula: row.formula, p_params: row.params });
         if (r.error) throw new Error(`The formula does not work yet: ${r.error}`);
       }
-      if (isNew) await run(supabase.from('questions').insert(row));
-      else await run(supabase.from('questions').update(row).eq('id', initial.id));
+      try {
+        if (isNew) await run(supabase.from('questions').insert(row));
+        else await run(supabase.from('questions').update(row).eq('id', initial.id));
+      } catch (colErr) {
+        if (!row.clo_code && /clo_code|column/i.test(colErr?.message || '')) {
+          const { clo_code: _omit, ...fallbackRow } = row;
+          if (isNew) await run(supabase.from('questions').insert(fallbackRow));
+          else await run(supabase.from('questions').update(fallbackRow).eq('id', initial.id));
+        } else {
+          throw colErr;
+        }
+      }
       if (initial.image_path && initial.image_path !== (q.image_path || '')) {
         await removeQuestionImage(initial.image_path);
       }
@@ -534,7 +551,18 @@ function QuestionEditor({ number, initial, quizId, courseId, isNew, onCancel, on
         <span className="spacer" />
         <label className="row small" style={{ gap: 6 }}>
           Topic
-          <input className="input" style={{ width: 170, minHeight: 36 }} value={q.topic || ''} onChange={(e) => set('topic', e.target.value)} placeholder="optional" />
+          <input className="input" style={{ width: 150, minHeight: 36 }} value={q.topic || ''} onChange={(e) => set('topic', e.target.value)} placeholder="optional" />
+        </label>
+        <label className="row small" style={{ gap: 6 }}>
+          CLO
+          {outcomes.length > 0 ? (
+            <select className="select" style={{ width: 145, minHeight: 36 }} value={q.clo_code || ''} onChange={(e) => set('clo_code', e.target.value)}>
+              <option value="">None</option>
+              {outcomes.map((o) => <option key={o.code} value={o.code}>{o.code}</option>)}
+            </select>
+          ) : (
+            <input className="input" style={{ width: 95, minHeight: 36 }} value={q.clo_code || ''} onChange={(e) => set('clo_code', e.target.value)} placeholder="CLO1" />
+          )}
         </label>
         <label className="row small" style={{ gap: 6 }}>
           Marks

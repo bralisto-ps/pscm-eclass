@@ -29,6 +29,9 @@ const ACTION_LABELS = {
   assignment_exemplar_added: 'Added exemplar',
   booking_event_created: 'Created slot schedule',
   exam_seating_saved: 'Saved exam seating',
+  pdf_annotations_saved: 'PDF annotations',
+  attempt_moderated: 'Moderated quiz',
+  clo_outcome_saved: 'Saved CLO',
 };
 
 const AUDIT_SQL_SNIPPET = `create table if not exists public.course_audit_logs (

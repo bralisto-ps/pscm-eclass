@@ -15,8 +15,12 @@ function dayKey(d) {
 }
 
 async function fetchDashboardBundle() {
-  const overview = await rpc('lecturer_overview');
+  const [overview, staffRoles] = await Promise.all([
+    rpc('lecturer_overview'),
+    rpc('my_staff_roles').catch(() => ({})),
+  ]);
   const courses = Array.isArray(overview) ? overview : [];
+  const rolesMap = staffRoles && typeof staffRoles === 'object' ? staffRoles : {};
   if (!courses.length) {
     return {
       courses,
@@ -30,6 +34,7 @@ async function fetchDashboardBundle() {
       unansweredQa: [],
       attentionItems: [],
       attentionCounts: { messages: 0, excuses: 0, reviews: 0, qa: 0 },
+      staffRoles: rolesMap,
     };
   }
 
@@ -299,6 +304,7 @@ async function fetchDashboardBundle() {
     liveQuizTakers,
     dailyPulse: pulseDays,
     unansweredQa: unansweredQa.slice(0, 4),
+    staffRoles: rolesMap,
   };
 }
 
@@ -643,7 +649,14 @@ export default function Dashboard() {
                     <div className="card small muted">No courses match “{search}”.</div>
                   ) : (
                     <div className="grid-2">
-                      {filteredCourses.map((c) => <CourseCard key={c.id} c={c} isTA={isTA} />)}
+                      {filteredCourses.map((c) => (
+      <CourseCard
+        key={c.id}
+        c={c}
+        isTA={isTA}
+        courseRole={bundle?.staffRoles?.[c.id] || (isTA ? 'ta' : 'lecturer')}
+      />
+    ))}
                     </div>
                   )}
                 </main>
@@ -835,15 +848,25 @@ export default function Dashboard() {
   );
 }
 
-function CourseCard({ c, isTA }) {
+function CourseCard({ c, isTA, courseRole = 'lecturer' }) {
   const unactivated = Math.max(0, (c.students || 0) - (c.activated || 0));
+  const effectiveRole = courseRole || (isTA ? 'ta' : 'lecturer');
+  const isExaminer = effectiveRole === 'external_examiner';
+  const canManage = effectiveRole === 'lecturer' || effectiveRole === 'co_lecturer';
+  const roleTag = effectiveRole === 'co_lecturer'
+    ? 'Co-Lecturer'
+    : effectiveRole === 'external_examiner'
+      ? 'External Examiner'
+      : effectiveRole === 'ta' && isTA
+        ? 'TA'
+        : '';
   return (
     <article className="course-card-ed">
       <Link to={`/teach/course/${c.id}`} className="course-card-band-link">
         <div className="course-card-band" style={{ backgroundColor: c.color }}>
           <div className="course-card-meta">
             <span className="mono">{c.code}{c.semester ? ` · ${c.semester}` : ''}</span>
-            {c.to_mark > 0 && (
+            {c.to_mark > 0 && !isExaminer && (
               <span className="strong nowrap" style={{ color: '#fde68a' }}>
                 {c.to_mark} to mark
               </span>
@@ -868,10 +891,10 @@ function CourseCard({ c, isTA }) {
               {unactivated} student{unactivated === 1 ? '' : 's'} not yet activated
             </Link>
           )}
-          <span className="mono tiny muted">{c.semester || 'Active'}</span>
+          <span className="mono tiny muted">{roleTag || c.semester || 'Active'}</span>
         </div>
         <div className="course-card-links">
-          {!isTA && (
+          {canManage && (
             <>
               <Link to={`/teach/course/${c.id}?tab=materials`}>Materials</Link>
               <span className="muted" aria-hidden="true">·</span>
@@ -880,9 +903,13 @@ function CourseCard({ c, isTA }) {
           <Link to={`/teach/course/${c.id}?tab=quizzes`}>Quizzes</Link>
           <span className="muted" aria-hidden="true">·</span>
           <Link to={`/teach/course/${c.id}?tab=assignments`}>Assignments</Link>
-          <span className="muted" aria-hidden="true">·</span>
-          <Link to={`/teach/course/${c.id}?tab=attendance`}>Attendance</Link>
-          {!isTA && (
+          {!isExaminer && (
+            <>
+              <span className="muted" aria-hidden="true">·</span>
+              <Link to={`/teach/course/${c.id}?tab=attendance`}>Attendance</Link>
+            </>
+          )}
+          {(canManage || isExaminer) && (
             <>
               <span className="muted" aria-hidden="true">·</span>
               <Link to={`/teach/course/${c.id}?tab=ca`}>CA &amp; Grades</Link>

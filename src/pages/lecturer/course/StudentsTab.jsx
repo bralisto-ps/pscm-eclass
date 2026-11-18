@@ -96,7 +96,7 @@ async function buildUnifiedRiskMap(course, students = []) {
   return unified;
 }
 
-export default function StudentsTab({ course, ta }) {
+export default function StudentsTab({ course, ta, readOnly = false }) {
   const toast = useToast();
   const { data: loaded, error, loading, reload } = useLoad(async () => {
     const [students, options] = await Promise.all([
@@ -308,11 +308,11 @@ export default function StudentsTab({ course, ta }) {
             />
           </div>
           <div className="row-wrap">
-            <button type="button" className="btn btn-sm" style={{ borderColor: 'var(--red-ink)', color: 'var(--red-ink)', background: 'var(--red-50)' }} onClick={() => setOutreach(true)} title="Open At-Risk Radar & Personalized Bulk Advisory"><Icon name="alert" size={16} /> At-Risk Radar{risk?.size ? ` (${risk.size})` : ''}</button>
-            {data.length - activated > 0 && <button type="button" className="btn btn-sm" onClick={copyUnactivated} title="Copy index numbers of unactivated students"><Icon name="copy" size={15} /> Copy unactivated ({data.length - activated})</button>}
+            {!readOnly && <button type="button" className="btn btn-sm" style={{ borderColor: 'var(--red-ink)', color: 'var(--red-ink)', background: 'var(--red-50)' }} onClick={() => setOutreach(true)} title="Open At-Risk Radar & Personalized Bulk Advisory"><Icon name="alert" size={16} /> At-Risk Radar{risk?.size ? ` (${risk.size})` : ''}</button>}
+            {!readOnly && data.length - activated > 0 && <button type="button" className="btn btn-sm" onClick={copyUnactivated} title="Copy index numbers of unactivated students"><Icon name="copy" size={15} /> Copy unactivated ({data.length - activated})</button>}
             {data.length > 0 && <button type="button" className="btn btn-sm" onClick={exportList}><Icon name="download" size={16} /> {rows.length !== data.length ? `Export (${rows.length})` : 'Export'}</button>}
-            <button type="button" className="btn btn-sm" onClick={() => setAdding(true)}><Icon name="plus" size={16} /> Add student</button>
-            <button type="button" className="btn btn-sm btn-primary" onClick={() => setImporting(true)}><Icon name="upload" size={16} /> Upload class list</button>
+            {!readOnly && <button type="button" className="btn btn-sm" onClick={() => setAdding(true)}><Icon name="plus" size={16} /> Add student</button>}
+            {!readOnly && <button type="button" className="btn btn-sm btn-primary" onClick={() => setImporting(true)}><Icon name="upload" size={16} /> Upload class list</button>}
           </div>
         </div>
         {hasFilters && data.length > 0 && (
@@ -395,7 +395,7 @@ export default function StudentsTab({ course, ta }) {
                       <div className="row" style={{ justifyContent: 'flex-end', gap: 4 }}>
                         <button type="button" className="icon-btn plain" title={`View 360° profile for ${r.full_name}`} onClick={() => setViewingStudent(r)}><Icon name="user" size={16} /></button>
                         <button type="button" className="icon-btn plain" title={`Send academic advisory to ${r.full_name}`} onClick={() => setTargetStudent(r)}><Icon name="chat" size={16} /></button>
-                        {r.activated && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setResetting(r)}><Icon name="key" size={16} /> Reset password</button>}
+                        {!readOnly && r.activated && <button type="button" className="btn btn-sm btn-ghost" onClick={() => setResetting(r)}><Icon name="key" size={16} /> Reset password</button>}
                         {!ta && <button type="button" className="icon-btn plain" aria-label={`Edit ${r.full_name}`} onClick={() => setEditing(r)}><Icon name="edit" /></button>}
                         {!ta && <button type="button" className="icon-btn plain" aria-label={`Remove ${r.full_name} from course`} onClick={() => setRemoving(r)}><Icon name="trash" /></button>}
                       </div>

@@ -8,6 +8,7 @@ import { isItemLocked, toLocalInputValue } from '../../../lib/courseMeta.js';
 import Icon from '../../../components/Icon.jsx';
 import BulkNudgeModal from '../../../components/BulkNudgeModal.jsx';
 import PscmToolkitModal from '../../../components/PscmToolkit.jsx';
+import LiveSlideSyncModal from '../../../components/LiveSlideSyncModal.jsx';
 import { Bar, Confirm, Empty, ErrorNote, Field, KindTag, Loading, Modal, Tabs, useAction, useLoad, useToast } from '../../../components/ui.jsx';
 
 const MAX_MB = 25;
@@ -29,16 +30,17 @@ function kindFromUrl(url) {
 
 export default function MaterialsTab({ course }) {
   const { data, error, loading, reload } = useLoad(async () => {
-    const [modules, materials, stats] = await Promise.all([
+    const [modules, materials, stats, quizzes] = await Promise.all([
       run(supabase.from('modules').select('*').eq('course_id', course.id).order('week_no', { nullsFirst: false }).order('position')),
       run(supabase.from('materials').select('*').eq('course_id', course.id).order('position').order('created_at')),
       rpc('material_engagement', { p_course: course.id }).catch(() => null),
+      supabase.from('quizzes').select('id, title').eq('course_id', course.id).order('created_at').then((r) => r.data || [], () => []),
     ]);
     const statMap = new Map();
     if (Array.isArray(stats)) {
       stats.forEach((s) => statMap.set(s.material_id, s));
     }
-    return { modules, materials, statMap, statsSupported: Array.isArray(stats) };
+    return { modules, materials, statMap, statsSupported: Array.isArray(stats), quizzes: Array.isArray(quizzes) ? quizzes : [] };
   }, [course.id]);
   const [editingWeek, setEditingWeek] = useState(null); // {} for new
   const [adding, setAdding] = useState(null); // module id or 'general'
@@ -47,6 +49,7 @@ export default function MaterialsTab({ course }) {
   const [previewing, setPreviewing] = useState(null);
   const [viewersOf, setViewersOf] = useState(null);
   const [toolkitOpen, setToolkitOpen] = useState(false);
+  const [liveSyncing, setLiveSyncing] = useState(null);
   const [act, busy] = useAction();
 
   if (loading) return <Loading />;
@@ -105,12 +108,14 @@ export default function MaterialsTab({ course }) {
           title={m.week_no ? `Week ${m.week_no} · ${m.title}` : m.title}
           summary={m.summary}
           unlockAt={m.unlock_at}
+          hasPrereq={Boolean(m.prereq_module_id || m.prereq_quiz_id)}
           items={data.materials.filter((x) => x.module_id === m.id)}
           onAdd={() => setAdding(m.id)}
           onEdit={() => setEditingWeek(m)}
           onDeleteWeek={() => setRemoving({ type: 'module', item: m })}
           onDelete={(item) => setRemoving({ type: 'material', item })}
           onPreview={(item) => setPreviewing(item)}
+          onLiveSync={(item) => setLiveSyncing(item)}
           onViewers={(item) => setViewersOf(item)}
           onToggleLock={async (item) => {
             const nextPath = setViewOnlyFlag(item.storage_path, !isViewOnlyPath(item.storage_path));
@@ -133,6 +138,7 @@ export default function MaterialsTab({ course }) {
         onAdd={() => setAdding('general')}
         onDelete={(item) => setRemoving({ type: 'material', item })}
         onPreview={(item) => setPreviewing(item)}
+        onLiveSync={(item) => setLiveSyncing(item)}
         onViewers={(item) => setViewersOf(item)}
         onToggleLock={async (item) => {
           const nextPath = setViewOnlyFlag(item.storage_path, !isViewOnlyPath(item.storage_path));
@@ -148,7 +154,8 @@ export default function MaterialsTab({ course }) {
         muted
       />
 
-      {editingWeek && <WeekForm course={course} week={editingWeek} onClose={() => setEditingWeek(null)} onSaved={reload} />}
+      {editingWeek && <WeekForm course={course} week={editingWeek} modules={data.modules || []} quizzes={data.quizzes || []} onClose={() => setEditingWeek(null)} onSaved={reload} />}
+      {liveSyncing && <LiveSlideSyncModal course={course} material={liveSyncing} isPresenter onClose={() => setLiveSyncing(null)} />}
       {adding && <MaterialForm course={course} moduleId={adding === 'general' ? null : adding} onClose={() => setAdding(null)} onSaved={reload} />}
       {previewing && (
         <Suspense fallback={<div className="secure-reader-backdrop" style={{ alignItems: 'center', justifyContent: 'center' }}><div className="spinner" /></div>}>
@@ -186,7 +193,7 @@ export default function MaterialsTab({ course }) {
   );
 }
 
-function WeekCard({ title, summary, unlockAt, items, onAdd, onEdit, onDeleteWeek, onDelete, onPreview, onViewers, onToggleLock, statMap, statsSupported, act, muted }) {
+function WeekCard({ title, summary, unlockAt, hasPrereq, items, onAdd, onEdit, onDeleteWeek, onDelete, onPreview, onLiveSync, onViewers, onToggleLock, statMap, statsSupported, act, muted }) {
   const weekLocked = isItemLocked(unlockAt);
   return (
     <section className="card-flush" style={muted ? { background: 'var(--surface-2)' } : undefined}>
@@ -197,6 +204,11 @@ function WeekCard({ title, summary, unlockAt, items, onAdd, onEdit, onDeleteWeek
             {weekLocked && (
               <span className="badge badge-amber" style={{ fontSize: 11 }}>
                 <Icon name="clock" size={11} /> Scheduled · unlocks {fmtDateTime(unlockAt)}
+              </span>
+            )}
+            {hasPrereq && (
+              <span className="badge badge-plum" style={{ fontSize: 11 }}>
+                <Icon name="lock" size={11} /> Mastery prerequisite
               </span>
             )}
           </div>
@@ -246,6 +258,16 @@ function WeekCard({ title, summary, unlockAt, items, onAdd, onEdit, onDeleteWeek
                 title="See who viewed and nudge students who haven't opened yet"
               >
                 <Icon name="users" size={14} /> Viewers
+              </button>
+            )}
+            {isPdf && !m.url && onLiveSync && (
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                title="Present slides live — students follow your page & pulse clarity in real time"
+                onClick={() => onLiveSync(m)}
+              >
+                <Icon name="play" size={14} /> Live sync
               </button>
             )}
             {isPdf && onToggleLock && (
@@ -443,14 +465,18 @@ function MaterialViewersModal({ course, material, onClose }) {
   );
 }
 
-function WeekForm({ course, week, onClose, onSaved }) {
+function WeekForm({ course, week, modules = [], quizzes = [], onClose, onSaved }) {
   const [act, busy] = useAction();
   const [f, setF] = useState({
     week_no: week.week_no ?? '',
     title: week.title || '',
     summary: week.summary || '',
     unlock_at: toLocalInputValue(week.unlock_at),
+    prereq_module_id: week.prereq_module_id || '',
+    prereq_quiz_id: week.prereq_quiz_id || '',
+    prereq_min_pct: week.prereq_min_pct ?? 50,
   });
+  const otherModules = modules.filter((m) => m.id !== week.id);
   async function save() {
     const baseRow = {
       course_id: course.id,
@@ -459,17 +485,26 @@ function WeekForm({ course, week, onClose, onSaved }) {
       summary: f.summary,
     };
     const unlockIso = f.unlock_at ? new Date(f.unlock_at).toISOString() : null;
-    const rowWithUnlock = { ...baseRow, unlock_at: unlockIso };
+    const rowWithUnlock = {
+      ...baseRow,
+      unlock_at: unlockIso,
+      prereq_module_id: f.prereq_module_id || null,
+      prereq_quiz_id: f.prereq_quiz_id || null,
+      prereq_min_pct: Math.max(0, Math.min(100, Number(f.prereq_min_pct) || 50)),
+    };
     const ok = await act(async () => {
       try {
         return week.id
           ? await run(supabase.from('modules').update(rowWithUnlock).eq('id', week.id))
           : await run(supabase.from('modules').insert(rowWithUnlock));
       } catch (err) {
-        if (!f.unlock_at && /unlock_at|column/i.test(err?.message || '')) {
-          return week.id
-            ? await run(supabase.from('modules').update(baseRow).eq('id', week.id))
-            : await run(supabase.from('modules').insert(baseRow));
+        if (/prereq_|unlock_at|column/i.test(err?.message || '')) {
+          if (!f.prereq_module_id && !f.prereq_quiz_id) {
+            const safeRow = /unlock_at/i.test(err?.message || '') && !f.unlock_at ? baseRow : { ...baseRow, unlock_at: unlockIso };
+            return week.id
+              ? await run(supabase.from('modules').update(safeRow).eq('id', week.id))
+              : await run(supabase.from('modules').insert(safeRow));
+          }
         }
         throw err;
       }
@@ -498,6 +533,33 @@ function WeekForm({ course, week, onClose, onSaved }) {
           )}
         </div>
       </Field>
+      <div className="stack-sm" style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+        <strong className="small">Mastery / Prerequisite Gate (optional)</strong>
+        <span className="tiny muted">Lock this week for students until they open every material in a previous week and/or pass a prerequisite quiz.</span>
+        <div className="grid-2">
+          <Field label="Must open all items in week">
+            <select className="select" value={f.prereq_module_id} onChange={(e) => setF({ ...f, prereq_module_id: e.target.value })}>
+              <option value="">No prior week required</option>
+              {otherModules.map((m) => (
+                <option key={m.id} value={m.id}>{m.week_no ? `Week ${m.week_no} · ${m.title}` : m.title}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Must pass quiz">
+            <select className="select" value={f.prereq_quiz_id} onChange={(e) => setF({ ...f, prereq_quiz_id: e.target.value })}>
+              <option value="">No prerequisite quiz</option>
+              {quizzes.map((qz) => (
+                <option key={qz.id} value={qz.id}>{qz.title}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        {f.prereq_quiz_id && (
+          <Field label="Minimum quiz score (%)">
+            <input className="input mono" type="number" min="0" max="100" style={{ maxWidth: 120 }} value={f.prereq_min_pct} onChange={(e) => setF({ ...f, prereq_min_pct: e.target.value })} />
+          </Field>
+        )}
+      </div>
     </Modal>
   );
 }

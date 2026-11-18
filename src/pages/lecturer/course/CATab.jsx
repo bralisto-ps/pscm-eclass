@@ -70,7 +70,7 @@ const blank = (kind, weight) => ({
   max_score: kind === 'manual' ? 100 : 100,
 });
 
-export default function CATab({ course, onCourseChanged }) {
+export default function CATab({ course, readOnly = false, onCourseChanged }) {
   const { data, error, loading, reload } = useLoad(async () => {
     const [components, quizzes, assignments, rows, freshCourse] = await Promise.all([
       run(supabase.from('ca_components').select('*').eq('course_id', course.id).order('position').order('created_at')),
@@ -527,9 +527,11 @@ function CAInner({ course, data, reload, onCourseChanged }) {
           </p>
         </div>
         <div className="row-wrap">
-          <button type="button" className={`btn btn-sm ${examConfig.released ? 'btn-primary' : ''}`} onClick={() => setExamModal(true)} title="Enter marks or release full exam scores to students">
-            <Icon name="edit" size={15} /> {examConfig.released ? 'Exam Scores (Released ✓)' : 'Enter/Release Exam (/60)'}
-          </button>
+          {!readOnly && (
+            <button type="button" className={`btn btn-sm ${examConfig.released ? 'btn-primary' : ''}`} onClick={() => setExamModal(true)} title="Enter marks or release full exam scores to students">
+              <Icon name="edit" size={15} /> {examConfig.released ? 'Exam Scores (Released ✓)' : 'Enter/Release Exam (/60)'}
+            </button>
+          )}
           <button type="button" className="btn btn-sm" onClick={exportOfficialCsv} title="Download 2-CA CSV for Registrar / SIS upload">
             <Icon name="download" size={15} /> Export CSV
           </button>
@@ -540,7 +542,7 @@ function CAInner({ course, data, reload, onCourseChanged }) {
       </div>
 
       {/* CA Configuration Section */}
-      <section className="card stack">
+      {!readOnly && <section className="card stack">
         <div className="between" style={{ flexWrap: 'wrap' }}>
           <div className="stack-sm" style={{ gap: 2 }}>
             <h2>How CA (40%) is worked out</h2>
@@ -638,7 +640,7 @@ function CAInner({ course, data, reload, onCourseChanged }) {
             <button type="button" className="btn btn-primary" disabled={busy || !dirty} onClick={() => act(save, 'CA and column setup saved.')}>Save setup</button>
           </div>
         </div>
-      </section>
+      </section>}
 
 
       {/* Exam-Board Grade Distribution & Borderline Review */}
@@ -675,14 +677,16 @@ function CAInner({ course, data, reload, onCourseChanged }) {
               >
                 <Icon name="filter" size={14} /> Filter Borderline ({boardStats.borderlineRows.length})
               </button>
-              <button
-                type="button"
-                className="btn btn-sm btn-primary"
-                onClick={() => setBorderlineModal(true)}
-                disabled={boardStats.borderlineRows.length === 0}
-              >
-                <Icon name="award" size={14} /> Review Borderline ({boardStats.borderlineRows.length})
-              </button>
+              {!readOnly && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  onClick={() => setBorderlineModal(true)}
+                  disabled={boardStats.borderlineRows.length === 0}
+                >
+                  <Icon name="award" size={14} /> Review Borderline ({boardStats.borderlineRows.length})
+                </button>
+              )}
             </div>
           </div>
 

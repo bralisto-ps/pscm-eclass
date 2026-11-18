@@ -16,12 +16,15 @@ import { isViewOnlyPath, openStoredFile, setViewOnlyFlag, uploadFile, SUBMISSION
 const SecureSlideViewer = lazy(() => import('../../components/SecureSlideViewer.jsx'));
 import CheckInModal from '../../components/CheckIn.jsx';
 import Forum from '../../components/Forum.jsx';
+import NotificationBell from '../../components/NotificationBell.jsx';
+import LiveSlideSyncModal from '../../components/LiveSlideSyncModal.jsx';
+import PdfAnnotatorModal from '../../components/PdfAnnotatorModal.jsx';
 import { useAuth } from '../../lib/auth.jsx';
 import { fmtBytes, fmtDateTime, fmtFull, fmtNumber, hostOf, pct, relative } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
 import StudentPollsFeedback, { LivePollBanner } from '../../components/StudentPollsFeedback.jsx';
 import {
-  CourseSkeleton, Empty, ErrorBoundary, ErrorNote, Field, KindTag, Loading, Modal, Tabs, useAction, useLoad, useToast,
+  Bar, CourseSkeleton, Empty, ErrorBoundary, ErrorNote, Field, KindTag, Loading, Modal, Tabs, useAction, useLoad, useToast,
 } from '../../components/ui.jsx';
 
 const TABS = [
@@ -44,9 +47,45 @@ export default function StudentCourse() {
   const tab = params.get('tab') || 'materials';
   const setTab = (t) => setParams({ tab: t }, { replace: true });
   const [checkingIn, setCheckingIn] = useState(false);
+  const [liveSession, setLiveSession] = useState(null);
+  const [liveModalOpen, setLiveModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!courseId || liveModalOpen) return undefined;
+    const ch = supabase.channel(`live-slides:${courseId}`);
+    const readPresenter = () => {
+      try {
+        const state = ch.presenceState();
+        let active = null;
+        for (const entries of Object.values(state || {})) {
+          for (const e of entries || []) {
+            if (e?.role === 'presenter' && e?.materialId) {
+              active = e;
+            }
+          }
+        }
+        setLiveSession(active);
+      } catch { /* ignore */ }
+    };
+    ch.on('presence', { event: 'sync' }, readPresenter)
+      .on('broadcast', { event: 'slide-sync' }, ({ payload }) => {
+        if (payload?.materialId) {
+          setLiveSession({
+            role: 'presenter',
+            materialId: payload.materialId,
+            title: payload.title || 'Live lecture slides',
+            page: payload.page || 1,
+          });
+        }
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [courseId, liveModalOpen]);
 
   const { data, error, loading, reload } = useLoad(async () => {
-    const [course, modules, materials, news, quizzes, assignments, attendance, ca, viewsRes, cohort, excuses, reviews, annReads, attCounts, exemplars, seats] = await Promise.all([
+    const [course, modules, materials, news, quizzes, assignments, attendance, ca, viewsRes, cohort, excuses, reviews, annReads, attCounts, exemplars, seats, gatesMap] = await Promise.all([
       run(supabase.from('courses').select('*').eq('id', courseId).maybeSingle()),
       run(supabase.from('modules').select('*').eq('course_id', courseId).order('week_no', { nullsFirst: false }).order('position')),
       run(supabase.from('materials').select('*').eq('course_id', courseId).order('position').order('created_at')),
@@ -63,6 +102,7 @@ export default function StudentCourse() {
       rpc('student_attention_counts', { p_course: courseId }).catch(() => null),
       rpc('course_assignment_exemplars', { p_course: courseId }).catch(() => []),
       rpc('course_exam_seating', { p_course: courseId }).catch(() => []),
+      rpc('course_module_gates', { p_course: courseId }).catch(() => ({})),
     ]);
     return {
       course,
@@ -81,6 +121,7 @@ export default function StudentCourse() {
       attCounts: attCounts || { unread_announcements: 0, open_polls: 0 },
       exemplars: Array.isArray(exemplars) ? exemplars : [],
       seats: Array.isArray(seats) ? seats : [],
+      gatesMap: gatesMap && typeof gatesMap === 'object' ? gatesMap : {},
     };
   }, [courseId]);
 
@@ -139,6 +180,7 @@ export default function StudentCourse() {
           <Link to="/" className="small">← Home</Link>
           <div className="row-wrap">
             {course.semester && <span className="band-chip hide-sm">{course.semester}</span>}
+            <NotificationBell dark />
             <button type="button" className={`btn btn-sm ${openAttendance ? 'btn-light' : ''}`} onClick={() => setCheckingIn(true)}
               style={openAttendance ? undefined : { background: 'rgba(0,0,0,.2)', borderColor: 'transparent', color: '#fff' }}>
               <Icon name="check" size={16} /> {openAttendance ? 'Check in now' : 'Check in'}
@@ -153,6 +195,23 @@ export default function StudentCourse() {
       </header>
 
       <div className="page">
+        {liveSession && (() => {
+          const mat = data.materials.find((m) => m.id === liveSession.materialId);
+          if (!mat) return null;
+          return (
+            <div className="live-sync-strip" style={{ marginBottom: 14 }}>
+              <div className="row" style={{ gap: 10 }}>
+                <span className="badge badge-teal">LIVE SLIDES</span>
+                <span className="small">
+                  <strong>{mat.title}</strong> · Lecturer is on Slide {liveSession.page || 1}
+                </span>
+              </div>
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => setLiveModalOpen(true)}>
+                <Icon name="play" size={14} /> Follow live slides
+              </button>
+            </div>
+          );
+        })()}
         {tab !== 'polls' && <LivePollBanner courseId={course.id} onOpenTab={() => setTab('polls')} />}
         <ErrorBoundary key={tab}>
           {tab === 'materials' && <Materials data={data} course={course} profile={profile} onQuizzes={() => setTab('quizzes')} graded={graded} />}
@@ -177,6 +236,19 @@ export default function StudentCourse() {
         </ErrorBoundary>
       </div>
       {checkingIn && <CheckInModal courseId={course.id} courseCode={course.code} askRow={data.attendance?.ask_row} onClose={() => setCheckingIn(false)} onDone={reload} />}
+      {liveModalOpen && liveSession && (() => {
+        const mat = data.materials.find((m) => m.id === liveSession.materialId);
+        if (!mat) return null;
+        return (
+          <LiveSlideSyncModal
+            course={course}
+            material={mat}
+            isPresenter={false}
+            initialPage={liveSession.page || 1}
+            onClose={() => setLiveModalOpen(false)}
+          />
+        );
+      })()}
     </>
   );
 }
@@ -194,9 +266,15 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
     if (loose.length) g.unshift({ id: 'general', title: 'General', week_no: null, summary: '', items: loose });
     return g;
   }, [data]);
+  const gatesMap = data.gatesMap || {};
+  const totalMaterials = data.materials.length;
+  const totalViewed = data.materials.filter((m) => viewedSet.has(m.id)).length;
+  const progressPct = totalMaterials > 0 ? Math.round((totalViewed / totalMaterials) * 100) : 0;
   const latest = [...groups].reverse().find((g) => g.items.length) || groups[0];
   const [selected, setSelected] = useState(latest?.id);
   const current = groups.find((g) => g.id === selected) || latest;
+  const currentGate = current ? gatesMap[current.id] : null;
+  const currentPrereqLocked = Boolean(currentGate && currentGate.unlocked === false);
   const nextQuiz = graded.find((q) => !q.best && (!q.closes_at || new Date(q.closes_at) > new Date()));
 
   function open(m) {
@@ -233,9 +311,21 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
   return (
     <div className="three-col">
       <nav aria-label="Course outline" className="week-rail">
+        {totalMaterials > 0 && (
+          <div className="card-soft stack-sm" style={{ padding: '10px 12px', marginBottom: 10 }}>
+            <div className="between tiny">
+              <strong style={{ color: 'var(--text)' }}>Course Progress</strong>
+              <span className="mono">{progressPct}%</span>
+            </div>
+            <Bar value={progressPct} />
+            <span className="tiny muted">{totalViewed} of {totalMaterials} item{totalMaterials === 1 ? '' : 's'} opened</span>
+          </div>
+        )}
         <span className="eyebrow" style={{ padding: '0 10px 6px' }}>Course Outline</span>
         {groups.map((g) => {
           const viewedCount = g.items.filter((m) => viewedSet.has(m.id)).length;
+          const gate = gatesMap[g.id];
+          const gateLocked = Boolean(gate && gate.unlocked === false);
           return (
             <button
               key={g.id}
@@ -246,7 +336,7 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
               <span className="week-badge">{g.week_no ? `W${g.week_no}` : 'GEN'}</span>
               <span style={{ flex: 1, minWidth: 0 }}>
                 <div className="row" style={{ gap: 5, alignItems: 'center' }}>
-                  {isItemLocked(g.unlock_at) && <Icon name="lock" size={12} style={{ color: 'var(--amber-ink)', flexShrink: 0 }} />}
+                  {(isItemLocked(g.unlock_at) || gateLocked) && <Icon name="lock" size={12} style={{ color: 'var(--amber-ink)', flexShrink: 0 }} />}
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>
                     {g.week_no ? g.title || `Week ${g.week_no}` : g.title}
                   </span>
@@ -254,7 +344,9 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
                 <div className="tiny muted">
                   {isItemLocked(g.unlock_at)
                     ? `Unlocks ${fmtDateTime(g.unlock_at)}`
-                    : `${g.items.length} ${g.items.length === 1 ? 'item' : 'items'}${viewedCount > 0 ? ` · ${viewedCount} viewed` : ''}`}
+                    : gateLocked
+                      ? 'Prerequisite locked'
+                      : `${g.items.length} ${g.items.length === 1 ? 'item' : 'items'}${viewedCount > 0 ? ` · ${viewedCount} viewed` : ''}`}
                 </div>
               </span>
             </button>
@@ -276,6 +368,28 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
                 </div>
                 <strong>This week is scheduled to unlock later</strong>
                 <span className="small muted">Materials for this week open on <strong>{fmtDateTime(current.unlock_at)}</strong>.</span>
+              </div>
+            ) : currentPrereqLocked ? (
+              <div className="card stack-sm" style={{ background: 'var(--surface-2)', textAlign: 'center', padding: '28px 20px' }}>
+                <div style={{ margin: '0 auto', width: 40, height: 40, borderRadius: '50%', background: 'var(--amber-50)', color: 'var(--amber-ink)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Icon name="lock" size={20} />
+                </div>
+                <strong>Mastery prerequisite required to unlock this week</strong>
+                <div className="small muted stack-sm" style={{ gap: 4 }}>
+                  {currentGate.prereq_module_id && (
+                    <span>Open all materials in <strong>{currentGate.prereq_module_title || 'the prerequisite week'}</strong></span>
+                  )}
+                  {currentGate.prereq_quiz_id && (
+                    <span>Score at least <strong>{currentGate.prereq_min_pct || 50}%</strong> in quiz <strong>{currentGate.prereq_quiz_title || 'prerequisite quiz'}</strong></span>
+                  )}
+                </div>
+                {currentGate.prereq_quiz_id && (
+                  <div style={{ marginTop: 6 }}>
+                    <button type="button" className="btn btn-sm btn-primary" onClick={onQuizzes}>
+                      Go to Quizzes
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="card-flush">
@@ -683,7 +797,18 @@ function AssignmentCard({ a, exemplars = [], cohort, review, onReadDoc, reload }
   const [pasteNotice, setPasteNotice] = useState('');
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewReason, setReviewReason] = useState('');
+  const [annModal, setAnnModal] = useState(null);
   const [busy, setBusy] = useState(false);
+
+  async function openAnnotatedPdf() {
+    if (!s?.id) return;
+    try {
+      const pins = await rpc('my_submission_annotations', { p_submission: s.id });
+      setAnnModal(Array.isArray(pins) ? pins : []);
+    } catch {
+      setAnnModal([]);
+    }
+  }
 
   const typingRef = useRef({
     firstAt: Date.now(),
@@ -989,6 +1114,11 @@ function AssignmentCard({ a, exemplars = [], cohort, review, onReadDoc, reload }
             <span style={{ flex: 1 }}>
               <strong>{s.file_path === 'typed:online' ? 'Typed online response' : s.file_name}</strong> · submitted {fmtFull(s.submitted_at)}
             </span>
+            {a.released && s.file_path && !['presentation:in-class', 'typed:online'].includes(s.file_path) && /\.pdf(?:$|\?|#)/i.test(s.file_name || s.file_path) && (
+              <button type="button" className="btn btn-sm btn-primary" onClick={openAnnotatedPdf}>
+                <Icon name="pin" size={14} /> Annotated PDF
+              </button>
+            )}
             {s.file_path === 'presentation:in-class' ? (
               <span className="badge badge-teal">Graded live</span>
             ) : s.file_path && s.file_path !== 'typed:online' ? (
@@ -1003,6 +1133,17 @@ function AssignmentCard({ a, exemplars = [], cohort, review, onReadDoc, reload }
         </div>
       )}
 
+      {annModal !== null && s?.file_path && (
+        <PdfAnnotatorModal
+          submissionId={s.id}
+          filePath={s.file_path}
+          fileName={s.file_name}
+          studentLabel={profile?.full_name || 'Your submission'}
+          initialAnnotations={annModal}
+          readOnly
+          onClose={() => setAnnModal(null)}
+        />
+      )}
       {s?.marked && a.released && s.feedback && (
         <div className="stack-sm">
           <span className="eyebrow">Lecturer feedback</span>

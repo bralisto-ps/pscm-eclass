@@ -306,3 +306,75 @@ export async function extractAssignmentTexts(rows, getSignedUrl, onProgress) {
 
   return { docs, skipped, totalTargets: targets.length };
 }
+
+
+/**
+ * Compares current assignment submissions against past-semester archived submissions.
+ * archiveItems: [{ id, index_no, full_name, course_code, semester, title, text }]
+ */
+export function compareArchiveTexts(currentDocs, archiveItems, options = {}) {
+  const thresholdPct = Math.max(10, Math.min(95, Number(options.thresholdPct) || 45));
+  const boilerplateSet = options.boilerplateText ? buildBoilerplateSet(options.boilerplateText) : new Set();
+
+  const prep = (text) => {
+    const words = tokenizeWords(text);
+    const k = words.length < 45 ? 3 : 5;
+    const shingleSet = new Set(buildShingles(words, k, boilerplateSet).map((x) => x.sh));
+    const shingleSet3 = k === 3 ? shingleSet : new Set(buildShingles(words, 3, boilerplateSet).map((x) => x.sh));
+    return { words, wordCount: words.length, k, shingleSet, shingleSet3, tooShort: words.length < 12 || shingleSet3.size < 5 };
+  };
+
+  const curPrep = (currentDocs || []).map((d) => ({ ...d, ...prep(d.text) })).filter((d) => !d.tooShort);
+  const arcPrep = (archiveItems || []).map((d) => ({ ...d, ...prep(d.text) })).filter((d) => !d.tooShort);
+  const matches = [];
+
+  for (const a of curPrep) {
+    for (const b of arcPrep) {
+      const use3 = a.k === 3 || b.k === 3;
+      const setA = use3 ? a.shingleSet3 : a.shingleSet;
+      const setB = use3 ? b.shingleSet3 : b.shingleSet;
+      if (!setA.size || !setB.size) continue;
+      const [smaller, larger] = setA.size <= setB.size ? [setA, setB] : [setB, setA];
+      const shared = new Set();
+      for (const sh of smaller) {
+        if (larger.has(sh)) shared.add(sh);
+      }
+      if (shared.size === 0) continue;
+      const unionSize = setA.size + setB.size - shared.size;
+      const jaccardPct = Math.round((shared.size / unionSize) * 100);
+      const containmentPct = Math.round((shared.size / smaller.size) * 100);
+      const scorePct = Math.min(100, Math.round(Math.max(jaccardPct, containmentPct * 0.9)));
+      if (scorePct >= thresholdPct) {
+        matches.push({
+          id: `arc:${a.id}::${b.id}`,
+          current: {
+            id: a.id,
+            indexNo: a.indexNo,
+            fullName: a.fullName,
+            syndicateName: a.syndicateName,
+            wordCount: a.wordCount,
+            fileName: a.fileName,
+            text: a.text,
+          },
+          archive: {
+            id: b.id,
+            indexNo: b.index_no || b.indexNo,
+            fullName: b.full_name || b.fullName,
+            courseCode: b.course_code || b.courseCode || "",
+            semester: b.semester || "",
+            title: b.title || "Past assignment",
+            wordCount: b.wordCount,
+            text: b.text,
+          },
+          scorePct,
+          jaccardPct,
+          containmentPct,
+          sharedCount: shared.size,
+          snippets: reconstructMatchedPassages(a.words, shared, use3 ? 3 : 5),
+        });
+      }
+    }
+  }
+  matches.sort((x, y) => y.scorePct - x.scorePct || y.sharedCount - x.sharedCount);
+  return { checkedArchiveCount: arcPrep.length, matches };
+}
