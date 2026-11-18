@@ -71,7 +71,7 @@ export default function StudentPreview({ course, onExit }) {
           <div>
             <strong className="small">Student Preview Mode (Read-Only)</strong>
             <div className="tiny muted">
-              Showing what students see right now
+              Previewing Materials, Quizzes, Assignments & Announcements (live check-in, private messages & personal grades require an individual student enrollment)
               {data ? ` · ${draftQuizzes} draft quiz${draftQuizzes === 1 ? '' : 'zes'}, ${draftAssignments} draft assignment${draftAssignments === 1 ? '' : 's'}, ${lockedMaterials} locked material${lockedMaterials === 1 ? '' : 's'} hidden` : ''}
             </div>
           </div>

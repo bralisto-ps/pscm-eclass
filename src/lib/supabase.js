@@ -30,7 +30,7 @@ export function friendlyError(error) {
   if (/Failed to fetch|NetworkError|network/i.test(msg)) return 'Could not reach the server. Check your internet connection and try again.';
   if (/JWT expired|session/i.test(msg)) return 'Your session has expired. Please sign in again.';
   if (/Database error saving new user/i.test(msg)) return 'Your account could not be created. Check your index number with your lecturer.';
-  if (/Password should be/i.test(msg)) return 'Password must be at least 6 characters.';
+  if (/Password should be/i.test(msg)) return 'Password must be at least 8 characters.';
   if (/row-level security/i.test(msg)) return 'You do not have permission to do that.';
   if (/duplicate key/i.test(msg)) return 'That already exists.';
   return msg;

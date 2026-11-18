@@ -2,9 +2,10 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { run, supabase } from '../lib/supabase.js';
 import Icon from './Icon.jsx';
-import { Field, Modal, useAction } from './ui.jsx';
+import { Field, Modal, useAction, useToast } from './ui.jsx';
 
 const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
+const CYCLE_LETTERS = ['B', 'A', 'D', 'C', 'B', 'D'];
 
 export function parseMcqText(text) {
   const blocks = text.split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
@@ -12,7 +13,7 @@ export function parseMcqText(text) {
   for (const block of blocks) {
     const lines = block.split('\n').map((l) => l.trim()).filter(Boolean);
     if (!lines.length) continue;
-    let prompt = lines[0].replace(/^(\d+[\.\)]\s*)+/, '').trim();
+    const prompt = lines[0].replace(/^(\d+[\.\)]\s*)+/, '').trim();
     const options = [];
     let correct = -1;
     for (let i = 1; i < lines.length; i++) {
@@ -37,8 +38,88 @@ export function parseMcqText(text) {
   return results;
 }
 
+function buildTemplateDraft(cleanTopic, count) {
+  const sentences = cleanTopic
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 18);
+  const keywords = cleanTopic
+    .replace(/[^a-zA-Z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 3);
+  const focus = keywords.slice(0, 4).join(' ') || cleanTopic.slice(0, 45);
+  const secondary = keywords[1] || 'operational execution';
+
+  const stems = [
+    (i, k) => `${i}. Which statement best captures the primary operational objective of ${k}?`,
+    (i, k) => `${i}. When managing ${k}, which risk factor most directly disrupts ${secondary}?`,
+    (i, k) => `${i}. Which quantitative KPI is most commonly used to monitor ${k} performance?`,
+    (i, k) => `${i}. What is a primary cross-functional challenge when implementing ${k}?`,
+    (i, k) => `${i}. Which governance practice strengthens accountability and auditability in ${k}?`,
+    (i, k) => `${i}. How should a supply chain team sustain continuous improvement in ${k}?`,
+  ];
+
+  const optionSets = [
+    [
+      'Minimizing overall throughput without service targets',
+      'Balancing cost, compliance, reliability, and service value',
+      'Eliminating supplier audits and performance reviews',
+      'Introducing uncoordinated manual handoffs',
+    ],
+    [
+      'Inaccurate demand/lead-time assumptions and weak visibility',
+      'Exceeding agreed on-time delivery targets',
+      'Maintained safety-stock buffer alignment',
+      'Structured dual-sourcing agreements',
+    ],
+    [
+      'Arbitrary anecdotal estimates',
+      'Unverified informal guesses',
+      'Total order cycle time, fill rate, and resource utilization',
+      'Excluding defect and variance rates',
+    ],
+    [
+      'Instantaneous zero-cost adoption across tiers',
+      'Complete elimination of stakeholder touchpoints',
+      'Cross-functional alignment, data consistency, and change management',
+      'Removing KPI tracking from contracts',
+    ],
+    [
+      'Allowing undocumented ad-hoc exceptions',
+      'Documented SLAs, periodic scorecards, and clear escalation rules',
+      'Suspending periodic contract compliance checks',
+      'Relying on outdated single-period baselines',
+    ],
+    [
+      'Discontinuing variance analysis after launch',
+      'Avoiding corrective action plans',
+      'Ignoring customer service-level trends',
+      'Regular root-cause reviews, benchmarking, and feedback loops',
+    ],
+  ];
+
+  const correctIndices = [1, 0, 2, 2, 1, 3];
+  const out = [];
+  for (let i = 1; i <= count; i++) {
+    const idx = (i - 1) % stems.length;
+    const snippet = sentences[idx] ? ` (${sentences[idx].slice(0, 80)}${sentences[idx].length > 80 ? '…' : ''})` : '';
+    const promptText = stems[idx](i, focus) + snippet;
+    const opts = optionSets[idx];
+    const corrIdx = correctIndices[idx];
+    const corrLetter = CYCLE_LETTERS[idx] || LETTERS[corrIdx];
+    const lines = [promptText];
+    for (let k = 0; k < 4; k++) {
+      lines.push(`${LETTERS[k]}) ${opts[k]}${k === corrIdx ? ' *' : ''}`);
+    }
+    lines.push(`Answer: ${LETTERS[corrIdx] || corrLetter}`);
+    out.push(lines.join('\n'));
+  }
+  return out.join('\n\n');
+}
+
 export default function AIGeneratorModal({ courseId, quizId, start = 1, onClose, onDone }) {
   const navigate = useNavigate();
+  const toast = useToast();
   const [topic, setTopic] = useState('');
   const [title, setTitle] = useState('');
   const [duration, setDuration] = useState(20);
@@ -46,6 +127,8 @@ export default function AIGeneratorModal({ courseId, quizId, start = 1, onClose,
   const [antiCheat, setAntiCheat] = useState(true);
   const [timePerQ, setTimePerQ] = useState('60');
   const [noBacktrack, setNoBacktrack] = useState(true);
+  const [mode, setMode] = useState('ai'); // 'ai' | 'template'
+  const [draftSource, setDraftSource] = useState(null); // { kind: 'ai' | 'template', note?: string }
   const [generatedText, setGeneratedText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [act, busy] = useAction();
@@ -62,58 +145,41 @@ export default function AIGeneratorModal({ courseId, quizId, start = 1, onClose,
       setTitle(cleanTopic.length > 50 ? `${cleanTopic.slice(0, 47)}...` : cleanTopic);
     }
 
-    const keywords = cleanTopic.split(/\s+/).filter((w) => w.length > 3);
-    const primary = keywords[0] || 'the core concept';
-    const secondary = keywords[1] || 'operational procedure';
-
-    const questionsList = [];
-    for (let i = 1; i <= count; i++) {
-      if (i === 1) {
-        questionsList.push(`1. Which of the following best defines the primary objective of ${cleanTopic}?
-A) Minimizing overall operational throughput
-B) Maximizing efficiency, compliance and strategic value *
-C) Eliminating internal quality audits
-D) Introducing uncoordinated process delays
-Answer: B`);
-      } else if (i === 2) {
-        questionsList.push(`2. In the context of ${cleanTopic}, what is a critical risk factor when managing ${secondary}?
-A) Over-reliance on inaccurate forecasting data *
-B) Excessive customer satisfaction
-C) Zero inventory holding costs
-D) Immediate automated throughput
-Answer: A`);
-      } else if (i === 3) {
-        questionsList.push(`3. When evaluating performance metrics for ${cleanTopic}, which quantitative indicator is most commonly prioritized?
-A) Random variance index
-B) Total cycle time and resource utilization *
-C) Unaudited anecdotal reports
-D) Arbitrary target milestones
-Answer: B`);
-      } else if (i === 4) {
-        questionsList.push(`4. A primary challenge in executing ${cleanTopic} across supply chain networks is:
-A) Cross-functional coordination and change management *
-B) Instantaneous stakeholder consensus
-C) Negative cost of implementation
-D) Complete absence of operational variance
-Answer: A`);
-      } else if (i === 5) {
-        questionsList.push(`5. Which strategic decision directly impacts ${cleanTopic} in modern enterprise systems?
-A) Short-term speculative trading
-B) Aligning resource allocation with long-term organizational goals *
-C) Disregarding supply and demand indicators
-D) Decentralized unmonitored spending
-Answer: B`);
-      } else {
-        questionsList.push(`${i}. When optimizing ${cleanTopic}, what is recommended to ensure continuous improvement?
-A) Regular auditing, benchmark reviews, and stakeholder feedback *
-B) Suspending all performance reviews
-C) Reliance on outdated historical baselines
-D) Discontinuing quality assurance checks
-Answer: A`);
+    if (mode === 'ai') {
+      try {
+        const { data, error } = await supabase.functions.invoke('ai-draft', {
+          body: { topic: cleanTopic, count },
+        });
+        if (!error && data?.text && !data?.error) {
+          setGeneratedText(String(data.text).trim());
+          setDraftSource({ kind: 'ai', note: data.model ? `Drafted with ${data.model} (review before publishing)` : 'AI draft ready — review before publishing' });
+          setIsGenerating(false);
+          return;
+        }
+        const reason = data?.error || error?.message || 'AI server function unavailable';
+        setGeneratedText(buildTemplateDraft(cleanTopic, count));
+        setDraftSource({
+          kind: 'template',
+          note: `Used structured template draft because server AI is not configured (${reason}). Edit stems and options below.`,
+        });
+        toast('Server AI not configured — loaded editable template draft instead.');
+      } catch {
+        setGeneratedText(buildTemplateDraft(cleanTopic, count));
+        setDraftSource({
+          kind: 'template',
+          note: 'Used structured template draft (offline or AI Edge Function not deployed). Edit wording before saving.',
+        });
+      } finally {
+        setIsGenerating(false);
       }
+      return;
     }
 
-    setGeneratedText(questionsList.join('\n\n'));
+    setGeneratedText(buildTemplateDraft(cleanTopic, count));
+    setDraftSource({
+      kind: 'template',
+      note: 'Structured template draft — customize the question stems, options, and marked answer before saving.',
+    });
     setIsGenerating(false);
   }
 
@@ -123,7 +189,7 @@ Answer: A`);
     let targetQuizId = quizId;
 
     if (isNewQuiz) {
-      const quizTitle = title.trim() || topic.trim() || 'AI Generated Quiz';
+      const quizTitle = title.trim() || topic.trim() || 'Draft Quiz';
       const createdQuiz = await act(
         () =>
           run(
@@ -142,9 +208,9 @@ Answer: A`);
                 shuffle_options: true,
               })
               .select()
-              .single()
+              .single(),
           ),
-        'Created new AI quiz.'
+        'Created new draft quiz.',
       );
       if (!createdQuiz) return;
       targetQuizId = createdQuiz.id;
@@ -163,7 +229,7 @@ Answer: A`);
 
     const ok = await act(
       () => run(supabase.from('questions').insert(rows)),
-      `${rows.length} questions saved.`
+      `${rows.length} questions saved.`,
     );
 
     if (ok !== undefined) {
@@ -177,7 +243,7 @@ Answer: A`);
 
   return (
     <Modal
-      title="AI Quiz Question Generator ✨"
+      title="Draft Quiz Questions"
       onClose={onClose}
       wide
       footer={
@@ -189,12 +255,6 @@ Answer: A`);
               className="btn btn-primary"
               onClick={save}
               disabled={busy || !parsed.length}
-              style={{
-                background: 'linear-gradient(135deg, #0d9488 0%, #6366f1 100%)',
-                borderColor: 'transparent',
-                color: '#fff',
-                fontWeight: 600,
-              }}
             >
               <Icon name="sparkles" size={16} /> {isNewQuiz ? `Create Quiz with ${parsed.length} Questions` : `Add ${parsed.length} Questions to Quiz`}
             </button>
@@ -206,17 +266,25 @@ Answer: A`);
         <div
           style={{
             padding: '12px 16px',
-            background: 'linear-gradient(135deg, rgba(13, 148, 136, 0.08) 0%, rgba(99, 102, 241, 0.08) 100%)',
-            border: '1px solid var(--teal-200, #99f6e4)',
+            background: 'var(--teal-50)',
+            border: '1px solid var(--teal-200)',
             borderRadius: 8,
           }}
         >
-          <strong style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--teal-900, #134e4a)' }}>
-            <Icon name="sparkles" size={16} /> AI-Powered Question Drafting
+          <strong style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--teal-900)' }}>
+            <Icon name="sparkles" size={16} /> Server AI &amp; Quick Template Drafting
           </strong>
           <p className="tiny muted" style={{ margin: '4px 0 0' }}>
-            Type any topic, learning outcome, or paste lecture notes. AI drafts multiple-choice questions with answer keys ready for your students.
+            Uses your Supabase <span className="mono">ai-draft</span> Edge Function (when <span className="mono">GEMINI_API_KEY</span> is set) to draft MCQs grounded in your lecture notes, or switches cleanly to an editable structured template draft.
           </p>
+          <div className="chips" style={{ marginTop: 10 }}>
+            <button type="button" className="chip" aria-pressed={mode === 'ai'} onClick={() => setMode('ai')}>
+              Server AI draft
+            </button>
+            <button type="button" className="chip" aria-pressed={mode === 'template'} onClick={() => setMode('template')}>
+              Offline quick template
+            </button>
+          </div>
         </div>
 
         {isNewQuiz && (
@@ -246,20 +314,20 @@ Answer: A`);
               style={{
                 padding: '12px 16px',
                 borderRadius: 8,
-                background: 'rgba(13, 148, 136, 0.05)',
-                border: '1px solid var(--teal-200, #99f6e4)',
+                background: 'var(--teal-50)',
+                border: '1px solid var(--teal-200)',
               }}
             >
               <div className="between" style={{ alignItems: 'center' }}>
-                <strong className="small" style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--teal-900, #134e4a)' }}>
-                  <Icon name="shield" size={16} /> Exam Anti-Cheating & Security Suite
+                <strong className="small" style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--teal-900)' }}>
+                  <Icon name="shield" size={16} /> Exam Anti-Cheating &amp; Security Suite
                 </strong>
                 <span className="badge badge-teal" style={{ fontSize: 11 }}>Active on this quiz</span>
               </div>
               <div className="grid-2" style={{ gap: 10, marginTop: 4 }}>
                 <label className="check small">
                   <input type="checkbox" checked={antiCheat} onChange={(e) => setAntiCheat(e.target.checked)} />
-                  <span><strong>Strict Lockdown & Camera Shield</strong> (Watermark, window blur, exit logging)</span>
+                  <span><strong>Strict Lockdown &amp; Camera Shield</strong> (Watermark, window blur, exit logging)</span>
                 </label>
                 <label className="check small">
                   <input type="checkbox" checked={noBacktrack} onChange={(e) => setNoBacktrack(e.target.checked)} />
@@ -298,8 +366,8 @@ Answer: A`);
         <Field label="Topic, chapter title, or paste lecture notes *">
           <textarea
             className="input"
-            rows={3}
-            placeholder="e.g. Economic Order Quantity, Safety Stock calculations, Bullwhip effect, Procurement Contracts..."
+            rows={4}
+            placeholder="Paste lecture excerpts or write key topics: e.g. Economic Order Quantity, Safety Stock calculations, Bullwhip effect, Procurement Contracts..."
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
             autoFocus
@@ -307,7 +375,7 @@ Answer: A`);
         </Field>
 
         <div className="between" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
-          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+          <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <span className="small muted">Number of questions:</span>
             {[3, 5, 8, 10].map((n) => (
               <button
@@ -327,21 +395,21 @@ Answer: A`);
             className="btn btn-primary"
             onClick={handleGenerate}
             disabled={!topic.trim() || isGenerating}
-            style={{
-              background: 'linear-gradient(135deg, #0d9488 0%, #6366f1 100%)',
-              borderColor: 'transparent',
-              color: '#fff',
-              fontWeight: 600,
-            }}
           >
-            <Icon name="sparkles" size={16} /> {isGenerating ? 'Generating Questions…' : 'Generate Questions'}
+            <Icon name="sparkles" size={16} />
+            {isGenerating ? 'Drafting Questions…' : mode === 'ai' ? 'Draft with Server AI' : 'Generate Template Draft'}
           </button>
         </div>
 
         {generatedText && (
           <div className="stack-sm" style={{ marginTop: 12 }}>
+            {draftSource?.note && (
+              <div className={`notice small ${draftSource.kind === 'template' ? 'notice-warn' : 'notice-ok'}`} style={{ padding: '8px 12px' }}>
+                {draftSource.note}
+              </div>
+            )}
             <span className="eyebrow">
-              Review & Edit Generated Questions ({parsed.length} recognized):
+              Review &amp; Edit Draft Questions ({parsed.length} recognized):
             </span>
             <textarea
               className="textarea mono"
@@ -350,7 +418,7 @@ Answer: A`);
               onChange={(e) => setGeneratedText(e.target.value)}
             />
             <span className="tiny muted">
-              You can edit any prompt, option, or the correct answer before saving. Mark correct options with an asterisk (*) or write Answer: [Letter] at the end.
+              Edit any stem, option, or correct answer before saving. Mark correct options with an asterisk (*) or write Answer: [Letter] at the end.
             </span>
           </div>
         )}

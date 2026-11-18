@@ -16,6 +16,7 @@ import {
   serializeQuizMeta,
 } from '../src/lib/quizMeta.js';
 import { computeStudentCA, isItemLocked } from '../src/lib/courseMeta.js';
+import { rowsToStudents } from '../src/lib/sheets.js';
 
 test('similarity: detects collusion while skipping same-syndicate teammates and boilerplate', () => {
   const sharedBody =
@@ -116,4 +117,19 @@ test('courseMeta: computes partitioned CA1/CA2 and lock timestamps', () => {
   const now = Date.parse('2026-11-18T10:00:00.000Z');
   assert.equal(isItemLocked('2026-11-19T10:00:00.000Z', now), true);
   assert.equal(isItemLocked('2026-11-17T10:00:00.000Z', now), false);
+});
+
+test('sheets: rowsToStudents skips serial number columns and detects name vs index cleanly', () => {
+  const rows = [
+    ['S/N', 'Index Number', 'Full Name', 'Programme', 'Stream'],
+    ['1', 'PSCM/25/001', 'Ama Mensah', 'BSc PSCM', 'Regular'],
+    ['2', 'PSCM/25/002', 'PSCM/25/002', 'BSc PSCM', 'Evening'],
+  ];
+  const parsed = rowsToStudents(rows);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].index_no, 'PSCM/25/001');
+  assert.equal(parsed[0].full_name, 'Ama Mensah');
+  assert.equal(parsed[0].programme, 'BSc PSCM');
+  assert.equal(parsed[1].index_no, 'PSCM/25/002');
+  assert.equal(parsed[1].full_name, 'PSCM/25/002');
 });

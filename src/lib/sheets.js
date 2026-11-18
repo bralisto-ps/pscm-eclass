@@ -38,18 +38,29 @@ export function rowsToStudents(rows) {
   let body = rows;
   if (looksLikeHeader) {
     body = rows.slice(1);
+    const isSerialHeader = (h) => /^(s\/?n|no\.?|#|serial|row)$/i.test(h);
     progCol = header.findIndex((h) => /programme|program|specialisation|specialization|major|department|option/.test(h));
     streamCol = header.findIndex((h) => /stream|session|mode|category|shift/.test(h));
-    const used = new Set([progCol, streamCol]);
-    const i = header.findIndex((h, k) => !used.has(k) && /index|student.?id|^id$|number|ref|matric/.test(h) && !/name/.test(h));
+    const used = new Set([progCol, streamCol].filter((x) => x >= 0));
+    const iStrong = header.findIndex((h, k) => !used.has(k) && !isSerialHeader(h) && /index|matric|reg/.test(h) && !/name/.test(h));
+    const iFallback = header.findIndex((h, k) => !used.has(k) && !isSerialHeader(h) && /student.?id|^id$|number|ref/.test(h) && !/name/.test(h));
+    const i = iStrong >= 0 ? iStrong : iFallback;
     if (i >= 0) idxCol = i;
+    else {
+      const nonSerial = header.findIndex((h, k) => !used.has(k) && !isSerialHeader(h));
+      if (nonSerial >= 0) idxCol = nonSerial;
+    }
     used.add(idxCol);
     const full = header.findIndex((h, k) => !used.has(k) && /full.?name|^name$|student.?name|^names?$/.test(h));
     const first = header.findIndex((h, k) => !used.has(k) && /first|given|other/.test(h));
     const last = header.findIndex((h, k) => !used.has(k) && /last|surname|family/.test(h));
     if (full >= 0) nameCols = [full];
     else if (first >= 0 && last >= 0) nameCols = [first, last];
-    else nameCols = header.map((_, k) => k).filter((k) => !used.has(k)).slice(0, 1);
+    else {
+      const candidateCols = header.map((_, k) => k).filter((k) => !used.has(k) && !isSerialHeader(header[k]));
+      const textRich = candidateCols.find((k) => body.slice(0, 10).some((r) => /[a-zA-Z]{2,}\s+[a-zA-Z]{2,}/.test(String(r[k] ?? ''))));
+      nameCols = textRich !== undefined ? [textRich] : candidateCols.slice(0, 1);
+    }
   } else if (rows[0].length >= 4) {
     // no headings: index, name, programme, stream
     progCol = 2;

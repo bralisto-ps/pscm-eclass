@@ -17,7 +17,10 @@ export function AuthProvider({ children }) {
     const { data, error } = await supabase.from('profiles').select('*').eq('id', sess.user.id).maybeSingle();
     if (error) setProfileError(friendlyError(error));
     else if (!data) setProfileError('Your account is not linked to the class list. Please contact your lecturer.');
-    else setProfileError('');
+    else {
+      setProfileError('');
+      supabase.rpc('touch_last_seen').then(() => {}, () => {});
+    }
     setProfile(data || null);
   }, []);
 

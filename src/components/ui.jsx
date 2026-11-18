@@ -203,21 +203,89 @@ export function Field({ label, hint, children }) {
   );
 }
 
-export function Tabs({ tabs, value, onChange, dark }) {
+export function Tabs({ tabs, value, onChange, dark, primaryCount }) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef(null);
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const onDoc = (e) => {
+      if (moreRef.current && !moreRef.current.contains(e.target)) setMoreOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [moreOpen]);
+
+  const split = dark && primaryCount && tabs.length > primaryCount;
+  const primaryTabs = split ? tabs.slice(0, primaryCount) : tabs;
+  const extraTabs = split ? tabs.slice(primaryCount) : [];
+  const activeExtra = extraTabs.find((t) => t.id === value);
+  const extraCountSum = extraTabs.reduce((s, t) => s + (Number(t.count) || 0), 0);
+
+  if (!split) {
+    return (
+      <div className={dark ? 'band-tabs' : 'tabs'} role="tablist">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={value === t.id}
+            onClick={() => onChange(t.id)}
+          >
+            {t.label}
+            {t.count ? <span className="badge badge-amber" style={{ marginLeft: 8 }}>{t.count}</span> : null}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
   return (
-    <div className={dark ? 'band-tabs' : 'tabs'} role="tablist">
-      {tabs.map((t) => (
+    <div className="band-tabs-wrap">
+      <div className="band-tabs" role="tablist">
+        {primaryTabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={value === t.id}
+            onClick={() => { setMoreOpen(false); onChange(t.id); }}
+          >
+            {t.label}
+            {t.count ? <span className="badge badge-amber" style={{ marginLeft: 8 }}>{t.count}</span> : null}
+          </button>
+        ))}
+      </div>
+      <div className="band-more-wrap" ref={moreRef}>
         <button
-          key={t.id}
           type="button"
-          role="tab"
-          aria-selected={value === t.id}
-          onClick={() => onChange(t.id)}
+          className={`band-more-btn ${activeExtra ? 'active' : ''}`}
+          aria-expanded={moreOpen}
+          aria-haspopup="menu"
+          onClick={() => setMoreOpen((v) => !v)}
         >
-          {t.label}
-          {t.count ? <span className="badge badge-amber" style={{ marginLeft: 8 }}>{t.count}</span> : null}
+          <span>{activeExtra ? activeExtra.label : 'More'}</span>
+          {extraCountSum > 0 && <span className="badge badge-amber">{extraCountSum}</span>}
+          <Icon name={moreOpen ? 'chevronUp' : 'chevronDown'} size={14} />
         </button>
-      ))}
+        {moreOpen && (
+          <div className="band-more-menu" role="menu">
+            {extraTabs.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="menuitem"
+                className="band-more-item"
+                aria-selected={value === t.id}
+                onClick={() => { setMoreOpen(false); onChange(t.id); }}
+              >
+                <span>{t.label}</span>
+                {t.count ? <span className="badge badge-amber">{t.count}</span> : null}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

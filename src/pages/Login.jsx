@@ -6,6 +6,7 @@ import { useTheme } from '../lib/theme.js';
 import Icon, { BrandMark } from '../components/Icon.jsx';
 import { Field } from '../components/ui.jsx';
 import { OfflineIndicator, PWAInstallButton } from '../components/PWABanner.jsx';
+import PrivacyNoticeModal from '../components/PrivacyNoticeModal.jsx';
 
 export default function Login({ mode }) {
   const { signIn, activate, activateStaff } = useAuth();
@@ -19,6 +20,7 @@ export default function Login({ mode }) {
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [privacyOpen, setPrivacyOpen] = useState(false);
 
   const staff = mode === 'staff';
   const activating = mode === 'activate' || staff;
@@ -37,7 +39,7 @@ export default function Login({ mode }) {
       return;
     }
     if (activating) {
-      if (password.length < 6) return setError('Choose a password with at least 6 characters.');
+      if (password.length < 8) return setError('Choose a password with at least 8 characters.');
       if (password !== confirm) return setError('The two passwords do not match.');
     }
     setBusy(true);
@@ -108,12 +110,13 @@ export default function Login({ mode }) {
           <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
         </button>
         <form className="auth-card" onSubmit={submit} noValidate>
+          <div className="auth-mobile-banner" aria-hidden="true" />
           <div className="auth-mobile-head stack-sm" style={{ marginBottom: 4 }}>
             <div className="row" style={{ gap: 10 }}>
               <BrandMark size={34} />
               <div>
                 <div className="strong" style={{ fontSize: 16 }}>{brand.portalName}</div>
-                <div className="tiny muted">{brand.coordinator}</div>
+                <div className="tiny muted">Academic Learning &amp; Assessment · {brand.coordinator}</div>
               </div>
             </div>
             <span className="small muted">Virtual Classroom for Procurement and Supply Chain Management Courses</span>
@@ -160,7 +163,7 @@ export default function Login({ mode }) {
             </Field>
           )}
 
-          <Field label={activating ? 'Choose a password' : 'Password'} hint={activating ? 'at least 6 characters' : undefined}>
+          <Field label={activating ? 'Choose a password' : 'Password'} hint={activating ? 'at least 8 characters' : undefined}>
             <div className="input-wrap">
               <input
                 className="input"
@@ -201,8 +204,14 @@ export default function Login({ mode }) {
               Forgot your password? Ask your lecturer to reset it.
             </p>
           )}
+                  <p className="tiny muted" style={{ textAlign: 'center', marginTop: 4 }}>
+            <button type="button" className="btn btn-sm btn-ghost" style={{ minHeight: 28, fontSize: 12 }} onClick={() => setPrivacyOpen(true)}>
+              Privacy &amp; Academic Integrity Notice
+            </button>
+          </p>
         </form>
       </main>
+      {privacyOpen && <PrivacyNoticeModal onClose={() => setPrivacyOpen(false)} />}
       <OfflineIndicator />
     </div>
   );

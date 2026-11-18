@@ -206,7 +206,7 @@ export default function StudentCourse() {
     <>
       <header className="course-band" style={{ background: course.color }}>
         <div className="between">
-          <Link to="/" className="small">← Home</Link>
+          <Link to="/" className="small">← <span className="hide-xs">Home</span></Link>
           <div className="row-wrap">
             {course.semester && <span className="band-chip hide-sm">{course.semester}</span>}
             <NotificationBell dark />
@@ -288,6 +288,46 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
   const [act] = useAction();
   const [viewedSet, setViewedSet] = useState(() => new Set(data.viewedIds || []));
   const [reading, setReading] = useState(null);
+  const [savingOffline, setSavingOffline] = useState(false);
+  const [offlineIds, setOfflineIds] = useState(() => new Set());
+  useEffect(() => {
+    if (typeof caches === 'undefined') return;
+    caches.open('pscm-offline-materials').then(async (cache) => {
+      const keys = await cache.keys();
+      const ids = new Set();
+      for (const req of keys) {
+        const m = req.url.match(/\/offline-material\/([^/?#]+)/);
+        if (m) ids.add(m[1]);
+      }
+      setOfflineIds(ids);
+    }).catch(() => {});
+  }, [current?.id]);
+  async function saveWeekOffline() {
+    if (!current || typeof caches === 'undefined') return;
+    const files = current.items.filter((m) => !m.url && m.storage_path && !isItemLocked(m.unlock_at) && !isViewOnlyPath(m.storage_path));
+    if (!files.length) return;
+    setSavingOffline(true);
+    try {
+      const cache = await caches.open('pscm-offline-materials');
+      let saved = 0;
+      const next = new Set(offlineIds);
+      for (const m of files) {
+        const signed = await getSignedFileUrl('materials', stripViewOnly(m.storage_path));
+        const resp = await fetch(signed);
+        if (resp.ok) {
+          await cache.put(`/offline-material/${m.id}`, resp.clone());
+          next.add(m.id);
+          saved++;
+        }
+      }
+      setOfflineIds(next);
+      toast(`Saved ${saved} file${saved === 1 ? '' : 's'} for offline reading.`);
+    } catch {
+      toast('Could not cache some files offline. Check your connection.', 'error');
+    } finally {
+      setSavingOffline(false);
+    }
+  }
   const [toolkitOpen, setToolkitOpen] = useState(false);
   const groups = useMemo(() => {
     const g = data.modules.map((m) => ({ ...m, items: data.materials.filter((x) => x.module_id === m.id) }));
@@ -315,7 +355,20 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
     supabase.rpc('record_material_view', { p_material: m.id }).then(() => {}, () => {});
     if (m.url) window.open(m.url, '_blank', 'noopener');
     else if (isViewOnlyPath(m.storage_path)) setReading(m);
-    else if (m.storage_path) act(() => openStoredFile('materials', m.storage_path));
+    else if (m.storage_path) {
+      act(async () => {
+        if (typeof caches !== 'undefined') {
+          const cache = await caches.open('pscm-offline-materials');
+          const cached = await cache.match(`/offline-material/${m.id}`);
+          if (cached && !navigator.onLine) {
+            const blobUrl = URL.createObjectURL(await cached.blob());
+            window.open(blobUrl, '_blank', 'noopener');
+            return;
+          }
+        }
+        await openStoredFile('materials', m.storage_path);
+      });
+    }
   }
 
   if (!groups.length) {
@@ -387,7 +440,14 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
         {current && (
           <>
             <div className="stack-sm">
-              <h2 style={{ fontSize: 20 }}>{current.week_no ? `Week ${current.week_no} · ${current.title}` : current.title}</h2>
+              <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                <h2 style={{ fontSize: 20 }}>{current.week_no ? `Week ${current.week_no} · ${current.title}` : current.title}</h2>
+                {!isItemLocked(current.unlock_at) && !currentPrereqLocked && current.items.some((m) => !m.url && m.storage_path && !isItemLocked(m.unlock_at) && !isViewOnlyPath(m.storage_path)) && typeof caches !== 'undefined' && (
+                  <button type="button" className="btn btn-sm" onClick={saveWeekOffline} disabled={savingOffline}>
+                    <Icon name="download" size={14} /> {savingOffline ? 'Saving offline…' : current.items.every((m) => !m.storage_path || m.url || isViewOnlyPath(m.storage_path) || offlineIds.has(m.id)) ? 'Saved offline ✓' : 'Save week offline'}
+                  </button>
+                )}
+              </div>
               {current.summary && <p className="pre" style={{ color: 'var(--text-2)', maxWidth: 680 }}>{current.summary}</p>}
             </div>
             {isItemLocked(current.unlock_at) ? (
@@ -447,18 +507,21 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
                           {m.url ? hostOf(m.url) : fmtBytes(m.size_bytes)} · added {relative(m.created_at)}
                         </span>
                       </span>
-                      {seen && (
-                        <span className="viewed-tag">
-                          <Icon name="check" size={14} /> Viewed
-                        </span>
-                      )}
-                      {isViewOnlyPath(m.storage_path) ? (
-                        <span className="tiny muted nowrap" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          <Icon name="lock" size={14} /> Read-only
-                        </span>
-                      ) : (
-                        <Icon name={m.url ? 'link' : 'download'} size={17} style={{ color: 'var(--muted)' }} />
-                      )}
+                      <span className="list-actions" style={{ borderTop: 0, width: 'auto', paddingTop: 0 }}>
+                        {offlineIds.has(m.id) && <span className="badge badge-teal">Offline</span>}
+                        {seen && (
+                          <span className="viewed-tag">
+                            <Icon name="check" size={14} /> Viewed
+                          </span>
+                        )}
+                        {isViewOnlyPath(m.storage_path) ? (
+                          <span className="tiny muted nowrap" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <Icon name="lock" size={14} /> Read-only
+                          </span>
+                        ) : (
+                          <Icon name={m.url ? 'link' : 'download'} size={17} style={{ color: 'var(--muted)' }} />
+                        )}
+                      </span>
                     </button>
                   );
                 })}
@@ -591,7 +654,7 @@ function Quizzes({ quizzes, seats = [] }) {
   return (
     <div className="stack" style={{ maxWidth: 900 }}>
       {revisableCount > 0 && (
-        <div className="card-soft between" style={{ padding: "14px 18px", background: "var(--teal-50)", border: "1px solid #99f6e4", flexWrap: "wrap", gap: 12 }}>
+        <div className="card-soft between" style={{ padding: "14px 18px", background: "var(--teal-50)", border: "1px solid var(--teal-200)", flexWrap: "wrap", gap: 12 }}>
           <div className="row" style={{ gap: 12 }}>
             <div style={{ width: 36, height: 36, borderRadius: 8, background: "var(--teal)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
               <Icon name="layers" size={20} />

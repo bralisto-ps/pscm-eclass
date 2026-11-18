@@ -45,9 +45,24 @@ export default defineConfig({
         skipWaiting: true,
         maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+        globIgnores: ['**/pdf-*.js', '**/pdf.worker*.mjs', '**/excel-vendor*.js'],
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api/],
         runtimeCaching: [
+          {
+            urlPattern: /\/assets\/(pdf|excel-vendor).*\.(js|mjs)$/i,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'heavy-doc-engines',
+              expiration: {
+                maxEntries: 10,
+                maxAgeSeconds: 60 * 60 * 24 * 30,
+              },
+              cacheableResponse: {
+                statuses: [0, 200],
+              },
+            },
+          },
           {
             urlPattern: /\/images\/.*\.webp$/i,
             handler: 'CacheFirst',

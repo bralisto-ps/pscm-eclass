@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { rpc, rpcAll, run, supabase } from '../../../lib/supabase.js';
 import { fmtFull, relative } from '../../../lib/format.js';
+import { normIndex } from '../../../lib/supabase.js';
 import { downloadExcel, downloadText, parseDelimited, readStudentFile, rowsToStudents } from '../../../lib/sheets.js';
 import Icon from '../../../components/Icon.jsx';
 import { Confirm, Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../../components/ui.jsx';
@@ -123,6 +124,7 @@ export default function StudentsTab({ course, ta, readOnly = false }) {
   const [removing, setRemoving] = useState(null);
   const [editing, setEditing] = useState(null);
   const [viewingStudent, setViewingStudent] = useState(null);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [group, setGroup] = useState(ALL_GROUPS);
   const [activity, setActivity] = useState('all');
   const [sort, setSort] = useState('name_asc');
@@ -237,7 +239,7 @@ export default function StudentsTab({ course, ta, readOnly = false }) {
 
   return (
     <div className="stack" style={{ maxWidth: 1040 }}>
-      <div className="grid-3">
+      <div className="kpi-row-3">
         <div className="kpi"><span className="l">Students on class list</span><span className="v">{data.length.toLocaleString()}</span></div>
         <div className="kpi"><span className="l">Accounts activated</span><span className="v">{activated.toLocaleString()}</span></div>
         <div className="kpi"><span className="l">Not yet activated</span><span className="v" style={{ color: data.length - activated ? 'var(--amber-ink)' : undefined }}>{(data.length - activated).toLocaleString()}</span></div>
@@ -271,24 +273,35 @@ export default function StudentsTab({ course, ta, readOnly = false }) {
               <button type="button" className="chip" aria-pressed={filter === 'inactive'} onClick={() => setFilter('inactive')}>Not activated ({data.length - activated})</button>
               <button type="button" className="chip" aria-pressed={filter === 'risk'} onClick={() => setFilter('risk')}>At-Risk Radar{risk ? ` · ${risk.size}` : ''}</button>
             </div>
-            <GroupFilters rows={data} value={group} onChange={setGroup} />
-            <label className="row small" style={{ gap: 6 }}>
-              <span className="muted">Sign-in</span>
-              <select
-                aria-label="Filter by sign-in activity"
-                className="select"
-                style={{ minHeight: 40, width: 'auto', fontSize: 13 }}
-                value={activity}
-                onChange={(e) => setActivity(e.target.value)}
-              >
-                <option value="all">All</option>
-                <option value="7d">Active (last 7d)</option>
-                <option value="30d">Active (last 30d)</option>
-                <option value="stale14">Inactive 14+ days</option>
-                <option value="never">Never signed in</option>
-              </select>
-            </label>
-            <SortSelect
+            <button
+              type="button"
+              className={`btn btn-sm ${(filtersOpen || group.programme !== ALL_GROUPS || group.stream !== ALL_GROUPS || activity !== 'all') ? 'btn-primary' : ''}`}
+              onClick={() => setFiltersOpen((v) => !v)}
+              aria-expanded={filtersOpen}
+            >
+              <Icon name="filter" size={14} /> Filters
+            </button>
+          </div>
+          {filtersOpen && (
+            <div className="row-wrap" style={{ width: '100%', paddingTop: 6, gap: 10 }}>
+              <GroupFilters rows={data} value={group} onChange={setGroup} />
+              <label className="row small" style={{ gap: 6 }}>
+                <span className="muted">Sign-in</span>
+                <select
+                  aria-label="Filter by sign-in activity"
+                  className="select"
+                  style={{ minHeight: 40, width: 'auto', fontSize: 13 }}
+                  value={activity}
+                  onChange={(e) => setActivity(e.target.value)}
+                >
+                  <option value="all">All</option>
+                  <option value="7d">Active (last 7d)</option>
+                  <option value="30d">Active (last 30d)</option>
+                  <option value="stale14">Inactive 14+ days</option>
+                  <option value="never">Never signed in</option>
+                </select>
+              </label>
+              <SortSelect
               value={sort}
               onChange={setSort}
               options={[
@@ -306,7 +319,9 @@ export default function StudentsTab({ course, ta, readOnly = false }) {
                 { value: 'signin_asc', label: 'Last sign-in (Oldest / Never)' },
               ]}
             />
-          </div>
+            </div>
+          )}
+          
           <div className="row-wrap">
             {!readOnly && <button type="button" className="btn btn-sm" style={{ borderColor: 'var(--red-ink)', color: 'var(--red-ink)', background: 'var(--red-50)' }} onClick={() => setOutreach(true)} title="Open At-Risk Radar & Personalized Bulk Advisory"><Icon name="alert" size={16} /> At-Risk Radar{risk?.size ? ` (${risk.size})` : ''}</button>}
             {!readOnly && data.length - activated > 0 && <button type="button" className="btn btn-sm" onClick={copyUnactivated} title="Copy index numbers of unactivated students"><Icon name="copy" size={15} /> Copy unactivated ({data.length - activated})</button>}
@@ -549,6 +564,7 @@ function ImportModal({ course, ta, onClose, onDone }) {
   }
 
   const missingNames = students.filter((s) => !s.full_name).length;
+  const suspiciousNames = students.filter((s) => s.full_name && normIndex(s.full_name) === normIndex(s.index_no)).length;
 
   return (
     <Modal title={`Upload class list · ${course.code}`} onClose={() => !busy && onClose()} wide
@@ -585,6 +601,11 @@ function ImportModal({ course, ta, onClose, onDone }) {
       {students.length > 0 && (
         <div className="stack-sm">
           <strong>{students.length} students found{missingNames ? ` · ${missingNames} without a name` : ''}</strong>
+          {suspiciousNames > 0 && (
+            <div className="notice notice-warn small">
+              Warning: {suspiciousNames} row{suspiciousNames === 1 ? ' has' : 's have'} the student's index number inside the Name column. Check your column headings before importing.
+            </div>
+          )}
           <div className="card-flush table-wrap">
             <table className="table">
               <thead><tr><th>Index no.</th><th>Name</th><th>Programme</th><th>Stream</th></tr></thead>

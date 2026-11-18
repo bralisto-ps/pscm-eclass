@@ -1,8 +1,9 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../lib/auth.jsx';
 import { useTheme } from '../lib/theme.js';
 import { DEFAULT_BRANDING, resizeCrestFile, useBranding } from '../lib/branding.js';
-import { supabase, friendlyError } from '../lib/supabase.js';
+import { rpc, supabase, friendlyError } from '../lib/supabase.js';
+import PrivacyNoticeModal from '../components/PrivacyNoticeModal.jsx';
 import Icon, { BrandMark } from '../components/Icon.jsx';
 import { Topbar } from '../components/Layout.jsx';
 import { Field, useToast } from '../components/ui.jsx';
@@ -18,6 +19,30 @@ export default function Account() {
   const [pw2, setPw2] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [privacyOpen, setPrivacyOpen] = useState(false);
+  const [bannerMsg, setBannerMsg] = useState('');
+  const [bannerKind, setBannerKind] = useState('info');
+  const [bannerBusy, setBannerBusy] = useState(false);
+  useEffect(() => {
+    if (isLecturer && !isTA) {
+      supabase.rpc('get_app_banner').then(({ data }) => {
+        if (data?.message) { setBannerMsg(data.message); setBannerKind(data.kind || 'info'); }
+      }, () => {});
+    }
+  }, [isLecturer, isTA]);
+  async function saveBanner(clear = false) {
+    setBannerBusy(true);
+    try {
+      const msg = clear ? '' : bannerMsg.trim();
+      await rpc('set_app_banner', { p_message: msg, p_kind: bannerKind });
+      if (clear) setBannerMsg('');
+      toast(clear ? 'Portal status banner cleared.' : 'Portal status banner updated.');
+    } catch (err) {
+      toast(err.message || 'Could not update status banner.', 'error');
+    } finally {
+      setBannerBusy(false);
+    }
+  }
 
   const [bForm, setBForm] = useState({
     portalName: brand.portalName,
@@ -29,7 +54,7 @@ export default function Account() {
   async function change(e) {
     e.preventDefault();
     setError('');
-    if (pw.length < 6) return setError('Use at least 6 characters.');
+    if (pw.length < 8) return setError('Use at least 8 characters.');
     if (pw !== pw2) return setError('The two passwords do not match.');
     setBusy(true);
     const { error: err } = await supabase.auth.updateUser({ password: pw });
@@ -180,6 +205,38 @@ export default function Account() {
           </form>
         )}
 
+        {isLecturer && !isTA && (
+          <section className="card stack">
+            <div>
+              <h2>Portal status / maintenance banner</h2>
+              <p className="small muted" style={{ marginTop: 4 }}>
+                Show a temporary notice across the top of the portal for all staff and students (e.g. scheduled maintenance or exam-day alert).
+              </p>
+            </div>
+            <div className="grid-2">
+              <Field label="Banner message">
+                <input className="input" value={bannerMsg} onChange={(e) => setBannerMsg(e.target.value)} placeholder="Leave empty to hide banner" />
+              </Field>
+              <Field label="Tone">
+                <select className="select" value={bannerKind} onChange={(e) => setBannerKind(e.target.value)}>
+                  <option value="info">Info (blue)</option>
+                  <option value="warn">Notice / Maintenance (amber)</option>
+                  <option value="error">Urgent Alert (red)</option>
+                </select>
+              </Field>
+            </div>
+            <div className="row-wrap" style={{ gap: 8 }}>
+              <button type="button" className="btn btn-sm btn-primary" disabled={bannerBusy} onClick={() => saveBanner(false)}>
+                Save banner
+              </button>
+              {bannerMsg && (
+                <button type="button" className="btn btn-sm" disabled={bannerBusy} onClick={() => saveBanner(true)}>
+                  Clear banner
+                </button>
+              )}
+            </div>
+          </section>
+        )}
         <form className="card stack" onSubmit={change}>
           <h2>Change password</h2>
           {error && <div className="notice notice-error">{error}</div>}
@@ -198,11 +255,15 @@ export default function Account() {
           </div>
         </form>
 
-        <div>
+        <div className="row-wrap between">
           <button type="button" className="btn" onClick={signOut}>
             Sign out
           </button>
+          <button type="button" className="btn btn-ghost" onClick={() => setPrivacyOpen(true)}>
+            <Icon name="shield" size={16} /> Privacy &amp; Academic Integrity Notice
+          </button>
         </div>
+        {privacyOpen && <PrivacyNoticeModal onClose={() => setPrivacyOpen(false)} />}
       </div>
     </>
   );

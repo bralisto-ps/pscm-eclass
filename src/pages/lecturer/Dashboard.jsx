@@ -6,7 +6,7 @@ import { COURSE_COLORS, contrastWithWhite, fmtDate, greeting, initials, relative
 import { parseCourseMeta, serializeCourseMeta } from '../../lib/courseMeta.js';
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
-import { Bar, DashboardSkeleton, ErrorNote, Field, Modal, Swatch, useAction, useLoad } from '../../components/ui.jsx';
+import { Bar, DashboardSkeleton, ErrorNote, Field, Modal, Swatch, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import CloneCourseModal from '../../components/CloneCourseModal.jsx';
 
 function dayKey(d) {
@@ -316,6 +316,8 @@ export default function Dashboard() {
   const [search, setSearch] = useState('');
   const [semesterFilter, setSemesterFilter] = useState('ALL');
   const [hoveredDay, setHoveredDay] = useState(null);
+  const [digestOpen, setDigestOpen] = useState(false);
+  const toast = useToast();
 
   const allRows = bundle?.courses || [];
   const courses = useMemo(() => allRows.filter((c) => !c.archived), [allRows]);
@@ -411,6 +413,11 @@ export default function Dashboard() {
                 placeholder="Find course…"
               />
             </label>
+          )}
+          {courses.length > 0 && (
+            <button type="button" className="btn" onClick={() => setDigestOpen(true)}>
+              <Icon name="clipboard" size={16} /> <span className="hide-xs">Weekly digest</span>
+            </button>
           )}
           {!isTA && (
             <>
@@ -844,6 +851,20 @@ export default function Dashboard() {
 
       {creating && <CourseForm onClose={() => setCreating(false)} />}
       {cloning && <CloneCourseModal courses={allRows} onClose={() => setCloning(false)} />}
+      {digestOpen && bundle && (
+        <WeeklyDigestModal
+          courses={courses}
+          totals={totals}
+          activatedPct={activatedPct}
+          weeklyTotal={weeklyTotal}
+          directQueue={directQueue}
+          bundle={bundle}
+          courseById={courseById}
+          activationWatch={activationWatch}
+          onClose={() => setDigestOpen(false)}
+          onCopied={() => toast('Weekly digest copied to clipboard.')}
+        />
+      )}
     </>
   );
 }
@@ -891,7 +912,7 @@ function CourseCard({ c, isTA, courseRole = 'lecturer' }) {
               {unactivated} student{unactivated === 1 ? '' : 's'} not yet activated
             </Link>
           )}
-          <span className="mono tiny muted">{roleTag || c.semester || 'Active'}</span>
+          <span className="mono tiny muted">{roleTag || 'Active'}</span>
         </div>
         <div className="course-card-links">
           {canManage && (
@@ -1044,6 +1065,122 @@ export function CourseForm({ course, onClose, onSaved }) {
           </div>
         </div>
         {tooLight && <span className="small" style={{ color: 'var(--red-ink)' }}>This colour is too light for the white heading text. Pick a darker shade.</span>}
+      </div>
+    </Modal>
+  );
+}
+
+
+function WeeklyDigestModal({
+  courses,
+  totals,
+  activatedPct,
+  weeklyTotal,
+  directQueue,
+  bundle,
+  courseById,
+  activationWatch,
+  onClose,
+  onCopied,
+}) {
+  const unactivatedTotal = Math.max(0, (totals.students || 0) - (totals.activated || 0));
+  const summaryLines = [
+    `PSCM E-Class Weekly Digest (${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })})`,
+    `• Active courses: ${courses.length}`,
+    `• Students activated: ${totals.activated}/${totals.students} (${activatedPct}%)${unactivatedTotal ? ` — ${unactivatedTotal} awaiting setup` : ''}`,
+    `• Activity last 7 days: ${weeklyTotal} submissions & quiz attempts`,
+    `• Marking queue: ${totals.toMark} unmarked items across ${directQueue.length} assessment(s)`,
+    `• Unreplied student messages: ${bundle.attentionCounts?.messages || 0} | Unanswered Q&A: ${bundle.attentionCounts?.qa || 0}`,
+    `• Pending attendance excuses: ${bundle.attentionCounts?.excuses || 0} | Mark reviews: ${bundle.attentionCounts?.reviews || 0}`,
+  ];
+  if (bundle.deadlines?.length) {
+    summaryLines.push('• Upcoming deadlines (14d):');
+    for (const d of bundle.deadlines.slice(0, 6)) {
+      const c = courseById.get(d.courseId);
+      summaryLines.push(`  - [${c?.code || 'COURSE'}] ${d.title} (${fmtDate(d.due)})`);
+    }
+  }
+  if (activationWatch.length) {
+    summaryLines.push('• Courses needing activation nudges:');
+    for (const c of activationWatch) {
+      summaryLines.push(`  - ${c.code}: ${c.students - c.activated} unactivated of ${c.students}`);
+    }
+  }
+  const digestText = summaryLines.join('\n');
+
+  async function copySummary() {
+    try {
+      await navigator.clipboard.writeText(digestText);
+      onCopied?.();
+    } catch {
+      // ignore clipboard errors on restricted origins
+    }
+  }
+
+  return (
+    <Modal
+      title="Weekly faculty digest"
+      wide
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn" onClick={copySummary}>
+            <Icon name="copy" size={16} /> Copy summary
+          </button>
+          <button type="button" className="btn btn-primary" onClick={onClose}>Done</button>
+        </>
+      }
+    >
+      <div className="stack">
+        <div className="grid-4" style={{ gap: 10 }}>
+          <div className="kpi"><div className="v">{courses.length}</div><div className="l">Active courses</div></div>
+          <div className="kpi"><div className="v">{activatedPct}%</div><div className="l">Activated ({totals.activated}/{totals.students})</div></div>
+          <div className="kpi"><div className="v">{totals.toMark}</div><div className="l">To mark</div></div>
+          <div className="kpi"><div className="v">{weeklyTotal}</div><div className="l">7d submissions</div></div>
+        </div>
+        <div className="grid-2" style={{ gap: 12 }}>
+          <div className="card-soft stack-sm" style={{ padding: 14 }}>
+            <span className="eyebrow">Student follow-up queue</span>
+            <div className="small">Unreplied messages: <strong>{bundle.attentionCounts?.messages || 0}</strong></div>
+            <div className="small">Unanswered Q&amp;A: <strong>{bundle.attentionCounts?.qa || 0}</strong></div>
+            <div className="small">Pending attendance excuses: <strong>{bundle.attentionCounts?.excuses || 0}</strong></div>
+            <div className="small">Pending mark reviews: <strong>{bundle.attentionCounts?.reviews || 0}</strong></div>
+          </div>
+          <div className="card-soft stack-sm" style={{ padding: 14 }}>
+            <span className="eyebrow">Next 14 days deadlines</span>
+            {!bundle.deadlines?.length ? (
+              <span className="small muted">No upcoming quiz or assignment closes in the next 14 days.</span>
+            ) : (
+              bundle.deadlines.slice(0, 5).map((d) => {
+                const c = courseById.get(d.courseId);
+                return (
+                  <Link key={`${d.kind}-${d.id}`} to={d.to} onClick={onClose} className="small row between" style={{ color: 'var(--text)' }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <strong className="mono">{c?.code}</strong> · {d.title}
+                    </span>
+                    <span className="tiny muted nowrap">{relative(d.due)}</span>
+                  </Link>
+                );
+              })
+            )}
+          </div>
+        </div>
+        {activationWatch.length > 0 && (
+          <div className="stack-sm">
+            <span className="eyebrow">Activation watch</span>
+            <div className="card-flush">
+              {activationWatch.map((c) => (
+                <Link key={c.id} to={`/teach/course/${c.id}?tab=students`} onClick={onClose} className="list-row">
+                  <span className="list-main">
+                    <span className="title small">{c.code} · {c.title}</span>
+                    <span className="tiny muted">{c.activated} of {c.students} activated</span>
+                  </span>
+                  <span className="badge badge-amber">{c.students - c.activated} pending</span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </Modal>
   );

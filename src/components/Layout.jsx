@@ -9,9 +9,9 @@ import { initials } from '../lib/format.js';
 import { OfflineIndicator, PWAInstallButton } from './PWABanner.jsx';
 import QuickJumpModal from './QuickJumpModal.jsx';
 import NotificationBell from './NotificationBell.jsx';
+import PrivacyNoticeModal from './PrivacyNoticeModal.jsx';
 
 export function Topbar({ title, sub, children }) {
-  const [theme, , toggleTheme] = useTheme();
   return (
     <header className="topbar">
       <div className="topbar-title">
@@ -21,15 +21,6 @@ export function Topbar({ title, sub, children }) {
       <div className="row-wrap">
         {children}
         <NotificationBell />
-        <button
-          type="button"
-          className="icon-btn"
-          onClick={toggleTheme}
-          aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to night study mode'}
-          title={theme === 'dark' ? 'Light mode' : 'Night study mode'}
-        >
-          <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
-        </button>
       </div>
     </header>
   );
@@ -42,7 +33,9 @@ export default function Layout() {
   const isLecturer = isStaff;
   const [open, setOpen] = useState(false);
   const [jump, setJump] = useState(false);
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   const [courses, setCourses] = useState([]);
+  const [banner, setBanner] = useState(null);
   const location = useLocation();
 
   useEffect(() => setOpen(false), [location.pathname]);
@@ -66,6 +59,10 @@ export default function Layout() {
       .eq('archived', false)
       .order('code')
       .then(({ data }) => alive && setCourses(data || []));
+    supabase.rpc('get_app_banner').then(
+      ({ data }) => { if (alive && data?.message) setBanner(data); else if (alive) setBanner(null); },
+      () => {},
+    );
     return () => {
       alive = false;
     };
@@ -86,7 +83,6 @@ export default function Layout() {
             </div>
           </span>
         </Link>
-
         <button
           type="button"
           className="sidebar-search-btn"
@@ -97,7 +93,6 @@ export default function Layout() {
           <span style={{ flex: 1, textAlign: 'left' }}>Quick search…</span>
           <span className="sidebar-kbd">⌘K</span>
         </button>
-
         <NavLink to="/" end className="nav-link">
           <Icon name="home" /> {isLecturer ? 'Faculty Dashboard' : 'Home'}
         </NavLink>
@@ -106,7 +101,6 @@ export default function Layout() {
             <Icon name="chart" /> My Grades
           </NavLink>
         )}
-
         <div className="nav-section">Courses</div>
         {courses.map((c) => (
           <NavLink key={c.id} to={coursePath(c)} className="nav-link" title={c.title}>
@@ -114,16 +108,21 @@ export default function Layout() {
             <span className="nav-course-code">{c.code}</span>
           </NavLink>
         ))}
-        {!courses.length && <div className="tiny" style={{ color: '#64748b', padding: '4px 12px' }}>No courses yet</div>}
-
+        {!courses.length && <div className="tiny muted" style={{ padding: '4px 12px' }}>No courses yet</div>}
         <NavLink to="/account" className="nav-link" style={{ marginTop: 14 }}>
           <Icon name="settings" /> Account Settings
         </NavLink>
-
+        <button
+          type="button"
+          className="nav-link"
+          style={{ width: '100%', border: 0, background: 'transparent', textAlign: 'left', cursor: 'pointer' }}
+          onClick={() => setPrivacyOpen(true)}
+        >
+          <Icon name="shield" /> Privacy &amp; Integrity
+        </button>
         <div style={{ padding: '6px 4px 0' }}>
           <PWAInstallButton dark />
         </div>
-
         <div className="sidebar-foot">
           <div className="sidebar-foot-card">
             <div className="avatar">{initials(profile?.full_name)}</div>
@@ -148,8 +147,15 @@ export default function Layout() {
           </div>
         </div>
       </nav>
-
       <div className="main">
+        {banner?.message && (
+          <div className={`app-status-banner ${banner.kind || 'info'}`} role="status">
+            <div className="row" style={{ gap: 8 }}>
+              <Icon name={banner.kind === 'warn' || banner.kind === 'error' ? 'alert' : 'info'} size={15} />
+              <span>{banner.message}</span>
+            </div>
+          </div>
+        )}
         <div className="mobile-bar">
           <button type="button" className="icon-btn-dark" onClick={() => setOpen(true)} aria-label="Open menu">
             <Icon name="menu" />
@@ -177,9 +183,7 @@ export default function Layout() {
           </button>
           <PWAInstallButton compact dark />
         </div>
-
         <Outlet />
-
         <nav className="mobile-bottom-nav" aria-label="Mobile quick navigation">
           <NavLink to="/" end className="mobile-bottom-link">
             <Icon name="home" size={18} />
@@ -206,8 +210,8 @@ export default function Layout() {
           </NavLink>
         </nav>
       </div>
-
       {jump && <QuickJumpModal courses={courses} isStaff={isStaff} onClose={() => setJump(false)} />}
+      {privacyOpen && <PrivacyNoticeModal onClose={() => setPrivacyOpen(false)} />}
       <OfflineIndicator />
     </div>
   );

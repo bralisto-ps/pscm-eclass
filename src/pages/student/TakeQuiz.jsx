@@ -116,10 +116,10 @@ function AntiCameraShield({ text, blurred, onResume }) {
           cursor: 'pointer',
         }}>
           <div className="card stack" style={{ maxWidth: 460, padding: 36, boxShadow: '0 25px 50px -12px rgba(0,0,0,0.3)', border: '2px solid var(--amber, #f59e0b)' }}>
-            <div style={{ width: 60, height: 60, borderRadius: '50%', background: '#fef3c7', color: '#d97706', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto', fontSize: 30 }}>
+            <div style={{ width: 60, height: 60, borderRadius: '50%', background: 'var(--amber-50)', color: 'var(--amber-ink)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto', fontSize: 30 }}>
               ⚠️
             </div>
-            <h2 style={{ margin: '8px 0 0', color: '#111827' }}>
+            <h2 style={{ margin: '8px 0 0', color: 'var(--text)' }}>
               {blurred === 'zoom' ? 'Browser Zoom-Out Blocked' : 'Exam Content Protected & Blurred'}
             </h2>
             <p className="small muted" style={{ margin: '8px 0 16px', lineHeight: 1.6 }}>

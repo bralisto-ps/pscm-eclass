@@ -71,14 +71,8 @@ export default function QuestionBank({ course }) {
               type="button"
               className="btn btn-sm btn-primary"
               onClick={() => setAiModal(true)}
-              style={{
-                background: "linear-gradient(135deg, #0d9488 0%, #6366f1 100%)",
-                borderColor: "transparent",
-                color: "#fff",
-                fontWeight: 600,
-              }}
             >
-              <Icon name="sparkles" size={16} /> Generate with AI ✨
+              <Icon name="sparkles" size={16} /> Draft Questions
             </button>
             <button type="button" className="btn btn-sm" onClick={() => setRandom(true)} disabled={!data.questions.length}>Add random set to a quiz…</button>
           </div>

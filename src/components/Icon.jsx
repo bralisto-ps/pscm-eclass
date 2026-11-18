@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { useBranding } from '../lib/branding.js';
 const PATHS = {
   home: 'M3 11l9-8 9 8M5 10v10h14V10',
@@ -53,6 +54,7 @@ const PATHS = {
   moon: 'M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z',
   graduation: 'M22 10L12 5 2 10l10 5 10-5zM6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5',
   chevronDown: 'M6 9l6 6 6-6',
+  chevronUp: 'M18 15l-6-6-6 6',
   filter: 'M22 3H2l8 9.46V19l4 2v-8.54L22 3z',
   code: 'M16 18l6-6-6-6M8 6l-6 6 6 6',
   'map-pin': 'M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0zM12 10a2 2 0 100-4 2 2 0 000 4z',
@@ -68,6 +70,7 @@ const PATHS = {
 
 export function BrandMark({ size = 36 }) {
   const [brand] = useBranding();
+  const gradId = useId();
   if (brand.logoDataUrl) {
     return (
       <img
@@ -98,12 +101,12 @@ export function BrandMark({ size = 36 }) {
       style={{ flexShrink: 0, display: 'block', borderRadius: Math.round(size * 0.25), boxShadow: '0 2px 10px rgba(0,0,0,0.22)' }}
     >
       <defs>
-        <linearGradient id="pscmBrandGrad" x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="1">
           <stop offset="0%" stopColor="#0d9488" />
           <stop offset="100%" stopColor="#0f4c5c" />
         </linearGradient>
       </defs>
-      <rect width="64" height="64" rx="16" fill="url(#pscmBrandGrad)" />
+      <rect width="64" height="64" rx="16" fill={`url(#${gradId})`} />
       <rect x="2.5" y="2.5" width="59" height="59" rx="13.5" fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="1.5" />
       <path
         d="M20 44V20h10.5c5.2 0 8.5 3.1 8.5 7.8 0 4.8-3.3 7.9-8.5 7.9H25.2V44H20zm5.2-12.5h4.9c2.4 0 3.8-1.3 3.8-3.7s-1.4-3.6-3.8-3.6h-4.9v7.3z"

@@ -522,7 +522,7 @@ function DeckCore({ title, initialList, eligibleQuizzes = [], selectedSource, on
               <span className="small muted">Question {currentIdx + 1}</span>
             </div>
 
-            <div className="card-soft stack-sm" style={{ padding: '14px 18px', background: 'var(--teal-50)', border: '1px solid #bbf7d0' }}>
+            <div className="card-soft stack-sm" style={{ padding: '14px 18px', background: 'var(--teal-50)', border: '1px solid var(--teal-200)' }}>
               <span className="eyebrow" style={{ color: 'var(--teal-dark)' }}>Correct Answer</span>
               {(card.kind === 'mcq' || card.kind === 'truefalse') && (
                 <div className="strong" style={{ fontSize: 16, color: 'var(--text)' }}>

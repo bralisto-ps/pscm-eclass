@@ -250,6 +250,7 @@ function WeekCard({ title, summary, unlockAt, hasPrereq, items, onAdd, onEdit, o
                 )}
               </span>
             </span>
+            <div className="list-actions">
             {statsSupported && onViewers && (
               <button
                 type="button"
@@ -289,6 +290,7 @@ function WeekCard({ title, summary, unlockAt, hasPrereq, items, onAdd, onEdit, o
             <button type="button" className="icon-btn plain" aria-label={`Delete ${m.title}`} onClick={() => onDelete(m)}>
               <Icon name="trash" />
             </button>
+            </div>
           </div>
         );
       })}
