@@ -31,13 +31,13 @@ const TABS = [
   { id: 'materials', label: 'Materials' },
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'assignments', label: 'Assignments' },
-  { id: 'slots', label: 'Slots' },
   { id: 'attendance', label: 'Attendance' },
-  { id: 'polls', label: 'Polls & Feedback' },
   { id: 'grades', label: 'My grades' },
+  { id: 'announcements', label: 'Announcements' },
+  { id: 'polls', label: 'Polls & Feedback' },
+  { id: 'slots', label: 'Slots' },
   { id: 'qa', label: 'Q&A' },
   { id: 'messages', label: 'Messages' },
-  { id: 'announcements', label: 'Announcements' },
 ];
 
 export default function StudentCourse() {
@@ -220,7 +220,7 @@ export default function StudentCourse() {
           <div className="code">{course.code}</div>
           <h1>{course.title}</h1>
         </div>
-        <Tabs dark tabs={tabsWithCounts} value={tab} onChange={setTab} />
+        <Tabs dark tabs={tabsWithCounts} primaryCount={5} value={tab} onChange={setTab} />
       </header>
 
       <div className="page">
