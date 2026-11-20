@@ -231,6 +231,9 @@ function QuizList({ course, ta, readOnly = false }) {
         </div>
       )}
 
+      {aiModal && (
+        <AIGeneratorModal courseId={course.id} onClose={() => setAiModal(false)} onDone={reload} />
+      )}
       {seatingQuiz && (
         <ExamSeatingModal course={course} quiz={seatingQuiz} onClose={() => setSeatingQuiz(null)} />
       )}

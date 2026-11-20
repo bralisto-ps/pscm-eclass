@@ -109,6 +109,7 @@ export default function QuestionBank({ course }) {
         )}
       </section>
 
+      {aiModal && <AIGeneratorModal courseId={course.id} onClose={() => setAiModal(false)} onDone={reload} />}
       {copying && <CopyModal courseId={course.id} quizzes={data.quizzes} questions={data.questions.filter((x) => sel.has(x.id))} onClose={() => setCopying(false)} onDone={() => { setCopying(false); setSel(new Set()); reload(); }} />}
       {random && <RandomModal courseId={course.id} quizzes={data.quizzes} questions={data.questions} topics={topics} onClose={() => setRandom(false)} onDone={() => { setRandom(false); reload(); }} />}
       {tagging && <TopicModal ids={[...sel]} topics={topics.map(([t]) => t).filter(Boolean)} onClose={() => setTagging(false)} onDone={() => { setTagging(false); setSel(new Set()); reload(); }} />}

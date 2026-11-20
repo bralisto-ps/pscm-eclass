@@ -1828,7 +1828,7 @@ function SimilarityModal({ a, assignMeta, rows, blindMode, blindMap, onClose }) 
                             <div className="stack-sm" style={{ gap: 4 }}>
                               <span className="tiny strong muted">Longest matched sequences:</span>
                               {pair.snippets.map((snip, idx) => (
-                                <div key={idx} className="tiny" style={{ padding: '6px 10px', borderRadius: 6, background: '#fef3c7', color: '#78350f', border: '1px solid #fcd34d' }}>
+                                <div key={idx} className="tiny" style={{ padding: '6px 10px', borderRadius: 6, background: 'var(--amber-50)', color: 'var(--amber-ink)', border: '1px solid var(--amber)' }}>
                                   “{snip}”
                                 </div>
                               ))}
@@ -1885,7 +1885,7 @@ function SimilarityModal({ a, assignMeta, rows, blindMode, blindMap, onClose }) 
                       {isOpen && m.snippets?.length > 0 && (
                         <div className="stack-sm" style={{ paddingTop: 8, borderTop: '1px solid var(--line-2)', gap: 4 }}>
                           {m.snippets.map((snip, idx) => (
-                            <div key={idx} className="tiny" style={{ padding: '6px 10px', borderRadius: 6, background: '#fef3c7', color: '#78350f', border: '1px solid #fcd34d' }}>
+                            <div key={idx} className="tiny" style={{ padding: '6px 10px', borderRadius: 6, background: 'var(--amber-50)', color: 'var(--amber-ink)', border: '1px solid var(--amber)' }}>
                               “{snip}”
                             </div>
                           ))}
