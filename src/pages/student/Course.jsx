@@ -12,7 +12,7 @@ import Messages from '../../components/Messages.jsx';
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { rpc, run, supabase, safeFileName } from '../../lib/supabase.js';
-import { isViewOnlyPath, openStoredFile, setViewOnlyFlag, uploadFile, SUBMISSION_ACCEPT } from '../../lib/files.js';
+import { getSignedFileUrl, isViewOnlyPath, openStoredFile, setViewOnlyFlag, stripViewOnly, uploadFile, SUBMISSION_ACCEPT } from '../../lib/files.js';
 const SecureSlideViewer = lazy(() => import('../../components/SecureSlideViewer.jsx'));
 import CheckInModal from '../../components/CheckIn.jsx';
 import Forum from '../../components/Forum.jsx';
@@ -290,6 +290,24 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
   const [reading, setReading] = useState(null);
   const [savingOffline, setSavingOffline] = useState(false);
   const [offlineIds, setOfflineIds] = useState(() => new Set());
+  const [toolkitOpen, setToolkitOpen] = useState(false);
+  const groups = useMemo(() => {
+    const g = data.modules.map((m) => ({ ...m, items: data.materials.filter((x) => x.module_id === m.id) }));
+    const loose = data.materials.filter((x) => !x.module_id);
+    if (loose.length) g.unshift({ id: 'general', title: 'General', week_no: null, summary: '', items: loose });
+    return g;
+  }, [data]);
+  const gatesMap = data.gatesMap || {};
+  const totalMaterials = data.materials.length;
+  const totalViewed = data.materials.filter((m) => viewedSet.has(m.id)).length;
+  const progressPct = totalMaterials > 0 ? Math.round((totalViewed / totalMaterials) * 100) : 0;
+  const latest = [...groups].reverse().find((g) => g.items.length) || groups[0];
+  const [selected, setSelected] = useState(latest?.id);
+  const current = groups.find((g) => g.id === selected) || latest;
+  const currentGate = current ? gatesMap[current.id] : null;
+  const currentPrereqLocked = Boolean(currentGate && currentGate.unlocked === false);
+  const nextQuiz = graded.find((q) => !q.best && (!q.closes_at || new Date(q.closes_at) > new Date()));
+
   useEffect(() => {
     if (typeof caches === 'undefined') return;
     caches.open('pscm-offline-materials').then(async (cache) => {
@@ -302,6 +320,7 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
       setOfflineIds(ids);
     }).catch(() => {});
   }, [current?.id]);
+
   async function saveWeekOffline() {
     if (!current || typeof caches === 'undefined') return;
     const files = current.items.filter((m) => !m.url && m.storage_path && !isItemLocked(m.unlock_at) && !isViewOnlyPath(m.storage_path));
@@ -328,23 +347,6 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
       setSavingOffline(false);
     }
   }
-  const [toolkitOpen, setToolkitOpen] = useState(false);
-  const groups = useMemo(() => {
-    const g = data.modules.map((m) => ({ ...m, items: data.materials.filter((x) => x.module_id === m.id) }));
-    const loose = data.materials.filter((x) => !x.module_id);
-    if (loose.length) g.unshift({ id: 'general', title: 'General', week_no: null, summary: '', items: loose });
-    return g;
-  }, [data]);
-  const gatesMap = data.gatesMap || {};
-  const totalMaterials = data.materials.length;
-  const totalViewed = data.materials.filter((m) => viewedSet.has(m.id)).length;
-  const progressPct = totalMaterials > 0 ? Math.round((totalViewed / totalMaterials) * 100) : 0;
-  const latest = [...groups].reverse().find((g) => g.items.length) || groups[0];
-  const [selected, setSelected] = useState(latest?.id);
-  const current = groups.find((g) => g.id === selected) || latest;
-  const currentGate = current ? gatesMap[current.id] : null;
-  const currentPrereqLocked = Boolean(currentGate && currentGate.unlocked === false);
-  const nextQuiz = graded.find((q) => !q.best && (!q.closes_at || new Date(q.closes_at) > new Date()));
 
   function open(m) {
     setViewedSet((prev) => {
@@ -353,21 +355,25 @@ function Materials({ data, course, profile, onQuizzes, graded }) {
       return next;
     });
     supabase.rpc('record_material_view', { p_material: m.id }).then(() => {}, () => {});
-    if (m.url) window.open(m.url, '_blank', 'noopener');
-    else if (isViewOnlyPath(m.storage_path)) setReading(m);
-    else if (m.storage_path) {
-      act(async () => {
-        if (typeof caches !== 'undefined') {
+    if (m.url) {
+      window.open(m.url, '_blank', 'noopener');
+    } else if (isViewOnlyPath(m.storage_path)) {
+      setReading(m);
+    } else if (m.storage_path) {
+      if (!navigator.onLine && typeof caches !== 'undefined') {
+        act(async () => {
           const cache = await caches.open('pscm-offline-materials');
           const cached = await cache.match(`/offline-material/${m.id}`);
-          if (cached && !navigator.onLine) {
+          if (cached) {
             const blobUrl = URL.createObjectURL(await cached.blob());
             window.open(blobUrl, '_blank', 'noopener');
             return;
           }
-        }
-        await openStoredFile('materials', m.storage_path);
-      });
+          throw new Error('You are offline and this file was not saved offline yet.');
+        });
+      } else {
+        act(() => openStoredFile('materials', m.storage_path));
+      }
     }
   }
 
