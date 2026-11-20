@@ -296,6 +296,22 @@ export default function TakeQuiz() {
     );
   }
   if (data.attempt.status !== 'in_progress') return <Done quiz={data.quiz} attempt={data.attempt} status={data.attempt.status} />;
+  if (!Array.isArray(data.questions) || !data.questions.length) {
+    return (
+      <div className="page page-narrow" style={{ marginTop: 40 }}>
+        <div className="card stack" style={{ textAlign: 'center', padding: 36 }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
+          <h2>No Questions in this Quiz Yet</h2>
+          <p className="muted" style={{ maxWidth: 440, margin: '0 auto 16px' }}>
+            No questions are currently available for this quiz attempt. If format quotas were configured, ensure the question bank contains questions for those formats.
+          </p>
+          <Link to="/" className="btn btn-primary" style={{ alignSelf: 'center' }}>
+            Back to courses
+          </Link>
+        </div>
+      </div>
+    );
+  }
   return <Runner initial={data} />;
 }
 
@@ -352,23 +368,6 @@ function Runner({ initial }) {
   const quiz = initial?.quiz || {};
   const questions = Array.isArray(initial?.questions) ? initial.questions : [];
   const student = initial?.student || {};
-
-  if (!questions.length) {
-    return (
-      <div className="page page-narrow" style={{ marginTop: 40 }}>
-        <div className="card stack" style={{ textAlign: 'center', padding: 36 }}>
-          <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
-          <h2>No Questions in this Quiz Yet</h2>
-          <p className="muted" style={{ maxWidth: 440, margin: '0 auto 16px' }}>
-            No questions are currently available for this quiz attempt. If format quotas were configured, ensure the question bank contains questions for those formats.
-          </p>
-          <Link to="/" className="btn btn-primary" style={{ alignSelf: 'center' }}>
-            Back to courses
-          </Link>
-        </div>
-      </div>
-    );
-  }
 
   const toast = useToast();
   const strict = !!quiz.lockdown;
