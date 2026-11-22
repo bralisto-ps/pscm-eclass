@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { rpc, rpcAll, run, supabase } from '../../lib/supabase.js';
 import { fmtFull, fmtNumber, pct } from '../../lib/format.js';
@@ -19,6 +19,7 @@ import { parseQuizMeta, serializeQuizMeta } from '../../lib/quizMeta.js';
 import RubricGrader, { RubricEditor } from '../../components/RubricGrader.jsx';
 import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
 import MarkReviewQueue from '../../components/MarkReviewQueue.jsx';
+import { AI_STRICTNESS_OPTIONS, aiGradeQuestionGroups } from '../../lib/aiGrade.js';
 
 const BINS = [
   { label: '0–39%', lo: 0, hi: 39.999, color: 'var(--amber)' },
@@ -162,7 +163,30 @@ export default function QuizResults() {
         {tab === 'gradebook' && <Gradebook quiz={quiz} rows={rows} reload={reload} ta={restricted} isExaminer={isExaminer} modMap={data.modMap || {}} photos={photoMap} photoMeta={photoMeta} />}
         {tab === 'live' && !isExaminer && <LiveQuizMonitor quiz={quiz} isTA={isPureTA} onMutate={reload} />}
         {tab === 'short' && !isExaminer && <ShortAnswerClusterTab quiz={quiz} onUpdated={reload} onShowSql={() => setShowFeaturesSql(true)} />}
-        {tab === 'marking' && !isExaminer && <Marking quiz={quiz} isTA={isPureTA} queue={queue} onQuizUpdated={(nextQ) => setData((d) => ({ ...d, quiz: nextQ }))} onMarked={(id, marks, feedback) => setData((d) => ({ ...d, queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)) }))} reload={reload} />}
+        {tab === 'marking' && !isExaminer && (
+          <Marking
+            quiz={quiz}
+            isTA={isPureTA}
+            queue={queue}
+            onQuizUpdated={(nextQ) => setData((d) => ({ ...d, quiz: nextQ }))}
+            onGuideUpdated={(questionId, guide) => setData((d) => ({
+              ...d,
+              queue: d.queue.map((r) => (r.question_id === questionId ? { ...r, model_answer: guide } : r)),
+            }))}
+            onMarked={(id, marks, feedback) => setData((d) => ({
+              ...d,
+              queue: d.queue.map((r) => (r.response_id === id ? { ...r, marks_awarded: marks, feedback } : r)),
+            }))}
+            onBatchMarked={(updatesMap) => setData((d) => ({
+              ...d,
+              queue: d.queue.map((r) => {
+                const u = updatesMap.get(r.response_id);
+                return u ? { ...r, marks_awarded: u.marks, feedback: u.feedback } : r;
+              }),
+            }))}
+            reload={reload}
+          />
+        )}
         {tab === 'reviews' && !isExaminer && <MarkReviewQueue reviews={reviews || []} onResolved={reload} title="Quiz mark review requests" />}
         {tab === 'analysis' && !isPureTA && <ItemAnalysis quiz={quiz} />}
         {tab === 'integrity' && !restricted && <Integrity quiz={quiz} rows={rows} photos={photoMap} onShowSql={() => setShowFeaturesSql(true)} />}
@@ -774,26 +798,91 @@ function normalizeWrittenAnswer(text) {
   return raw.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim() || raw.toLowerCase();
 }
 
-function Marking({ quiz, isTA, queue, onMarked, onQuizUpdated }) {
+function groupWrittenItems(list) {
+  const m = new Map();
+  for (const r of list) {
+    const k = normalizeWrittenAnswer(r.answer);
+    if (!m.has(k)) m.set(k, { key: k, sampleAnswer: r.answer, max_marks: r.max_marks, items: [] });
+    m.get(k).items.push(r);
+  }
+  return [...m.values()].sort((a, b) => b.items.length - a.items.length);
+}
+
+function AiBadgeStrip({ suggestion, max }) {
+  if (!suggestion) return null;
+  const confMeta =
+    suggestion.confidence === 'high'
+      ? { label: 'High confidence', cls: 'badge-teal' }
+      : suggestion.confidence === 'low'
+      ? { label: 'Low — review closely', cls: 'badge-red' }
+      : { label: 'Medium — check', cls: 'badge-amber' };
+  return (
+    <div
+      className="row-wrap"
+      style={{
+        gap: 6,
+        padding: '7px 10px',
+        background: 'var(--teal-50)',
+        border: '1px solid var(--line)',
+        borderRadius: 8,
+        alignItems: 'center',
+      }}
+    >
+      <Icon name="sparkles" size={14} />
+      <span className="small strong">
+        AI suggested {fmtNumber(suggestion.marks)} / {fmtNumber(max)}
+      </span>
+      <span className="badge">{suggestion.similarity}% model match</span>
+      <span className={`badge ${confMeta.cls}`}>{confMeta.label}</span>
+    </div>
+  );
+}
+
+function Marking({ quiz, isTA, queue, onMarked, onBatchMarked, onQuizUpdated, onGuideUpdated }) {
   const toast = useToast();
   const [editingRubric, setEditingRubric] = useState(false);
   const [savingRubric, setSavingRubric] = useState(false);
+  const [editingGuide, setEditingGuide] = useState(false);
+  const [guideDraft, setGuideDraft] = useState('');
+  const [savingGuide, setSavingGuide] = useState(false);
+
+  const [aiStrictness, setAiStrictness] = useState('standard');
+  const [aiMode, setAiMode] = useState('suggest'); // 'suggest' | 'auto'
+  const [aiSuggestions, setAiSuggestions] = useState({});
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiProgress, setAiProgress] = useState(null); // { label, done, total }
+  const [aiError, setAiError] = useState('');
+  const [applyingAi, setApplyingAi] = useState(false);
+  const [onlyReviewFlagged, setOnlyReviewFlagged] = useState(false);
+  const [confirmAutoScope, setConfirmAutoScope] = useState(null); // 'current' | 'all' | null
+  const abortRef = useRef(null);
+
   const quizMeta = useMemo(() => parseQuizMeta(quiz), [quiz]);
 
   const questions = useMemo(() => {
     const m = new Map();
     queue.forEach((r) => {
-      if (!m.has(r.question_id)) m.set(r.question_id, { id: r.question_id, prompt: r.prompt, max: r.max_marks, guide: r.model_answer, items: [] });
+      if (!m.has(r.question_id)) {
+        m.set(r.question_id, { id: r.question_id, prompt: r.prompt, max: r.max_marks, guide: r.model_answer || '', items: [] });
+      }
       m.get(r.question_id).items.push(r);
     });
     return [...m.values()];
   }, [queue]);
+
   const [selected, setSelected] = useState(questions[0]?.id);
   const [onlyPending, setOnlyPending] = useState(true);
   const [groupSimilar, setGroupSimilar] = useState(true);
   const [blindMode, setBlindMode] = useState(false);
 
   const current = questions.find((x) => x.id === selected) || questions[0] || null;
+
+  useEffect(() => {
+    setEditingGuide(false);
+    setGuideDraft(current?.guide || '');
+    setOnlyReviewFlagged(false);
+  }, [current?.id]);
+
   const scriptLabels = useMemo(() => {
     const map = new Map();
     if (!current) return map;
@@ -809,28 +898,238 @@ function Marking({ quiz, isTA, queue, onMarked, onQuizUpdated }) {
 
   const items = useMemo(() => {
     if (!current) return [];
-    const list = current.items.filter((r) => !onlyPending || r.marks_awarded === null);
+    let list = current.items.filter((r) => !onlyPending || r.marks_awarded === null);
+    if (onlyReviewFlagged) {
+      list = list.filter((r) => {
+        const s = aiSuggestions[r.response_id];
+        return s && s.confidence !== 'high';
+      });
+    }
     if (!blindMode) return list;
     return [...list].sort((a, b) =>
       hashBlindSeed(`${quiz.id}:${a.response_id}`) - hashBlindSeed(`${quiz.id}:${b.response_id}`)
     );
-  }, [current, onlyPending, blindMode, quiz.id]);
+  }, [current, onlyPending, onlyReviewFlagged, aiSuggestions, blindMode, quiz.id]);
+
   const markedCount = current ? current.items.filter((r) => r.marks_awarded !== null).length : 0;
+  const unmarkedForCurrent = useMemo(
+    () => (current ? current.items.filter((r) => r.marks_awarded === null) : []),
+    [current]
+  );
+  const totalUnmarkedAll = useMemo(
+    () => questions.reduce((sum, q) => sum + q.items.filter((r) => r.marks_awarded === null).length, 0),
+    [questions]
+  );
 
-  const groups = useMemo(() => {
-    const m = new Map();
-    for (const r of items) {
-      const k = normalizeWrittenAnswer(r.answer);
-      if (!m.has(k)) m.set(k, { key: k, sampleAnswer: r.answer, max_marks: r.max_marks, items: [] });
-      m.get(k).items.push(r);
-    }
-    return [...m.values()].sort((a, b) => b.items.length - a.items.length);
-  }, [items]);
+  const currentSuggestedItems = useMemo(() => {
+    if (!current) return [];
+    return current.items.filter((r) => r.marks_awarded === null && aiSuggestions[r.response_id]);
+  }, [current, aiSuggestions]);
 
-  if (!questions.length) return <div className="card"><Empty icon="edit" title="No written answers">This quiz has no written-answer questions, or nobody has submitted yet.</Empty></div>;
+  const highConfSuggested = useMemo(
+    () => currentSuggestedItems.filter((r) => aiSuggestions[r.response_id]?.confidence === 'high'),
+    [currentSuggestedItems, aiSuggestions]
+  );
+
+  const groups = useMemo(() => groupWrittenItems(items), [items]);
+
+  if (!questions.length) {
+    return (
+      <div className="card">
+        <Empty icon="edit" title="No written answers">
+          This quiz has no written-answer questions, or nobody has submitted yet.
+        </Empty>
+      </div>
+    );
+  }
 
   const savedClusters = items.length - groups.length;
   const activeRubric = (current && quizMeta.question_rubrics?.[current.id]) || [];
+
+  async function saveGuide() {
+    if (!current) return;
+    setSavingGuide(true);
+    try {
+      const cleaned = guideDraft.trim();
+      await run(supabase.from('questions').update({ explanation: cleaned }).eq('id', current.id));
+      onGuideUpdated?.(current.id, cleaned);
+      setEditingGuide(false);
+      setAiError('');
+      toast('Model answer saved.');
+    } catch (e) {
+      toast(e.message || 'Could not save model answer.', 'error');
+    } finally {
+      setSavingGuide(false);
+    }
+  }
+
+  async function saveMarksBatch(entries) {
+    if (!entries.length) return;
+    const savedMap = new Map();
+    for (let i = 0; i < entries.length; i += 8) {
+      const batch = entries.slice(i, i + 8);
+      await Promise.all(
+        batch.map(async (e) => {
+          await rpc('mark_response', { p_response: e.response_id, p_marks: e.marks, p_feedback: e.feedback });
+          savedMap.set(e.response_id, { marks: e.marks, feedback: e.feedback });
+        })
+      );
+    }
+    if (onBatchMarked) {
+      onBatchMarked(savedMap);
+    } else {
+      savedMap.forEach((v, id) => onMarked(id, v.marks, v.feedback));
+    }
+    setAiSuggestions((prev) => {
+      const next = { ...prev };
+      savedMap.forEach((_, id) => delete next[id]);
+      return next;
+    });
+  }
+
+  async function runAiMarking(scope, autoSave) {
+    const targets = scope === 'all' ? questions : current ? [current] : [];
+    const eligible = targets.filter(
+      (q) => String(q.guide || '').trim() && q.items.some((r) => r.marks_awarded === null)
+    );
+    const missingGuide = targets.filter(
+      (q) => !String(q.guide || '').trim() && q.items.some((r) => r.marks_awarded === null)
+    );
+
+    if (!eligible.length) {
+      if (missingGuide.length) {
+        const msg =
+          scope === 'all'
+            ? 'None of the unmarked written questions have a model answer yet. Add a model answer first.'
+            : 'Add a model answer for this question so AI can compare student answers against yours.';
+        setAiError(msg);
+        toast(msg, 'error');
+      } else {
+        toast('All written answers in this selection are already marked.');
+      }
+      return;
+    }
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setAiBusy(true);
+    setAiError('');
+
+    let totalResponsesGraded = 0;
+    let totalSaved = 0;
+    const newSuggestions = {};
+
+    try {
+      for (let qi = 0; qi < eligible.length; qi++) {
+        const q = eligible[qi];
+        const pendingItems = q.items.filter((r) => r.marks_awarded === null);
+        const qGroups = groupWrittenItems(pendingItems);
+        const qRubric = quizMeta.question_rubrics?.[q.id] || [];
+        const qLabel = eligible.length > 1 ? `Question ${qi + 1} of ${eligible.length}` : 'Current question';
+
+        setAiProgress({ label: `${qLabel} · grading ${qGroups.length} unique answer${qGroups.length === 1 ? '' : 's'}…`, done: 0, total: qGroups.length });
+
+        const { suggestions } = await aiGradeQuestionGroups({
+          courseId: quiz.course_id,
+          quizId: quiz.id,
+          prompt: q.prompt,
+          modelAnswer: q.guide,
+          maxMarks: q.max,
+          rubric: qRubric,
+          strictness: aiStrictness,
+          groups: qGroups,
+          batchSize: 10,
+          signal: controller.signal,
+          onProgress: (done, total) => {
+            setAiProgress({
+              label: `${qLabel} · ${done} / ${total} unique answers graded`,
+              done,
+              total,
+            });
+          },
+        });
+
+        const entries = Object.entries(suggestions).map(([response_id, s]) => ({
+          response_id,
+          marks: s.marks,
+          feedback: s.feedback,
+        }));
+        totalResponsesGraded += entries.length;
+
+        if (autoSave) {
+          setAiProgress({
+            label: `${qLabel} · saving ${entries.length} marks…`,
+            done: qGroups.length,
+            total: qGroups.length,
+          });
+          await saveMarksBatch(entries);
+          totalSaved += entries.length;
+        } else {
+          Object.assign(newSuggestions, suggestions);
+          setAiSuggestions((prev) => ({ ...prev, ...suggestions }));
+        }
+      }
+
+      const skipNote = missingGuide.length
+        ? ` (${missingGuide.length} question${missingGuide.length === 1 ? '' : 's'} skipped — no model answer)`
+        : '';
+
+      if (autoSave) {
+        toast(`AI marked and saved ${totalSaved} response${totalSaved === 1 ? '' : 's'}${skipNote}.`);
+      } else {
+        toast(`AI suggested marks for ${totalResponsesGraded} response${totalResponsesGraded === 1 ? '' : 's'}. Review or click Apply${skipNote}.`);
+      }
+    } catch (e) {
+      const msg = e?.message || 'AI marking failed.';
+      if (!/cancelled/i.test(msg)) setAiError(msg);
+      toast(msg, /cancelled/i.test(msg) ? 'info' : 'error');
+    } finally {
+      abortRef.current = null;
+      setAiBusy(false);
+      setAiProgress(null);
+    }
+  }
+
+  async function applySuggestions(onlyHigh) {
+    const targetList = onlyHigh ? highConfSuggested : currentSuggestedItems;
+    if (!targetList.length) return;
+    setApplyingAi(true);
+    try {
+      const entries = targetList.map((r) => ({
+        response_id: r.response_id,
+        marks: aiSuggestions[r.response_id].marks,
+        feedback: aiSuggestions[r.response_id].feedback,
+      }));
+      await saveMarksBatch(entries);
+      toast(`Saved AI marks for ${entries.length} response${entries.length === 1 ? '' : 's'}.`);
+    } catch (e) {
+      toast(e.message || 'Could not apply AI marks.', 'error');
+    } finally {
+      setApplyingAi(false);
+    }
+  }
+
+  function handleMarkSaved(id, marks, feedback) {
+    onMarked(id, marks, feedback);
+    setAiSuggestions((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }
+
+  function clearCurrentSuggestions() {
+    if (!current) return;
+    setAiSuggestions((prev) => {
+      const next = { ...prev };
+      current.items.forEach((r) => delete next[r.response_id]);
+      return next;
+    });
+    setOnlyReviewFlagged(false);
+  }
+
+  const flaggedCount = currentSuggestedItems.length - highConfSuggested.length;
 
   return (
     <div className="two-col" style={{ gridTemplateColumns: 'minmax(0,1fr) 340px' }}>
@@ -855,38 +1154,141 @@ function Marking({ quiz, isTA, queue, onMarked, onQuizUpdated }) {
             </label>
           </div>
         </div>
-        {items.length === 0 && <div className="card"><Empty icon="check" title="All marked">Every answer to this question has marks.</Empty></div>}
+
+        {currentSuggestedItems.length > 0 && (
+          <div className="card stack-sm" style={{ borderColor: 'var(--teal)' }}>
+            <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+              <div className="row-wrap" style={{ gap: 8, alignItems: 'center' }}>
+                <Icon name="sparkles" size={16} />
+                <span className="strong small">
+                  AI suggestions ready for {currentSuggestedItems.length} unmarked answer{currentSuggestedItems.length === 1 ? '' : 's'}
+                </span>
+                {highConfSuggested.length > 0 && (
+                  <span className="badge badge-teal">{highConfSuggested.length} high confidence</span>
+                )}
+                {flaggedCount > 0 && (
+                  <span className="badge badge-amber">{flaggedCount} medium/low to check</span>
+                )}
+              </div>
+              <div className="row-wrap" style={{ gap: 6 }}>
+                {flaggedCount > 0 && (
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${onlyReviewFlagged ? 'btn-primary' : ''}`}
+                    onClick={() => setOnlyReviewFlagged((v) => !v)}
+                    disabled={applyingAi}
+                  >
+                    {onlyReviewFlagged ? 'Show all' : `Check flagged (${flaggedCount})`}
+                  </button>
+                )}
+                {highConfSuggested.length > 0 && highConfSuggested.length < currentSuggestedItems.length && (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    onClick={() => applySuggestions(true)}
+                    disabled={applyingAi}
+                  >
+                    {applyingAi ? 'Saving…' : `Apply high-confidence (${highConfSuggested.length})`}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  onClick={() => applySuggestions(false)}
+                  disabled={applyingAi}
+                >
+                  {applyingAi ? 'Saving…' : `Apply all (${currentSuggestedItems.length})`}
+                </button>
+                <button type="button" className="btn btn-sm btn-ghost" onClick={clearCurrentSuggestions} disabled={applyingAi}>
+                  Clear
+                </button>
+              </div>
+            </div>
+            <p className="tiny muted">
+              Marks and feedback are pre-filled on each card below. Adjust any answer individually, or apply them in one click.
+            </p>
+          </div>
+        )}
+
+        {items.length === 0 && (
+          <div className="card">
+            <Empty icon="check" title={onlyReviewFlagged ? 'No flagged answers' : 'All marked'}>
+              {onlyReviewFlagged
+                ? 'All AI suggestions for this question are high confidence.'
+                : 'Every answer to this question has marks.'}
+            </Empty>
+          </div>
+        )}
+
         {groupSimilar ? (
           <>
             {groups.slice(0, 50).map((g) => (
               g.items.length === 1
-                ? <MarkCard key={g.items[0].response_id} r={g.items[0]} rubric={activeRubric} blindLabel={blindMode ? scriptLabels.get(g.items[0].response_id) : ''} onMarked={onMarked} />
-                : <MarkGroupCard key={g.key + '-' + g.items.map((x) => x.response_id).join(',')} group={g} rubric={activeRubric} blindMode={blindMode} scriptLabels={scriptLabels} onMarked={onMarked} />
+                ? (
+                  <MarkCard
+                    key={g.items[0].response_id}
+                    r={g.items[0]}
+                    rubric={activeRubric}
+                    blindLabel={blindMode ? scriptLabels.get(g.items[0].response_id) : ''}
+                    aiSuggestion={aiSuggestions[g.items[0].response_id] || null}
+                    onMarked={handleMarkSaved}
+                  />
+                )
+                : (
+                  <MarkGroupCard
+                    key={g.key + '-' + g.items.map((x) => x.response_id).join(',')}
+                    group={g}
+                    rubric={activeRubric}
+                    blindMode={blindMode}
+                    scriptLabels={scriptLabels}
+                    aiSuggestion={aiSuggestions[g.items[0].response_id] || null}
+                    onMarked={handleMarkSaved}
+                  />
+                )
             ))}
             {groups.length > 50 && <p className="small muted">Showing 50 groups at a time — marked groups disappear from this list as you go.</p>}
           </>
         ) : (
           <>
-            {items.slice(0, 50).map((r) => <MarkCard key={r.response_id} r={r} rubric={activeRubric} blindLabel={blindMode ? scriptLabels.get(r.response_id) : ''} onMarked={onMarked} />)}
+            {items.slice(0, 50).map((r) => (
+              <MarkCard
+                key={r.response_id}
+                r={r}
+                rubric={activeRubric}
+                blindLabel={blindMode ? scriptLabels.get(r.response_id) : ''}
+                aiSuggestion={aiSuggestions[r.response_id] || null}
+                onMarked={handleMarkSaved}
+              />
+            ))}
             {items.length > 50 && <p className="small muted">Showing 50 at a time — marked answers disappear from this list as you go.</p>}
           </>
         )}
       </main>
+
       <aside className="stack" style={{ position: 'sticky', top: 90, alignSelf: 'start' }}>
         {questions.length > 1 && (
-          <div className="card-flush">
+          <div className="list">
             {questions.map((x, i) => {
               const left = x.items.filter((r) => r.marks_awarded === null).length;
               return (
-                <button key={x.id} type="button" className="list-row" onClick={() => setSelected(x.id)}
-                  style={{ background: x.id === current.id ? 'var(--teal-50)' : undefined }}>
-                  <span className="list-main"><span className="title small">Written question {i + 1}</span><span className="tiny muted">{x.prompt.slice(0, 60)}…</span></span>
+                <button
+                  key={x.id}
+                  type="button"
+                  className="list-row"
+                  onClick={() => setSelected(x.id)}
+                  style={{ background: x.id === current.id ? 'var(--teal-50)' : undefined }}
+                >
+                  <span className="list-main">
+                    <span className="title small">Written question {i + 1}</span>
+                    <span className="tiny muted">{x.prompt.slice(0, 60)}…</span>
+                  </span>
                   {left > 0 ? <span className="badge badge-amber">{left}</span> : <span className="badge badge-teal">Done</span>}
                 </button>
               );
             })}
           </div>
         )}
+
         <div className="card stack-sm">
           <div className="between">
             <span className="eyebrow">Question · {fmtNumber(current.max)} marks</span>
@@ -897,7 +1299,44 @@ function Marking({ quiz, isTA, queue, onMarked, onQuizUpdated }) {
             )}
           </div>
           <p className="pre small">{current.prompt}</p>
-          {current.guide && (<><span className="eyebrow" style={{ marginTop: 8 }}>Your marking guide</span><p className="pre small" style={{ color: 'var(--text-2)' }}>{current.guide}</p></>)}
+
+          <div className="between" style={{ marginTop: 8 }}>
+            <span className="eyebrow">Your model answer / marking guide</span>
+            {!isTA && (
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={() => {
+                  setGuideDraft(current.guide || '');
+                  setEditingGuide(!editingGuide);
+                }}
+              >
+                {editingGuide ? 'Cancel' : current.guide ? 'Edit' : '+ Add model answer'}
+              </button>
+            )}
+          </div>
+
+          {editingGuide && !isTA ? (
+            <div className="stack-sm">
+              <textarea
+                className="textarea"
+                style={{ minHeight: 110 }}
+                value={guideDraft}
+                onChange={(e) => setGuideDraft(e.target.value)}
+                placeholder="Paste your course-specific model answer or key marking points here…"
+              />
+              <div className="row" style={{ justifyContent: 'flex-end', gap: 6 }}>
+                <button type="button" className="btn btn-sm btn-primary" disabled={savingGuide} onClick={saveGuide}>
+                  {savingGuide ? 'Saving…' : 'Save model answer'}
+                </button>
+              </div>
+            </div>
+          ) : current.guide ? (
+            <p className="pre small" style={{ color: 'var(--text-2)' }}>{current.guide}</p>
+          ) : (
+            <p className="tiny muted">No model answer yet. Add one to enable AI marking for this question.</p>
+          )}
+
           {editingRubric && !isTA && (
             <QuestionRubricBox
               key={current.id}
@@ -924,11 +1363,133 @@ function Marking({ quiz, isTA, queue, onMarked, onQuizUpdated }) {
             />
           )}
         </div>
+
+        <div className="card stack-sm">
+          <div className="between">
+            <span className="eyebrow row" style={{ gap: 6 }}>
+              <Icon name="sparkles" size={14} /> AI Marking (Model Answer)
+            </span>
+          </div>
+          <p className="tiny muted">
+            Compares anonymized student responses directly against your model answer{activeRubric.length ? ' and rubric' : ''} — never sends student names or index numbers.
+          </p>
+
+          <label className="field">
+            <span className="tiny">Grading strictness</span>
+            <select
+              className="select"
+              value={aiStrictness}
+              onChange={(e) => setAiStrictness(e.target.value)}
+              disabled={aiBusy}
+            >
+              {AI_STRICTNESS_OPTIONS.map((o) => (
+                <option key={o.id} value={o.id}>{o.label} — {o.desc}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field">
+            <span className="tiny">After AI grades</span>
+            <select
+              className="select"
+              value={aiMode}
+              onChange={(e) => setAiMode(e.target.value)}
+              disabled={aiBusy}
+            >
+              <option value="suggest">Suggest marks for my review (recommended)</option>
+              <option value="auto">Auto-save marks immediately</option>
+            </select>
+          </label>
+
+          {aiProgress && (
+            <div className="stack-sm" style={{ padding: '8px 10px', background: 'var(--surface-2)', borderRadius: 8 }}>
+              <div className="between tiny">
+                <span>{aiProgress.label}</span>
+                {aiProgress.total > 0 && (
+                  <span className="mono">{Math.round((aiProgress.done / aiProgress.total) * 100)}%</span>
+                )}
+              </div>
+              <div style={{ height: 6, background: 'var(--line)', borderRadius: 999, overflow: 'hidden' }}>
+                <div
+                  style={{
+                    height: '100%',
+                    width: `${aiProgress.total > 0 ? Math.min(100, Math.round((aiProgress.done / aiProgress.total) * 100)) : 20}%`,
+                    background: 'var(--teal)',
+                    transition: 'width 0.2s ease',
+                  }}
+                />
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                style={{ alignSelf: 'flex-end' }}
+                onClick={() => abortRef.current?.abort()}
+              >
+                Stop
+              </button>
+            </div>
+          )}
+
+          {aiError && <div className="notice notice-error tiny">{aiError}</div>}
+
+          <div className="stack-sm">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={aiBusy || unmarkedForCurrent.length === 0 || !String(current.guide || '').trim()}
+              onClick={() => {
+                if (aiMode === 'auto') setConfirmAutoScope('current');
+                else runAiMarking('current', false);
+              }}
+            >
+              <Icon name="sparkles" size={15} />
+              {aiBusy
+                ? 'AI grading…'
+                : aiMode === 'auto'
+                ? `AI mark & save question (${unmarkedForCurrent.length})`
+                : `AI suggest marks (${unmarkedForCurrent.length})`}
+            </button>
+
+            {questions.length > 1 && totalUnmarkedAll > unmarkedForCurrent.length && (
+              <button
+                type="button"
+                className="btn"
+                disabled={aiBusy || totalUnmarkedAll === 0}
+                onClick={() => {
+                  if (aiMode === 'auto') setConfirmAutoScope('all');
+                  else runAiMarking('all', false);
+                }}
+              >
+                {aiMode === 'auto'
+                  ? `AI mark & save all questions (${totalUnmarkedAll})`
+                  : `AI suggest all questions (${totalUnmarkedAll})`}
+              </button>
+            )}
+          </div>
+        </div>
       </aside>
+
+      {confirmAutoScope && (
+        <Confirm
+          title="Auto-save AI marks immediately?"
+          confirmLabel="Grade & save now"
+          busy={aiBusy}
+          message={
+            confirmAutoScope === 'all'
+              ? `AI will compare all ${totalUnmarkedAll} unmarked written answers across this quiz against your model answers and save marks & feedback immediately. Results stay hidden from students until you release them, and you can override any score afterwards.`
+              : `AI will compare all ${unmarkedForCurrent.length} unmarked written answers for this question against your model answer and save marks & feedback immediately. You can still edit any individual mark afterwards.`
+          }
+          onClose={() => setConfirmAutoScope(null)}
+          onConfirm={() => {
+            const scope = confirmAutoScope;
+            setConfirmAutoScope(null);
+            runAiMarking(scope, true);
+          }}
+        />
+      )}
     </div>
   );
 }
-
 
 function QuestionRubricBox({ initial, maxMarks, busy, onSave }) {
   const [criteria, setCriteria] = useState(initial || []);
@@ -944,14 +1505,20 @@ function QuestionRubricBox({ initial, maxMarks, busy, onSave }) {
   );
 }
 
-function MarkGroupCard({ group, rubric = [], blindMode = false, scriptLabels = null, onMarked }) {
+function MarkGroupCard({ group, rubric = [], blindMode = false, scriptLabels = null, aiSuggestion = null, onMarked }) {
   const toast = useToast();
   const max = Number(group.max_marks);
   const firstAwarded = group.items.every((x) => x.marks_awarded === group.items[0].marks_awarded) ? group.items[0].marks_awarded : null;
-  const [marks, setMarks] = useState(firstAwarded ?? (group.key === '__EMPTY__' ? 0 : ''));
-  const [feedback, setFeedback] = useState(group.items[0].feedback || '');
+  const [marks, setMarks] = useState(aiSuggestion ? aiSuggestion.marks : (firstAwarded ?? (group.key === '__EMPTY__' ? 0 : '')));
+  const [feedback, setFeedback] = useState(aiSuggestion ? aiSuggestion.feedback : (group.items[0].feedback || ''));
   const [busy, setBusy] = useState(false);
   const [showStudents, setShowStudents] = useState(false);
+
+  useEffect(() => {
+    if (!aiSuggestion) return;
+    setMarks(aiSuggestion.marks);
+    setFeedback(aiSuggestion.feedback || '');
+  }, [aiSuggestion]);
 
   async function saveAll(overrideMarks) {
     const val = overrideMarks !== undefined ? overrideMarks : marks;
@@ -999,6 +1566,7 @@ function MarkGroupCard({ group, rubric = [], blindMode = false, scriptLabels = n
       <p className="pre" style={{ background: 'var(--surface-2)', padding: '12px 14px', borderRadius: 8 }}>
         {group.sampleAnswer || <span className="muted">No answer submitted</span>}
       </p>
+      <AiBadgeStrip suggestion={aiSuggestion} max={max} />
       <RubricGrader
         criteria={rubric}
         maxMarks={max}
@@ -1027,12 +1595,18 @@ function MarkGroupCard({ group, rubric = [], blindMode = false, scriptLabels = n
   );
 }
 
-function MarkCard({ r, rubric = [], blindLabel = '', onMarked }) {
+function MarkCard({ r, rubric = [], blindLabel = '', aiSuggestion = null, onMarked }) {
   const toast = useToast();
   const max = Number(r.max_marks);
-  const [marks, setMarks] = useState(r.marks_awarded ?? '');
-  const [feedback, setFeedback] = useState(r.feedback || '');
+  const [marks, setMarks] = useState(aiSuggestion ? aiSuggestion.marks : (r.marks_awarded ?? ''));
+  const [feedback, setFeedback] = useState(aiSuggestion ? aiSuggestion.feedback : (r.feedback || ''));
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!aiSuggestion) return;
+    setMarks(aiSuggestion.marks);
+    setFeedback(aiSuggestion.feedback || '');
+  }, [aiSuggestion]);
 
   async function save() {
     const m = Number(marks);
@@ -1061,6 +1635,7 @@ function MarkCard({ r, rubric = [], blindLabel = '', onMarked }) {
         </div>
       </div>
       <p className="pre" style={{ background: 'var(--surface-2)', padding: '12px 14px', borderRadius: 8 }}>{r.answer || <span className="muted">No answer</span>}</p>
+      <AiBadgeStrip suggestion={aiSuggestion} max={max} />
       <RubricGrader
         criteria={rubric}
         maxMarks={max}
@@ -1086,7 +1661,6 @@ function MarkCard({ r, rubric = [], blindLabel = '', onMarked }) {
     </article>
   );
 }
-
 
 function ShortAnswerClusterTab({ quiz, onUpdated, onShowSql }) {
   const toast = useToast();

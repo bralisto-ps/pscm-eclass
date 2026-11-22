@@ -783,7 +783,7 @@ function QuestionEditor({ number, initial, quizId, courseId, outcomes = [], isNe
         )}
 
         <Field label={q.kind === 'essay' ? 'Marking guide / model answer' : 'Explanation'}
-          hint={q.kind === 'essay' ? 'you see this while marking' : 'shown to students when you release answers'}>
+          hint={q.kind === 'essay' ? 'you see this while marking · also used by AI Marking to grade student answers' : 'shown to students when you release answers'}>
           <textarea className="textarea" style={{ minHeight: 70 }} value={q.explanation} onChange={(e) => set('explanation', e.target.value)} />
         </Field>
 

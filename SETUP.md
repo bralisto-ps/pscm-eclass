@@ -37,8 +37,8 @@ Students sign in using only their **index number**; Supabase stores `name+INDEX@
    Deploy Edge Function `files` and set secrets:
    `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`.
    Then set `VITE_USE_R2=true` in Cloudflare Pages to route uploads/downloads through short-lived signed R2 URLs.
-2. **Server-Side AI Question Drafting (`supabase/functions/ai-draft/index.ts`):**
-   Deploy Edge Function `ai-draft` and set secret `GEMINI_API_KEY` in **Supabase → Edge Functions → Secrets**. The key never leaves Supabase servers.
+2. **Server-Side AI Question Drafting (`supabase/functions/ai-draft/index.ts`) & AI Written-Answer Marking (`supabase/functions/ai-grade/index.ts`):**
+   Deploy Edge Functions `ai-draft` and `ai-grade` (`supabase functions deploy ai-grade`) and set secret `GEMINI_API_KEY` in **Supabase → Edge Functions → Secrets**. The key never leaves Supabase servers.
 3. **Database JSON Snapshot Backup (`supabase/functions/backup/index.ts`):**
    Deploy Edge Function `backup` to trigger on-demand or scheduled table backups to R2 (or download JSON snapshots as lecturer).
 
