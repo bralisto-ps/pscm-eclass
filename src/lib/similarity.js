@@ -228,6 +228,25 @@ export async function extractTextFromFileUrl(signedUrl, fileName) {
   return { text: '', unsupported: true };
 }
 
+export async function extractTextFromLocalFile(file) {
+  if (!file) return { text: '', unsupported: true, reason: 'No file selected' };
+  const ext = String(file.name || '').split('.').pop()?.toLowerCase() || '';
+  if (!['pdf', 'docx', 'txt', 'md', 'csv'].includes(ext)) {
+    return { text: '', unsupported: true, reason: `.${ext || "file"} is not supported. Use .docx, text-based .pdf, or .txt.` };
+  }
+  if (ext === 'txt' || ext === 'md' || ext === 'csv') {
+    return { text: await file.text(), unsupported: false };
+  }
+  const buf = await file.arrayBuffer();
+  if (ext === 'pdf') {
+    return { text: await extractPdfTextFromBuffer(buf), unsupported: false };
+  }
+  if (ext === 'docx') {
+    return { text: await extractDocxTextFromBuffer(buf), unsupported: false };
+  }
+  return { text: '', unsupported: true };
+}
+
 /**
  * Extracts text across assignment rows in batches of 4.
  * Automatically deduplicates syndicate members so each syndicate is extracted & checked once.

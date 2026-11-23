@@ -18,6 +18,7 @@ import { AssignmentForm } from './course/AssignmentsTab.jsx';
 import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
 import MarkReviewQueue from '../../components/MarkReviewQueue.jsx';
 import PdfAnnotatorModal from '../../components/PdfAnnotatorModal.jsx';
+import AssignmentAiGradeModal, { AI_MODEL_ANSWER_PREFIX } from '../../components/AssignmentAiGradeModal.jsx';
 import { compareArchiveTexts, compareSubmissionTexts, extractAssignmentTexts } from '../../lib/similarity.js';
 
 const SecureSlideViewer = lazy(() => import('../../components/SecureSlideViewer.jsx'));
@@ -84,7 +85,12 @@ export default function AssignmentMarking() {
     const localSnipKey = `pscm_grading_snippets:${profile?.id || 'staff'}`;
     let localSnips = [];
     try { localSnips = JSON.parse(localStorage.getItem(localSnipKey) || '[]'); } catch { localSnips = []; }
-    const dbSnips = Array.isArray(snippetRes) ? snippetRes : [];
+    const rawDbSnips = Array.isArray(snippetRes) ? snippetRes : [];
+    const modelLabel = `${AI_MODEL_ANSWER_PREFIX}${assignmentId}`;
+    const modelRow = rawDbSnips.find((s) => s.label === modelLabel) || null;
+    let localModelAnswer = '';
+    try { localModelAnswer = localStorage.getItem(`pscm_ai_model_answer:${assignmentId}`) || ''; } catch { /* ignore */ }
+    const dbSnips = rawDbSnips.filter((s) => !String(s.label || '').startsWith(AI_MODEL_ANSWER_PREFIX));
     const seenLabels = new Set(dbSnips.map((s) => s.label));
     const customSnippets = [...dbSnips, ...localSnips.filter((s) => !seenLabels.has(s.label))];
     const exemplars = (Array.isArray(courseExemplars) ? courseExemplars : []).filter((ex) => ex.assignment_id === assignmentId);
@@ -96,6 +102,8 @@ export default function AssignmentMarking() {
       reviews: Array.isArray(reviews) ? reviews : [],
       exemplars,
       customSnippets,
+      aiModelAnswer: modelRow?.body || localModelAnswer || '',
+      aiModelSnippetId: modelRow?.id || null,
       bookingEvents: Array.isArray(bookingEvents) ? bookingEvents : [],
       staffRole: staffRole || 'lecturer',
       annMap: annMap && typeof annMap === 'object' ? annMap : {},
@@ -117,6 +125,7 @@ export default function AssignmentMarking() {
   const [extTarget, setExtTarget] = useState(null);
   const [nudging, setNudging] = useState(false);
   const [checkingSim, setCheckingSim] = useState(false);
+  const [aiGrading, setAiGrading] = useState(false);
   const [annotating, setAnnotating] = useState(null);
   const isExaminer = data?.staffRole === 'external_examiner';
   const isPureTA = isTA && data?.staffRole !== 'co_lecturer' && !isExaminer;
@@ -521,6 +530,16 @@ export default function AssignmentMarking() {
               >
                 <Icon name={blindMode ? 'eyeOff' : 'eye'} size={15} /> {blindMode ? 'Blind mode ON' : 'Blind marking'}
               </button>
+              {!isExaminer && submitted.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  onClick={() => setAiGrading(true)}
+                  title="Grade submitted typed answers, Word docs, and text PDFs against your private model answer"
+                >
+                  <Icon name="sparkles" size={15} /> AI mark
+                </button>
+              )}
               {submitted.length >= 2 && (
                 <button
                   type="button"
@@ -739,6 +758,22 @@ export default function AssignmentMarking() {
         />
       )}
 
+      {aiGrading && !isExaminer && (
+        <AssignmentAiGradeModal
+          a={a}
+          assignMeta={assignMeta}
+          rows={enrichedRows}
+          blindMode={blindMode}
+          blindMap={blindMap}
+          profileId={profile?.id || ''}
+          initialModelAnswer={data.aiModelAnswer || ''}
+          initialSnippetId={data.aiModelSnippetId || null}
+          onModelAnswerSaved={(text, nextId) => setData((d) => ({ ...d, aiModelAnswer: text, aiModelSnippetId: nextId }))}
+          onApplied={reload}
+          onShowSql={() => setShowSql(true)}
+          onClose={() => setAiGrading(false)}
+        />
+      )}
       {checkingSim && (
         <SimilarityModal
           a={a}

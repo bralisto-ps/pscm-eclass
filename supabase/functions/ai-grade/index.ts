@@ -1,7 +1,7 @@
-// Server-side AI Written-Answer Grading Edge Function (PSCM E-class)
-// Compares anonymized student written answers against the lecturer's model answer
-// (and optional rubric) using the @google/genai SDK with GEMINI_API_KEY stored
-// strictly in Supabase Edge Function Secrets.
+// Server-side AI Written-Answer & Assignment Grading Edge Function (PSCM E-class)
+// Compares anonymized student written quiz answers OR assignment submissions against
+// the lecturer's course-specific model answer (and optional rubric) using the
+// @google/genai SDK with GEMINI_API_KEY stored strictly in Supabase Edge Function Secrets.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { GoogleGenAI, Type } from "npm:@google/genai";
@@ -47,7 +47,9 @@ interface IncomingItem {
 
 interface RubricCriterion {
   label?: string;
+  title?: string;
   marks?: number;
+  maxMarks?: number;
   description?: string;
 }
 
@@ -96,8 +98,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    const questionPrompt = String(body?.question_prompt || "").trim().slice(0, 4000);
-    const modelAnswer = String(body?.model_answer || "").trim().slice(0, 8000);
+    const contextType = body?.context_type === "assignment" ? "assignment" : "quiz";
+    const questionPrompt = String(body?.question_prompt || "").trim().slice(0, 8000);
+    const modelAnswer = String(body?.model_answer || "").trim().slice(0, 16000);
     const maxMarks = Number(body?.max_marks);
     const strictnessRaw = String(body?.strictness || "standard").toLowerCase();
     const strictness =
@@ -105,17 +108,18 @@ Deno.serve(async (req) => {
     const rubric: RubricCriterion[] = Array.isArray(body?.rubric)
       ? body.rubric.slice(0, 20)
       : [];
+    const perItemCap = contextType === "assignment" ? 24000 : 6000;
     const rawItems: IncomingItem[] = Array.isArray(body?.items)
       ? body.items.slice(0, 15).map((it: Record<string, unknown>) => ({
           id: String(it?.id || "").trim(),
-          answer: String(it?.answer || "").trim().slice(0, 6000),
+          answer: String(it?.answer || "").trim().slice(0, perItemCap),
         })).filter((it: IncomingItem) => it.id.length > 0)
       : [];
 
-    if (!questionPrompt) return reply({ error: "Question prompt is required." }, 400);
+    if (!questionPrompt) return reply({ error: "Question or assignment prompt is required." }, 400);
     if (!modelAnswer) {
       return reply(
-        { error: "Add a model answer / marking guide for this question before running AI marking." },
+        { error: "Add a model answer / marking guide before running AI marking." },
         400,
       );
     }
@@ -123,7 +127,7 @@ Deno.serve(async (req) => {
       return reply({ error: "Valid max_marks (> 0) is required." }, 400);
     }
     if (!rawItems.length) {
-      return reply({ error: "Provide at least one student answer to grade." }, 400);
+      return reply({ error: "Provide at least one student submission to grade." }, 400);
     }
 
     // Handle blank answers deterministically without calling the LLM
@@ -158,39 +162,46 @@ Deno.serve(async (req) => {
 
       const rubricSection = rubric.length
         ? `\nMARKING RUBRIC (allocate marks according to these criteria):\n${rubric
-            .map(
-              (c, idx) =>
-                `${idx + 1}. ${String(c.label || "Criterion")} (${Number(c.marks || 0)} marks)${
-                  c.description ? `: ${String(c.description)}` : ""
-                }`,
-            )
+            .map((c, idx) => {
+              const name = String(c.label || c.title || "Criterion").trim();
+              const pts = Number(c.marks ?? c.maxMarks ?? 0);
+              const desc = c.description ? `: ${String(c.description)}` : "";
+              return `${idx + 1}. ${name} (${pts} marks)${desc}`;
+            })
             .join("\n")}\n`
         : "";
 
       const stepLabel = maxMarks < 2 ? "0.25" : "0.5";
+      const feedbackGuide =
+        contextType === "assignment"
+          ? "- feedback: 1-3 concise, constructive sentences (under 50 words) noting which key points/rubric areas from the model answer were well-covered or missed."
+          : "- feedback: 1-2 concise, constructive sentences (under 30 words) noting which model-answer points were covered or missed.";
+
       const systemInstruction = [
-        "You are an impartial university examiner grading written exam answers strictly against the lecturer's course-specific Model Answer.",
+        `You are an impartial university examiner grading student ${
+          contextType === "assignment" ? "written assignment/exam submissions" : "written exam answers"
+        } strictly against the lecturer's course-specific Model Answer.`,
         "The lecturer's Model Answer (and Rubric, if provided) is the authoritative marking key. Prioritize the specific points, steps, formulas, and concepts in the lecturer's Model Answer over generic textbook definitions.",
-        "Evaluate conceptual accuracy and semantic similarity: students who express the same valid points in their own words or with minor spelling errors should receive credit, while off-topic filler, vague restatements of the question, or factually wrong claims should receive low or zero marks.",
+        "Evaluate conceptual accuracy and semantic similarity: students who express the same valid points in their own words or with minor spelling errors should receive credit, while off-topic filler, vague restatements of the prompt, or factually wrong claims should receive low or zero marks.",
         strictnessGuide,
         `Award marks strictly between 0 and ${maxMarks}, rounded to the nearest ${stepLabel} mark.`,
-        "For each student answer, return:",
+        "For each student submission, return:",
         "- id: exact matching item id",
         `- marks: numeric score from 0 to ${maxMarks}`,
         "- similarity: integer 0-100 reflecting conceptual alignment with the lecturer's Model Answer",
         "- confidence: 'high' when clearly right/wrong, 'medium' for partial/borderline answers, or 'low' if ambiguous and worth lecturer inspection",
-        "- feedback: 1-2 concise, constructive sentences (under 30 words) noting which model-answer points were covered or missed.",
+        feedbackGuide,
         "Return one JSON object per input item in the exact schema requested.",
       ].join("\n");
 
       const promptBody = [
-        `QUESTION (Max marks: ${maxMarks}):`,
+        `${contextType === "assignment" ? "ASSIGNMENT BRIEF / PROMPT" : "QUESTION"} (Max marks: ${maxMarks}):`,
         questionPrompt,
         "",
         "LECTURER'S MODEL ANSWER / MARKING GUIDE:",
         modelAnswer,
         rubricSection,
-        "ANONYMIZED STUDENT ANSWERS TO GRADE:",
+        "ANONYMIZED STUDENT SUBMISSIONS TO GRADE:",
         JSON.stringify(nonEmptyItems),
       ].join("\n");
 
@@ -218,11 +229,11 @@ Deno.serve(async (req) => {
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    id: { type: Type.STRING, description: "Exact student answer id from input" },
+                    id: { type: Type.STRING, description: "Exact submission id from input" },
                     marks: { type: Type.NUMBER, description: `Marks awarded between 0 and ${maxMarks}` },
                     similarity: { type: Type.INTEGER, description: "Conceptual alignment percentage 0-100" },
                     confidence: { type: Type.STRING, description: "One of: high, medium, low" },
-                    feedback: { type: Type.STRING, description: "Concise 1-2 sentence grading feedback" },
+                    feedback: { type: Type.STRING, description: "Concise constructive grading feedback" },
                   },
                   required: ["id", "marks", "similarity", "confidence", "feedback"],
                 },
@@ -276,7 +287,7 @@ Deno.serve(async (req) => {
           marks: clampMark(r.marks, maxMarks),
           similarity: clampSimilarity(r.similarity),
           confidence: normConfidence(r.confidence),
-          feedback: String(r.feedback || "").trim().slice(0, 500),
+          feedback: String(r.feedback || "").trim().slice(0, 600),
         });
       }
     }
