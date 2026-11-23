@@ -1156,15 +1156,37 @@ function AssignmentCard({ a, exemplars = [], cohort, review, onReadDoc, reload }
       </div>
 
       {mySyndicate && (
-        <div className="notice notice-info small row-wrap" style={{ justifyContent: 'space-between', gap: 10 }}>
-          <div className="row" style={{ gap: 8 }}>
-            <Icon name="users" size={16} />
-            <span>
-              <strong>{mySyndicate.name}</strong> · Syndicate Case Study
-              <span className="muted"> ({mySyndicate.members.length} members: <span className="mono">{mySyndicate.members.join(', ')}</span>)</span>
-            </span>
+        <div className="notice notice-info small stack-sm" style={{ gap: 8 }}>
+          <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <div className="row" style={{ gap: 8 }}>
+              <Icon name="users" size={16} />
+              <span>
+                <strong>{mySyndicate.name}</strong> · {mySyndicate.members.length} member{mySyndicate.members.length === 1 ? '' : 's'}
+              </span>
+            </div>
+            <span className="tiny muted">One submission &amp; mark applies to your group</span>
           </div>
-          <span className="tiny muted">One submission &amp; mark applies to your group</span>
+          <div className="row-wrap" style={{ gap: 6 }}>
+            {mySyndicate.members.map((idx) => {
+              const normIdx = normalizeIndexNo(idx);
+              const isSelf = normIdx === normalizeIndexNo(profile?.index_no);
+              const fullName = mySyndicate.memberNames?.[normIdx] || (isSelf ? String(profile?.full_name || '').trim() : '');
+              const showName = fullName && normalizeIndexNo(fullName) !== normIdx;
+              return (
+                <span key={normIdx} className={`badge ${isSelf ? 'badge-teal' : ''}`} style={{ gap: 5 }}>
+                  {showName ? (
+                    <>
+                      <span>{fullName}</span>
+                      <span className="mono tiny muted">{normIdx}</span>
+                    </>
+                  ) : (
+                    <span className="mono">{normIdx}</span>
+                  )}
+                  {isSelf && <span className="tiny">(You)</span>}
+                </span>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -1543,7 +1565,16 @@ function SyndicatePeerCheck({ assignmentId, syndicate, selfIndex, locked }) {
             return (
               <div key={k} className="stack-sm" style={{ paddingBottom: 10, borderBottom: '1px solid var(--line-2)' }}>
                 <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
-                  <span className="mono strong small">{k}</span>
+                  <span className="row-wrap" style={{ gap: 6, alignItems: 'center' }}>
+                    {syndicate?.memberNames?.[k] ? (
+                      <>
+                        <span className="strong small">{syndicate.memberNames[k]}</span>
+                        <span className="mono tiny muted">{k}</span>
+                      </>
+                    ) : (
+                      <span className="mono strong small">{k}</span>
+                    )}
+                  </span>
                   <div className="row" style={{ gap: 4 }}>
                     {[
                       { v: 1, label: '1 · Minimal' },

@@ -133,3 +133,13 @@ test('sheets: rowsToStudents skips serial number columns and detects name vs ind
   assert.equal(parsed[1].index_no, 'PSCM/25/002');
   assert.equal(parsed[1].full_name, 'PSCM/25/002');
 });
+
+test('assignmentMeta: preserves server-attached syndicate member_names and excludes them on serialize', () => {
+  const raw = 'Brief\n\n<!-- ASSIGN_META:{"rubric":[],"syndicate":{"enabled":true,"peerCheck":true,"groups":[{"id":"g1","name":"Syndicate 1","members":["PSCM/22/001","PSCM/22/002"],"member_names":{"pscm/22/001":"Ama Mensah","PSCM/22/002":"PSCM/22/002"}}]}} -->';
+  const parsed = parseAssignmentMeta(raw);
+  assert.equal(parsed.syndicate.groups.length, 1);
+  assert.deepEqual(parsed.syndicate.groups[0].memberNames, { 'PSCM/22/001': 'Ama Mensah' });
+  const serialized = serializeAssignmentMeta(parsed.cleanInstructions, parsed);
+  assert.equal(serialized.includes('member_names'), false);
+  assert.equal(serialized.includes('memberNames'), false);
+});

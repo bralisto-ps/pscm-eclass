@@ -267,11 +267,21 @@ export function parseAssignmentMeta(assignment) {
     const groups = Array.isArray(parsed.syndicate?.groups)
       ? parsed.syndicate.groups
           .filter((g) => g && String(g.name || '').trim())
-          .map((g, i) => ({
-            id: String(g.id || `g${i + 1}`),
-            name: String(g.name).trim(),
-            members: [...new Set((Array.isArray(g.members) ? g.members : []).map(normalizeIndexNo).filter(Boolean))],
-          }))
+          .map((g, i) => {
+            const rawNames = g.member_names && typeof g.member_names === 'object' ? g.member_names : {};
+            const memberNames = {};
+            for (const [k, v] of Object.entries(rawNames)) {
+              const nk = normalizeIndexNo(k);
+              const nv = String(v || '').trim();
+              if (nk && nv && normalizeIndexNo(nv) !== nk) memberNames[nk] = nv;
+            }
+            return {
+              id: String(g.id || `g${i + 1}`),
+              name: String(g.name).trim(),
+              members: [...new Set((Array.isArray(g.members) ? g.members : []).map(normalizeIndexNo).filter(Boolean))],
+              ...(Object.keys(memberNames).length ? { memberNames } : {}),
+            };
+          })
       : [];
     const audience = {
       classes: normalizeClassesArray(parsed.audience?.classes),
