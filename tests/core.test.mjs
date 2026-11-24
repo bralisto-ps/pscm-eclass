@@ -8,6 +8,8 @@ import {
   parseAssignmentMeta,
   resolveEffectiveDue,
   serializeAssignmentMeta,
+  assignUngroupedToSyndicates,
+  autoBuildSyndicateGroups,
   validateSubmissionFile,
 } from '../src/lib/assignmentMeta.js';
 import {
@@ -160,4 +162,62 @@ test('assignmentMeta: roundtrips topicRegistration per-assignment config', () =>
   assert.equal(parsed.topicRegistration.deadline, '2026-12-01T17:00:00.000Z');
   assert.equal(parsed.topicRegistration.requireBeforeSubmit, true);
   assert.equal(parsed.topicRegistration.useAiCheck, true);
+});
+
+test('assignmentMeta: autoBuildSyndicateGroups supports random shuffle vs index ordering', () => {
+  const students = [
+    { index_no: 'PSCM/24/001', full_name: 'Zara', programme: 'BSc', stream: 'Regular' },
+    { index_no: 'PSCM/24/002', full_name: 'Ama', programme: 'BSc', stream: 'Regular' },
+    { index_no: 'PSCM/24/003', full_name: 'Kojo', programme: 'BSc', stream: 'Regular' },
+    { index_no: 'PSCM/24/004', full_name: 'Bola', programme: 'BSc', stream: 'Regular' },
+    { index_no: 'PSCM/24/005', full_name: 'Esi', programme: 'BSc', stream: 'Regular' },
+    { index_no: 'PSCM/24/006', full_name: 'Yaw', programme: 'BSc', stream: 'Regular' },
+  ];
+  const byIdx = autoBuildSyndicateGroups(students, 3, 'both', null, 'index');
+  assert.deepEqual(byIdx[0].members, ['PSCM/24/001', 'PSCM/24/002', 'PSCM/24/003']);
+
+  const byName = autoBuildSyndicateGroups(students, 3, 'both', null, 'name');
+  assert.deepEqual(byName[0].members, ['PSCM/24/002', 'PSCM/24/004', 'PSCM/24/005']);
+
+  let seed = 7;
+  const rng = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+  const shuffled = autoBuildSyndicateGroups(students, 3, 'both', null, 'random', rng);
+  assert.equal(shuffled.length, 2);
+  assert.notDeepEqual(shuffled[0].members, byIdx[0].members);
+});
+
+test('assignmentMeta: assignUngroupedToSyndicates preserves existing groups cleanly', () => {
+  const existing = [
+    { id: 'grp-1', name: 'Syndicate 1', members: ['PSCM/24/001', 'PSCM/24/002'] },
+    { id: 'grp-2', name: 'Syndicate 2', members: ['PSCM/24/003', 'PSCM/24/004', 'PSCM/24/005'] },
+  ];
+  const students = [
+    { index_no: 'PSCM/24/001', full_name: 'A', programme: 'BSc', stream: 'Regular' },
+    { index_no: 'PSCM/24/002', full_name: 'B', programme: 'BSc', stream: 'Regular' },
+    { index_no: 'PSCM/24/003', full_name: 'C', programme: 'BSc', stream: 'Regular' },
+    { index_no: 'PSCM/24/004', full_name: 'D', programme: 'BSc', stream: 'Regular' },
+    { index_no: 'PSCM/24/005', full_name: 'E', programme: 'BSc', stream: 'Regular' },
+    { index_no: 'PSCM/24/006', full_name: 'F', programme: 'BSc', stream: 'Regular' },
+    { index_no: 'PSCM/24/007', full_name: 'G', programme: 'BSc', stream: 'Regular' },
+    { index_no: 'PSCM/24/008', full_name: 'H', programme: 'BSc', stream: 'Regular' },
+  ];
+
+  const resNew = assignUngroupedToSyndicates(existing, students, {
+    groupSize: 3, cohortMode: 'both', orderMode: 'index', strategy: 'new_groups',
+  });
+  assert.equal(resNew.addedCount, 3);
+  assert.equal(resNew.newGroupsCount, 1);
+  assert.equal(resNew.toppedUpCount, 0);
+  assert.deepEqual(resNew.groups[0].members, ['PSCM/24/001', 'PSCM/24/002']);
+  assert.equal(resNew.groups[2].name, 'Syndicate 3');
+  assert.deepEqual(resNew.groups[2].members, ['PSCM/24/006', 'PSCM/24/007', 'PSCM/24/008']);
+
+  const resFill = assignUngroupedToSyndicates(existing, students, {
+    groupSize: 3, cohortMode: 'both', orderMode: 'index', strategy: 'fill_first',
+  });
+  assert.equal(resFill.addedCount, 3);
+  assert.equal(resFill.toppedUpCount, 1);
+  assert.equal(resFill.newGroupsCount, 1);
+  assert.deepEqual(resFill.groups[0].members, ['PSCM/24/001', 'PSCM/24/002', 'PSCM/24/006']);
+  assert.deepEqual(resFill.groups[2].members, ['PSCM/24/007', 'PSCM/24/008']);
 });

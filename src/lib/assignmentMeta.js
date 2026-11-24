@@ -480,7 +480,50 @@ function cohortBucket(student, cohortMode) {
   };
 }
 
-export function autoBuildSyndicateGroups(students = [], groupSize = 4, cohortMode = 'both', audience = null) {
+export function nextSyndicateNumber(existingGroups = []) {
+  let maxN = 0;
+  for (const g of existingGroups || []) {
+    const m = String(g?.name || '').match(/(?:syndicate|group|team)s*(d+)/i);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n > maxN) maxN = n;
+    }
+  }
+  return Math.max(maxN, (existingGroups || []).length) + 1;
+}
+
+function orderBucketMembers(members, orderMode = 'random', rng = Math.random) {
+  const list = [...members];
+  if (orderMode === 'name') {
+    list.sort((a, b) =>
+      indexCollator.compare(a.full_name || '', b.full_name || '') ||
+      indexCollator.compare(a._normIndex, b._normIndex)
+    );
+    return list;
+  }
+  if (orderMode === 'index') {
+    list.sort((a, b) =>
+      indexCollator.compare(a._normIndex, b._normIndex) ||
+      indexCollator.compare(a.full_name || '', b.full_name || '')
+    );
+    return list;
+  }
+  // Default: unbiased Fisher-Yates random shuffle
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [list[i], list[j]] = [list[j], list[i]];
+  }
+  return list;
+}
+
+export function autoBuildSyndicateGroups(
+  students = [],
+  groupSize = 4,
+  cohortMode = 'both',
+  audience = null,
+  orderMode = 'random',
+  rng = Math.random
+) {
   const eligible = audience ? filterStudentsForAssignment(students, audience) : students;
   const size = Math.max(2, Math.min(15, Number(groupSize) || 4));
   const bucketsMap = new Map();
@@ -500,13 +543,10 @@ export function autoBuildSyndicateGroups(students = [], groupSize = 4, cohortMod
   const groups = [];
 
   for (const bucket of buckets) {
-    bucket.members.sort((a, b) =>
-      indexCollator.compare(a._normIndex, b._normIndex) ||
-      indexCollator.compare(a.full_name || '', b.full_name || '')
-    );
+    const ordered = orderBucketMembers(bucket.members, orderMode, rng);
     const bucketSlices = [];
-    for (let i = 0; i < bucket.members.length; i += size) {
-      bucketSlices.push(bucket.members.slice(i, i + size).map((s) => s._normIndex));
+    for (let i = 0; i < ordered.length; i += size) {
+      bucketSlices.push(ordered.slice(i, i + size).map((s) => s._normIndex));
     }
     if (bucketSlices.length >= 2 && bucketSlices[bucketSlices.length - 1].length === 1) {
       const lone = bucketSlices.pop()[0];
@@ -522,4 +562,146 @@ export function autoBuildSyndicateGroups(students = [], groupSize = 4, cohortMod
     }
   }
   return groups;
+}
+
+/**
+ * Places ONLY ungrouped eligible students into groups while leaving every existing
+ * group's ID, name, and current members completely intact.
+ *
+ * strategy:
+ *   - 'new_groups' (default): creates new sequential Syndicate groups for ungrouped students.
+ *   - 'fill_first': tops up existing groups (in matching cohort) below groupSize first,
+ *                   then forms new sequential Syndicate groups for any remaining students.
+ */
+export function assignUngroupedToSyndicates(existingGroups = [], students = [], opts = {}) {
+  const {
+    groupSize = 4,
+    cohortMode = 'both',
+    audience = null,
+    orderMode = 'random',
+    strategy = 'new_groups',
+    rng = Math.random,
+  } = opts;
+
+  const size = Math.max(2, Math.min(15, Number(groupSize) || 4));
+  const eligible = audience ? filterStudentsForAssignment(students, audience) : students;
+
+  const assignedSet = new Set();
+  const nextGroups = (existingGroups || []).map((g) => {
+    const cleanMembers = [...new Set((g.members || []).map(normalizeIndexNo).filter(Boolean))];
+    cleanMembers.forEach((m) => assignedSet.add(m));
+    return { ...g, members: cleanMembers };
+  });
+
+  // Lookup student cohort by index number so fill_first respects cohort boundaries
+  const studentByIdx = new Map();
+  const allCohortKeys = new Set();
+  for (const s of eligible) {
+    const idxNo = normalizeIndexNo(s.index_no);
+    if (!idxNo) continue;
+    const b = cohortBucket(s, cohortMode);
+    studentByIdx.set(idxNo, { ...s, _normIndex: idxNo, _bucket: b });
+    allCohortKeys.add(b.key);
+  }
+
+  const ungrouped = [];
+  for (const s of studentByIdx.values()) {
+    if (!assignedSet.has(s._normIndex)) ungrouped.push(s);
+  }
+
+  if (!ungrouped.length) {
+    return { groups: nextGroups, addedCount: 0, newGroupsCount: 0, toppedUpCount: 0 };
+  }
+
+  const bucketsMap = new Map();
+  for (const s of ungrouped) {
+    const { key, label } = s._bucket;
+    if (!bucketsMap.has(key)) bucketsMap.set(key, { key, label, members: [] });
+    bucketsMap.get(key).members.push(s);
+  }
+  const buckets = [...bucketsMap.values()].sort((a, b) =>
+    indexCollator.compare(a.label, b.label)
+  );
+
+  const showCohortInName = cohortMode !== 'mix' && (
+    allCohortKeys.size > 1 ||
+    nextGroups.some((g) => String(g.name || '').includes('·'))
+  );
+
+  let nextNum = nextSyndicateNumber(nextGroups);
+  const stamp = Date.now().toString(36);
+  let toppedUpCount = 0;
+  let newGroupsCount = 0;
+
+  function groupCohortKey(g) {
+    if (cohortMode === 'mix') return 'all';
+    for (const m of g.members || []) {
+      const stu = studentByIdx.get(m);
+      if (stu) return stu._bucket.key;
+    }
+    return null;
+  }
+
+  for (const bucket of buckets) {
+    let remaining = orderBucketMembers(bucket.members, orderMode, rng).map((s) => s._normIndex);
+
+    if (strategy === 'fill_first' && nextGroups.length > 0) {
+      const candidates = nextGroups
+        .filter((g) => {
+          if (g.members.length >= size) return false;
+          if (cohortMode === 'mix') return true;
+          const gk = groupCohortKey(g);
+          return gk === null || gk === bucket.key;
+        })
+        .sort((a, b) => a.members.length - b.members.length);
+
+      for (const grp of candidates) {
+        while (remaining.length > 0 && grp.members.length < size) {
+          grp.members.push(remaining.shift());
+          toppedUpCount += 1;
+        }
+        if (!remaining.length) break;
+      }
+    }
+
+    if (!remaining.length) continue;
+
+    // If only 1 ungrouped student remains and fill_first is active, place into smallest matching group
+    if (strategy === 'fill_first' && remaining.length === 1 && nextGroups.length > 0) {
+      const matchExisting = nextGroups
+        .filter((g) => cohortMode === 'mix' || groupCohortKey(g) === bucket.key)
+        .sort((a, b) => a.members.length - b.members.length)[0];
+      if (matchExisting) {
+        matchExisting.members.push(remaining.shift());
+        toppedUpCount += 1;
+        continue;
+      }
+    }
+
+    const slices = [];
+    for (let i = 0; i < remaining.length; i += size) {
+      slices.push(remaining.slice(i, i + size));
+    }
+    if (slices.length >= 2 && slices[slices.length - 1].length === 1) {
+      const lone = slices.pop()[0];
+      slices[slices.length - 1].push(lone);
+    }
+
+    for (const members of slices) {
+      const n = nextNum++;
+      nextGroups.push({
+        id: `grp-${stamp}-${n}`,
+        name: showCohortInName && bucket.label ? `Syndicate ${n} · ${bucket.label}` : `Syndicate ${n}`,
+        members,
+      });
+      newGroupsCount += 1;
+    }
+  }
+
+  return {
+    groups: nextGroups,
+    addedCount: ungrouped.length,
+    newGroupsCount,
+    toppedUpCount,
+  };
 }

@@ -290,6 +290,7 @@ export default function AssignmentMarking() {
   const late = submitted.filter((r) => r._isLate);
   const showPeerCol = assignMeta.syndicate.enabled && assignMeta.syndicate.peerCheck !== false;
   const flaggedPeerCount = showPeerCol ? rows.filter((r) => r._peer?.flagged).length : 0;
+  const ungroupedCount = assignMeta.syndicate.enabled ? rows.filter((r) => !r._syn).length : 0;
   const subRuleLabel = formatSubmissionRules(assignMeta);
   const avg = marked.length ? Math.round(marked.reduce((s, r) => s + pct(r.sub.marks, a.max_marks), 0) / marked.length) : null;
 
@@ -434,6 +435,11 @@ export default function AssignmentMarking() {
               {assignMeta.syndicate.enabled && (
                 <span className="badge badge-teal"><Icon name="users" size={13} /> Syndicate Mode ({assignMeta.syndicate.groups.length} groups)</span>
               )}
+              {ungroupedCount > 0 && (
+                <span className="badge badge-amber">
+                  <Icon name="alert" size={13} /> {ungroupedCount} ungrouped student{ungroupedCount === 1 ? '' : 's'}
+                </span>
+              )}
               {flaggedPeerCount > 0 && (
                 <span className="badge badge-red"><Icon name="alert" size={13} /> {flaggedPeerCount} Low Peer Rating{flaggedPeerCount === 1 ? '' : 's'}</span>
               )}
@@ -452,6 +458,11 @@ export default function AssignmentMarking() {
               )}
               {assignMeta.syndicate.enabled && (
                 <span className="tiny muted">Marking one group submission can apply scores across every member in that syndicate.</span>
+              )}
+              {!restrictedEdit && ungroupedCount > 0 && (
+                <button type="button" className="btn btn-sm" onClick={() => setEditing(true)}>
+                  <Icon name="users" size={14} /> Assign ungrouped ({ungroupedCount})
+                </button>
               )}
               {!restrictedEdit && assignMeta.syndicate.enabled && assignMeta.syndicate.groups.length > 0 && (
                 <button type="button" className="btn btn-sm btn-primary" onClick={() => setGradingPres(true)}>

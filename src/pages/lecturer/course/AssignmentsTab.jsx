@@ -14,7 +14,9 @@ import { shareWhatsApp } from '../../../lib/share.js';
 import { fmtBytes, fmtDateTime, fmtNumber, fromLocalInput, relative, toLocalInput } from '../../../lib/format.js';
 import {
   SUBMISSION_FORMATS,
+  assignUngroupedToSyndicates,
   autoBuildSyndicateGroups,
+  nextSyndicateNumber,
   formatSubmissionRules,
   formatTopicRuleLabel,
   classKey,
@@ -192,7 +194,12 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
   const [groups, setGroups] = useState(initialMeta.syndicate.groups);
   const [groupSize, setGroupSize] = useState(4);
   const [cohortMode, setCohortMode] = useState('both');
+  const [orderMode, setOrderMode] = useState('random');
+  const [ungroupedStrategy, setUngroupedStrategy] = useState('new_groups');
   const [autoBusy, setAutoBusy] = useState(false);
+  const [confirmRebuildGroups, setConfirmRebuildGroups] = useState(false);
+  const [lastAddedGroupId, setLastAddedGroupId] = useState('');
+  const groupsBoxRef = useRef(null);
 
   // Audience / Cohort targeting state
   const [classes, setClasses] = useState([]);
@@ -371,7 +378,25 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
     }
   }
 
-  async function autoAssignGroups() {
+  const groupedStudentCount = useMemo(() => {
+    const s = new Set();
+    for (const g of groups) {
+      for (const m of g.members || []) {
+        const nm = normalizeIndexNo(m);
+        if (nm) s.add(nm);
+      }
+    }
+    return s.size;
+  }, [groups]);
+
+  const approxUngroupedCount = Math.max(0, eligibleEnrolledCount - groupedStudentCount);
+
+  async function autoAssignGroups(force = false) {
+    if (!force && groups.length > 0) {
+      setConfirmRebuildGroups(true);
+      return;
+    }
+    setConfirmRebuildGroups(false);
     setAutoBusy(true);
     try {
       const students = await rpcAll('course_students', { p_course: course.id });
@@ -384,10 +409,52 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
         toast('No enrolled students match the selected target classes or cohorts.', 'error');
         return;
       }
-      const next = autoBuildSyndicateGroups(students, groupSize, cohortMode, effectiveAudience);
+      const next = autoBuildSyndicateGroups(students, groupSize, cohortMode, effectiveAudience, orderMode);
       setGroups(next);
+      setLastAddedGroupId('');
+      const orderNote = orderMode === 'random' ? 'randomly shuffled' : orderMode === 'name' ? 'ordered by name' : 'ordered by index number';
       const modeNote = cohortMode === 'mix' ? 'mixed across selected students' : 'grouped strictly within cohort';
-      toast(`Created ${next.length} syndicate group${next.length === 1 ? '' : 's'} from ${eligible.length} eligible student${eligible.length === 1 ? '' : 's'} (${modeNote}).`);
+      toast(`Created ${next.length} syndicate group${next.length === 1 ? '' : 's'} from ${eligible.length} eligible student${eligible.length === 1 ? '' : 's'} (${orderNote} · ${modeNote}).`);
+    } catch (e) {
+      toast(e.message || 'Could not load class list.', 'error');
+    } finally {
+      setAutoBusy(false);
+    }
+  }
+
+  async function assignUngroupedOnly() {
+    setAutoBusy(true);
+    try {
+      const students = await rpcAll('course_students', { p_course: course.id });
+      if (!students.length) {
+        toast('No enrolled students in this course yet.', 'error');
+        return;
+      }
+      const res = assignUngroupedToSyndicates(groups, students, {
+        groupSize,
+        cohortMode,
+        audience: effectiveAudience,
+        orderMode,
+        strategy: ungroupedStrategy,
+      });
+      if (res.addedCount === 0) {
+        toast('Every eligible enrolled student is already assigned to a group.');
+        return;
+      }
+      setGroups(res.groups);
+      if (res.newGroupsCount > 0) {
+        const last = res.groups[res.groups.length - 1];
+        setLastAddedGroupId(last?.id || '');
+        requestAnimationFrame(() => {
+          if (groupsBoxRef.current) {
+            groupsBoxRef.current.scrollTop = groupsBoxRef.current.scrollHeight;
+          }
+        });
+      }
+      const parts = [];
+      if (res.toppedUpCount > 0) parts.push(`${res.toppedUpCount} added to smaller existing group(s)`);
+      if (res.newGroupsCount > 0) parts.push(`${res.newGroupsCount} new group${res.newGroupsCount === 1 ? '' : 's'} created`);
+      toast(`Assigned ${res.addedCount} ungrouped student${res.addedCount === 1 ? '' : 's'} (${parts.join(' · ')}). Existing groups untouched.`);
     } catch (e) {
       toast(e.message || 'Could not load class list.', 'error');
     } finally {
@@ -396,7 +463,19 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
   }
 
   function addGroup() {
-    setGroups((g) => [...g, { id: `grp-${Date.now()}`, name: `Syndicate ${g.length + 1}`, members: [] }]);
+    const newId = `grp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const num = nextSyndicateNumber(groups);
+    const label = `Syndicate ${num}`;
+    setGroups((g) => [...g, { id: newId, name: label, members: [] }]);
+    setLastAddedGroupId(newId);
+    toast(`Added ${label} at the bottom — enter member index numbers below.`);
+    requestAnimationFrame(() => {
+      if (groupsBoxRef.current) {
+        groupsBoxRef.current.scrollTop = groupsBoxRef.current.scrollHeight;
+        const input = groupsBoxRef.current.querySelector(`[data-group-members="${newId}"]`);
+        input?.focus();
+      }
+    });
   }
 
   function updateGroupName(idx, name) {
@@ -943,6 +1022,19 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
                     />
                   </label>
                   <label className="row small" style={{ gap: 6 }}>
+                    <span className="tiny muted">Order:</span>
+                    <select
+                      className="select"
+                      style={{ minHeight: 34, width: 'auto', fontSize: 12.5 }}
+                      value={orderMode}
+                      onChange={(e) => setOrderMode(e.target.value)}
+                    >
+                      <option value="random">Random shuffle</option>
+                      <option value="index">By index number</option>
+                      <option value="name">By student name</option>
+                    </select>
+                  </label>
+                  <label className="row small" style={{ gap: 6 }}>
                     <span className="tiny muted">Cohorts:</span>
                     <select
                       className="select"
@@ -956,15 +1048,84 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
                       <option value="mix">Mix eligible students</option>
                     </select>
                   </label>
-                  <button type="button" className="btn btn-sm" onClick={autoAssignGroups} disabled={autoBusy}>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${groups.length === 0 ? 'btn-primary' : ''}`}
+                    onClick={() => autoAssignGroups(false)}
+                    disabled={autoBusy}
+                    title={groups.length > 0 ? 'Rebuild and reshuffle all groups from scratch' : 'Automatically create groups for all eligible students'}
+                  >
                     <Icon name="users" size={14} />{' '}
-                    {autoBusy ? 'Grouping…' : hasAudienceFilter(effectiveAudience) ? `Auto-group target (${eligibleEnrolledCount})` : 'Auto-group class'}
+                    {autoBusy
+                      ? 'Grouping…'
+                      : groups.length > 0
+                      ? 'Rebuild all groups'
+                      : hasAudienceFilter(effectiveAudience)
+                      ? `Auto-group target (${eligibleEnrolledCount})`
+                      : 'Auto-group class'}
                   </button>
                 </div>
-                <button type="button" className="btn btn-sm btn-primary" onClick={addGroup}>
+                <button type="button" className="btn btn-sm" onClick={addGroup}>
                   <Icon name="plus" size={14} /> Add group
                 </button>
               </div>
+
+              {groups.length > 0 && (
+                <div
+                  className="between"
+                  style={{
+                    flexWrap: 'wrap',
+                    gap: 8,
+                    padding: '8px 10px',
+                    borderRadius: 8,
+                    background: 'var(--surface)',
+                    border: '1px solid var(--line)',
+                  }}
+                >
+                  <div className="row-wrap" style={{ gap: 8, alignItems: 'center' }}>
+                    <span className="tiny muted">
+                      <strong>{groups.length}</strong> group{groups.length === 1 ? '' : 's'} ({groupedStudentCount} student{groupedStudentCount === 1 ? '' : 's'})
+                    </span>
+                    {approxUngroupedCount > 0 && (
+                      <span className="badge badge-amber">
+                        ~{approxUngroupedCount} ungrouped
+                      </span>
+                    )}
+                    <select
+                      className="select"
+                      style={{ minHeight: 32, width: 'auto', fontSize: 12 }}
+                      value={ungroupedStrategy}
+                      onChange={(e) => setUngroupedStrategy(e.target.value)}
+                      aria-label="How to place ungrouped students"
+                    >
+                      <option value="new_groups">Place ungrouped in new group(s)</option>
+                      <option value="fill_first">Top up smaller groups first, then new group(s)</option>
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    onClick={assignUngroupedOnly}
+                    disabled={autoBusy}
+                    title="Assigns only newly added or ungrouped students without modifying existing groups"
+                  >
+                    <Icon name="users" size={14} />{' '}
+                    {autoBusy ? 'Assigning…' : 'Assign ungrouped only'}
+                  </button>
+                </div>
+              )}
+
+              {confirmRebuildGroups && (
+                <div className="notice notice-warn stack-sm" style={{ padding: '10px 12px' }}>
+                  <span className="small">
+                    <strong>Replace all {groups.length} existing groups?</strong> Rebuilding reshuffles everyone from scratch. If you only added new students, use <strong>Assign ungrouped only</strong> instead so existing groups stay intact.
+                  </span>
+                  <div className="row" style={{ justifyContent: 'flex-end', gap: 6 }}>
+                    <button type="button" className="btn btn-sm" onClick={() => setConfirmRebuildGroups(false)}>Cancel</button>
+                    <button type="button" className="btn btn-sm btn-danger" onClick={() => autoAssignGroups(true)}>Yes, rebuild all</button>
+                  </div>
+                </div>
+              )}
 
               {hasAudienceFilter(effectiveAudience) && (
                 <p className="tiny muted" style={{ margin: 0 }}>
@@ -974,32 +1135,49 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
 
               {groups.length === 0 ? (
                 <p className="tiny muted" style={{ margin: 0 }}>
-                  No syndicate groups yet — click <strong>{hasAudienceFilter(effectiveAudience) ? 'Auto-group target' : 'Auto-group class'}</strong> to split eligible students automatically, or add groups manually.
+                  No syndicate groups yet — click <strong>{hasAudienceFilter(effectiveAudience) ? 'Auto-group target' : 'Auto-group class'}</strong> to split eligible students automatically, or click <strong>Add group</strong> to create one manually.
                 </p>
               ) : (
-                <div className="stack-sm" style={{ maxHeight: 210, overflowY: 'auto', paddingRight: 4 }}>
-                  {groups.map((g, idx) => (
-                    <div key={g.id || idx} className="row-wrap" style={{ gap: 8, alignItems: 'center', padding: '6px 8px', background: 'var(--surface)', borderRadius: 8, border: '1px solid var(--line-2)' }}>
-                      <input
-                        className="input"
-                        style={{ width: 210, minHeight: 34 }}
-                        value={g.name}
-                        onChange={(e) => updateGroupName(idx, e.target.value)}
-                        placeholder="Syndicate 1"
-                      />
-                      <input
-                        className="input mono"
-                        style={{ flex: 1, minWidth: 180, minHeight: 34, fontSize: 12 }}
-                        defaultValue={(g.members || []).join(', ')}
-                        onBlur={(e) => updateGroupMembers(idx, e.target.value)}
-                        placeholder="Index numbers separated by commas (e.g. PSCM/24/001, PSCM/24/002)"
-                      />
-                      <span className="badge">{(g.members || []).length}</span>
-                      <button type="button" className="icon-btn plain" aria-label="Remove group" onClick={() => removeGroup(idx)}>
-                        <Icon name="trash" size={15} />
-                      </button>
-                    </div>
-                  ))}
+                <div ref={groupsBoxRef} className="stack-sm" style={{ maxHeight: 260, overflowY: 'auto', paddingRight: 4 }}>
+                  {groups.map((g, idx) => {
+                    const membersStr = (g.members || []).join(', ');
+                    const isNewRow = lastAddedGroupId && g.id === lastAddedGroupId;
+                    return (
+                      <div
+                        key={g.id || idx}
+                        className="row-wrap"
+                        style={{
+                          gap: 8,
+                          alignItems: 'center',
+                          padding: '6px 8px',
+                          background: isNewRow ? 'var(--teal-50)' : 'var(--surface)',
+                          borderRadius: 8,
+                          border: `1px solid ${isNewRow ? 'var(--teal)' : 'var(--line-2)'}`,
+                        }}
+                      >
+                        <input
+                          className="input"
+                          style={{ width: 210, minHeight: 34 }}
+                          value={g.name}
+                          onChange={(e) => updateGroupName(idx, e.target.value)}
+                          placeholder="Syndicate 1"
+                        />
+                        <input
+                          key={`${g.id || idx}:${membersStr}`}
+                          data-group-members={g.id || ''}
+                          className="input mono"
+                          style={{ flex: 1, minWidth: 180, minHeight: 34, fontSize: 12 }}
+                          defaultValue={membersStr}
+                          onBlur={(e) => updateGroupMembers(idx, e.target.value)}
+                          placeholder="Index numbers separated by commas (e.g. PSCM/24/001, PSCM/24/002)"
+                        />
+                        <span className="badge">{(g.members || []).length}</span>
+                        <button type="button" className="icon-btn plain" aria-label="Remove group" onClick={() => removeGroup(idx)}>
+                          <Icon name="trash" size={15} />
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
