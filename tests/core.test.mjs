@@ -10,6 +10,7 @@ import {
   serializeAssignmentMeta,
   assignUngroupedToSyndicates,
   autoBuildSyndicateGroups,
+  setGroupMembersAndMove,
   validateSubmissionFile,
 } from '../src/lib/assignmentMeta.js';
 import {
@@ -220,4 +221,16 @@ test('assignmentMeta: assignUngroupedToSyndicates preserves existing groups clea
   assert.equal(resFill.newGroupsCount, 1);
   assert.deepEqual(resFill.groups[0].members, ['PSCM/24/001', 'PSCM/24/002', 'PSCM/24/006']);
   assert.deepEqual(resFill.groups[2].members, ['PSCM/24/007', 'PSCM/24/008']);
+});
+
+test('assignmentMeta: setGroupMembersAndMove removes moved students from previous groups', () => {
+  const initial = [
+    { id: 'g1', name: 'Syndicate 1', members: ['PSCM/24/001', 'PSCM/24/002', 'PSCM/24/003'] },
+    { id: 'g2', name: 'Syndicate 2', members: ['PSCM/24/004', 'PSCM/24/005'] },
+  ];
+  const { groups, moved } = setGroupMembersAndMove(initial, 1, 'PSCM/24/004, PSCM/24/005, pscm/24/002');
+  assert.deepEqual(groups[0].members, ['PSCM/24/001', 'PSCM/24/003']);
+  assert.deepEqual(groups[1].members, ['PSCM/24/004', 'PSCM/24/005', 'PSCM/24/002']);
+  assert.equal(moved.length, 1);
+  assert.deepEqual(moved[0], { indexNo: 'PSCM/24/002', fromName: 'Syndicate 1', toName: 'Syndicate 2' });
 });

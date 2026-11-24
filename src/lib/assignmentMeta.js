@@ -705,3 +705,42 @@ export function assignUngroupedToSyndicates(existingGroups = [], students = [], 
     toppedUpCount,
   };
 }
+
+/**
+ * Updates a target syndicate group's member list and automatically removes any
+ * of those index numbers from all other groups so a student is never in two groups.
+ */
+export function setGroupMembersAndMove(groups = [], targetIdx, rawText) {
+  const members = [
+    ...new Set(
+      String(rawText || '')
+        .split(/[\s,;]+/)
+        .map(normalizeIndexNo)
+        .filter(Boolean)
+    ),
+  ];
+  const memberSet = new Set(members);
+  const toName = groups[targetIdx]?.name || `Syndicate ${targetIdx + 1}`;
+  const moved = [];
+
+  const nextGroups = (groups || []).map((item, i) => {
+    if (i === targetIdx) return { ...item, members };
+    const kept = [];
+    for (const rawM of item.members || []) {
+      const nm = normalizeIndexNo(rawM);
+      if (!nm) continue;
+      if (memberSet.has(nm)) {
+        moved.push({
+          indexNo: nm,
+          fromName: item.name || `Syndicate ${i + 1}`,
+          toName,
+        });
+      } else {
+        kept.push(nm);
+      }
+    }
+    return kept.length === (item.members || []).length ? item : { ...item, members: kept };
+  });
+
+  return { groups: nextGroups, moved };
+}

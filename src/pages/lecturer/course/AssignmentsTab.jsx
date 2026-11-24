@@ -17,6 +17,7 @@ import {
   assignUngroupedToSyndicates,
   autoBuildSyndicateGroups,
   nextSyndicateNumber,
+  setGroupMembersAndMove,
   formatSubmissionRules,
   formatTopicRuleLabel,
   classKey,
@@ -483,8 +484,13 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
   }
 
   function updateGroupMembers(idx, rawText) {
-    const members = [...new Set(rawText.split(/[\s,;]+/).map(normalizeIndexNo).filter(Boolean))];
-    setGroups((g) => g.map((item, i) => (i === idx ? { ...item, members } : item)));
+    const { groups: nextGroups, moved } = setGroupMembersAndMove(groups, idx, rawText);
+    setGroups(nextGroups);
+    if (moved.length === 1) {
+      toast(`Moved ${moved[0].indexNo} from ${moved[0].fromName} → ${moved[0].toName}.`);
+    } else if (moved.length > 1) {
+      toast(`Moved ${moved.length} students into ${moved[0].toName} and removed them from their previous groups.`);
+    }
   }
 
   function removeGroup(idx) {
@@ -1169,6 +1175,7 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
                           style={{ flex: 1, minWidth: 180, minHeight: 34, fontSize: 12 }}
                           defaultValue={membersStr}
                           onBlur={(e) => updateGroupMembers(idx, e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
                           placeholder="Index numbers separated by commas (e.g. PSCM/24/001, PSCM/24/002)"
                         />
                         <span className="badge">{(g.members || []).length}</span>
