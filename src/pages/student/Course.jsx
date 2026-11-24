@@ -19,6 +19,7 @@ import Forum from '../../components/Forum.jsx';
 import NotificationBell from '../../components/NotificationBell.jsx';
 import LiveSlideSyncModal from '../../components/LiveSlideSyncModal.jsx';
 import PdfAnnotatorModal from '../../components/PdfAnnotatorModal.jsx';
+import StudentTopicClaimBox from '../../components/StudentTopicClaimBox.jsx';
 import { useAuth } from '../../lib/auth.jsx';
 import { fmtBytes, fmtDateTime, fmtFull, fmtNumber, hostOf, pct, relative } from '../../lib/format.js';
 import Icon from '../../components/Icon.jsx';
@@ -832,6 +833,7 @@ function Assignments({ assignments, exemplars = [], course, profile, cohort, rev
         <AssignmentCard
           key={a.id}
           a={a}
+          courseId={course?.id}
           exemplars={exemplars.filter((ex) => ex.assignment_id === a.id)}
           cohort={cohort}
           review={a.submission?.id ? reviewBySubmission?.get(a.submission.id) : null}
@@ -868,7 +870,7 @@ function Assignments({ assignments, exemplars = [], course, profile, cohort, rev
 
 const MAX_BYTES = 5 * 1024 * 1024;
 
-function AssignmentCard({ a, exemplars = [], cohort, review, onReadDoc, reload }) {
+function AssignmentCard({ a, courseId, exemplars = [], cohort, review, onReadDoc, reload }) {
   const { session, profile } = useAuth();
   const toast = useToast();
   const [act] = useAction();
@@ -884,6 +886,7 @@ function AssignmentCard({ a, exemplars = [], cohort, review, onReadDoc, reload }
   const draftKey = `assign_draft:${a.id}:${session?.user?.id || 'anon'}`;
 
   const [file, setFile] = useState(null);
+  const [topicStatus, setTopicStatus] = useState(null);
   const [note, setNote] = useState('');
   const [typedText, setTypedText] = useState(() => {
     try {
@@ -1124,7 +1127,14 @@ function AssignmentCard({ a, exemplars = [], cohort, review, onReadDoc, reload }
     }
   }
 
-  const submitDisabled = busy || (needsTyped && !typedText.trim()) || (needsFile && !file);
+  const topicCfg = assignMeta.topicRegistration || { enabled: false };
+  const topicRequiredBlocking = Boolean(
+    topicCfg.enabled &&
+    topicCfg.requireBeforeSubmit &&
+    !topicStatus?.unavailable &&
+    topicStatus?.my_claim?.status !== 'approved'
+  );
+  const submitDisabled = busy || topicRequiredBlocking || (needsTyped && !typedText.trim()) || (needsFile && !file);
 
   return (
     <div className="card stack">
@@ -1191,6 +1201,16 @@ function AssignmentCard({ a, exemplars = [], cohort, review, onReadDoc, reload }
       )}
 
       {assignMeta.cleanInstructions && <p className="pre small" style={{ color: 'var(--text-2)' }}>{assignMeta.cleanInstructions}</p>}
+      {topicCfg.enabled && (
+        <StudentTopicClaimBox
+          assignment={a}
+          courseId={courseId}
+          topicCfg={topicCfg}
+          mySyndicate={mySyndicate}
+          hasSubmitted={Boolean(s)}
+          onStatusChange={setTopicStatus}
+        />
+      )}
       {assignMeta.doc?.path && (
         <div className="notice row-wrap" style={{ justifyContent: 'space-between', gap: 10, padding: '10px 14px', background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
           <div className="row" style={{ gap: 10, minWidth: 0, flex: 1 }}>
@@ -1441,10 +1461,17 @@ function AssignmentCard({ a, exemplars = [], cohort, review, onReadDoc, reload }
           <Field label="Note to your lecturer" hint="optional">
             <input className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} />
           </Field>
-          <div>
-            <button type="button" className="btn btn-primary" disabled={submitDisabled} onClick={upload}>
-              <Icon name="upload" /> {busy ? 'Submitting…' : s ? 'Update submission' : 'Submit assignment'}
-            </button>
+          <div className="stack-sm">
+            {topicRequiredBlocking && (
+              <span className="tiny" style={{ color: 'var(--amber-ink)' }}>
+                Register your unique {topicCfg.uniqueness === 'firm' ? 'firm' : 'product & firm'} above before submitting this assignment.
+              </span>
+            )}
+            <div>
+              <button type="button" className="btn btn-primary" disabled={submitDisabled} onClick={upload}>
+                <Icon name="upload" /> {busy ? 'Submitting…' : s ? 'Update submission' : 'Submit assignment'}
+              </button>
+            </div>
           </div>
         </div>
       )}

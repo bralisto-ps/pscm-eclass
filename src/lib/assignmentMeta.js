@@ -231,6 +231,27 @@ export function cleanAssignmentInstructions(raw) {
   return String(raw || '').replace(ASSIGN_META_RE, '').trim();
 }
 
+export function normalizeTopicRegistration(raw) {
+  const obj = raw && typeof raw === 'object' ? raw : {};
+  const enabled = Boolean(obj.enabled);
+  const u = String(obj.uniqueness || 'product').toLowerCase();
+  const uniqueness = u === 'firm' || u === 'both' ? u : 'product';
+  const rawDl = String(obj.deadline || "").trim();
+  const parsedDl = rawDl ? new Date(rawDl) : null;
+  const deadline = parsedDl && !Number.isNaN(parsedDl.getTime()) ? parsedDl.toISOString() : "";
+  const requireBeforeSubmit = obj.requireBeforeSubmit !== false;
+  const useAiCheck = obj.useAiCheck !== false;
+  return { enabled, uniqueness, deadline, requireBeforeSubmit, useAiCheck };
+}
+
+export function formatTopicRuleLabel(metaOrTopic) {
+  const t = metaOrTopic?.topicRegistration || metaOrTopic;
+  if (!t?.enabled) return '';
+  if (t.uniqueness === 'firm') return 'Unique Firm pre-registration';
+  if (t.uniqueness === 'both') return 'Unique Firm & Product pre-registration';
+  return 'Unique Product pre-registration';
+}
+
 export function parseAssignmentMeta(assignment) {
   const raw = typeof assignment === 'string' ? assignment : (assignment?.instructions || '');
   const match = raw.match(ASSIGN_META_RE);
@@ -251,6 +272,7 @@ export function parseAssignmentMeta(assignment) {
     doc: null,
     submission: { mode: 'file', fileFormat: 'all', allowPaste: true },
     deadlines: { byClass: {}, byStudent: {} },
+    topicRegistration: normalizeTopicRegistration(null),
   };
   if (!match) return empty;
   try {
@@ -310,6 +332,7 @@ export function parseAssignmentMeta(assignment) {
       doc,
       submission: normalizeSubmissionConfig(parsed.submission),
       deadlines: normalizeDeadlinesConfig(parsed.deadlines),
+      topicRegistration: normalizeTopicRegistration(parsed.topicRegistration),
     };
   } catch {
     return empty;
@@ -350,9 +373,10 @@ export function serializeAssignmentMeta(cleanInstructions, meta = {}) {
   const hasCustomSubmission = submission.mode !== 'file' || submission.fileFormat !== 'all' || !submission.allowPaste;
   const deadlines = normalizeDeadlinesConfig(meta.deadlines);
   const hasDeadlines = hasDeadlineOverrides(deadlines);
+  const topicRegistration = normalizeTopicRegistration(meta.topicRegistration);
+  const hasTopicReg = Boolean(topicRegistration.enabled);
   const hasSyndicate = Boolean(meta.syndicate?.enabled) || groups.length > 0;
-  if (rubric.length === 0 && !hasSyndicate && !hasAudience && !doc && !hasCustomSubmission && !hasDeadlines) return base;
-
+  if (rubric.length === 0 && !hasSyndicate && !hasAudience && !doc && !hasCustomSubmission && !hasDeadlines && !hasTopicReg) return base;
   const payload = {
     rubric,
     syndicate: {
@@ -364,6 +388,7 @@ export function serializeAssignmentMeta(cleanInstructions, meta = {}) {
     ...(doc ? { doc } : {}),
     ...(hasCustomSubmission ? { submission } : {}),
     ...(hasDeadlines ? { deadlines } : {}),
+    ...(hasTopicReg ? { topicRegistration } : {}),
   };
   return `${base}\n\n<!-- ASSIGN_META:${JSON.stringify(payload)} -->`.trim();
 }

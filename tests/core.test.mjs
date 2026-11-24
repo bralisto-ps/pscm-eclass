@@ -143,3 +143,21 @@ test('assignmentMeta: preserves server-attached syndicate member_names and exclu
   assert.equal(serialized.includes('member_names'), false);
   assert.equal(serialized.includes('memberNames'), false);
 });
+
+test('assignmentMeta: roundtrips topicRegistration per-assignment config', () => {
+  const encoded = serializeAssignmentMeta('Case study brief', {
+    topicRegistration: {
+      enabled: true,
+      uniqueness: 'firm',
+      deadline: '2026-12-01T17:00:00.000Z',
+      requireBeforeSubmit: true,
+      useAiCheck: true,
+    },
+  });
+  const parsed = parseAssignmentMeta(encoded);
+  assert.equal(parsed.topicRegistration.enabled, true);
+  assert.equal(parsed.topicRegistration.uniqueness, 'firm');
+  assert.equal(parsed.topicRegistration.deadline, '2026-12-01T17:00:00.000Z');
+  assert.equal(parsed.topicRegistration.requireBeforeSubmit, true);
+  assert.equal(parsed.topicRegistration.useAiCheck, true);
+});

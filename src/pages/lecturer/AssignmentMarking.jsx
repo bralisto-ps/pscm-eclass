@@ -5,7 +5,7 @@ import { useAuth } from '../../lib/auth.jsx';
 import { getSignedFileUrl, isViewOnlyPath, openStoredFile, setViewOnlyFlag } from '../../lib/files.js';
 import { fmtDateTime, fmtFull, fmtNumber, fromLocalInput, pct, relative, toLocalInput } from '../../lib/format.js';
 import { downloadWorkbook } from '../../lib/sheets.js';
-import { assignmentMatchesStudent, findStudentSyndicate, formatAssignmentAudience, formatSubmissionRules, hasAudienceFilter, normalizeIndexNo, parseAssignmentMeta, resolveEffectiveDue, serializeAssignmentMeta } from '../../lib/assignmentMeta.js';
+import { assignmentMatchesStudent, findStudentSyndicate, formatAssignmentAudience, formatSubmissionRules, formatTopicRuleLabel, hasAudienceFilter, normalizeIndexNo, parseAssignmentMeta, resolveEffectiveDue, serializeAssignmentMeta } from '../../lib/assignmentMeta.js';
 import { ALL_NEW_FEATURES_SQL } from '../../lib/allFeaturesSql.js';
 import { ALL_GROUPS, GroupFilters, GroupSummaryTable, groupLabel, groupSummary, matchesGroup } from '../../components/Groups.jsx';
 import { SortSelect, SortTh } from '../../components/SortBar.jsx';
@@ -19,6 +19,7 @@ import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
 import MarkReviewQueue from '../../components/MarkReviewQueue.jsx';
 import PdfAnnotatorModal from '../../components/PdfAnnotatorModal.jsx';
 import AssignmentAiGradeModal, { AI_MODEL_ANSWER_PREFIX } from '../../components/AssignmentAiGradeModal.jsx';
+import AssignmentTopicsModal from '../../components/AssignmentTopicsModal.jsx';
 import { compareArchiveTexts, compareSubmissionTexts, extractAssignmentTexts } from '../../lib/similarity.js';
 
 const SecureSlideViewer = lazy(() => import('../../components/SecureSlideViewer.jsx'));
@@ -126,6 +127,7 @@ export default function AssignmentMarking() {
   const [nudging, setNudging] = useState(false);
   const [checkingSim, setCheckingSim] = useState(false);
   const [aiGrading, setAiGrading] = useState(false);
+  const [viewingTopics, setViewingTopics] = useState(false);
   const [annotating, setAnnotating] = useState(null);
   const isExaminer = data?.staffRole === 'external_examiner';
   const isPureTA = isTA && data?.staffRole !== 'co_lecturer' && !isExaminer;
@@ -420,7 +422,7 @@ export default function AssignmentMarking() {
           </div>
         </div>
 
-        {(assignMeta.rubric.length > 0 || assignMeta.syndicate.enabled || hasAudienceFilter(assignMeta) || assignMeta.doc?.path || subRuleLabel) && (
+        {(assignMeta.rubric.length > 0 || assignMeta.syndicate.enabled || hasAudienceFilter(assignMeta) || assignMeta.doc?.path || subRuleLabel || assignMeta.topicRegistration?.enabled) && (
           <div className="notice notice-info row-wrap" style={{ justifyContent: 'space-between', gap: 10 }}>
             <div className="row-wrap" style={{ gap: 8 }}>
               {hasAudienceFilter(assignMeta) && (
@@ -437,6 +439,9 @@ export default function AssignmentMarking() {
               )}
               {assignMeta.rubric.length > 0 && (
                 <span className="badge badge-blue"><Icon name="clipboard" size={13} /> Clickable Rubric ({assignMeta.rubric.length} criteria)</span>
+              )}
+              {assignMeta.topicRegistration?.enabled && (
+                <span className="badge badge-teal"><Icon name="tag" size={13} /> {formatTopicRuleLabel(assignMeta)}</span>
               )}
             </div>
             <div className="row-wrap" style={{ gap: 8 }}>
@@ -530,6 +535,16 @@ export default function AssignmentMarking() {
               >
                 <Icon name={blindMode ? 'eyeOff' : 'eye'} size={15} /> {blindMode ? 'Blind mode ON' : 'Blind marking'}
               </button>
+              {assignMeta.topicRegistration?.enabled && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setViewingTopics(true)}
+                  title="View registered products/firms, audit for duplicates with AI, or ask a group to change"
+                >
+                  <Icon name="tag" size={15} /> Registered products
+                </button>
+              )}
               {!isExaminer && submitted.length > 0 && (
                 <button
                   type="button"
@@ -758,6 +773,15 @@ export default function AssignmentMarking() {
         />
       )}
 
+      {viewingTopics && (
+        <AssignmentTopicsModal
+          a={a}
+          assignMeta={assignMeta}
+          readOnly={isExaminer}
+          onChanged={reload}
+          onClose={() => setViewingTopics(false)}
+        />
+      )}
       {aiGrading && !isExaminer && (
         <AssignmentAiGradeModal
           a={a}

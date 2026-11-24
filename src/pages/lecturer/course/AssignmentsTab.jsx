@@ -16,6 +16,7 @@ import {
   SUBMISSION_FORMATS,
   autoBuildSyndicateGroups,
   formatSubmissionRules,
+  formatTopicRuleLabel,
   classKey,
   cleanCohortPart,
   filterStudentsForAssignment,
@@ -104,7 +105,7 @@ export default function AssignmentsTab({ course, ta }) {
                         {meta.rubric.length > 0 ? ` · ${meta.rubric.length}-criterion rubric` : ''}
                         {meta.syndicate.enabled ? ` · Syndicate (${meta.syndicate.groups.length} groups)` : ''}{a.clo_code ? ` · ${a.clo_code}` : ''}
                       </div>
-                      {(hasFilter || meta.doc?.path || subRuleLabel || hasDeadlineOverrides(meta)) && (
+                      {(hasFilter || meta.doc?.path || subRuleLabel || hasDeadlineOverrides(meta) || meta.topicRegistration?.enabled) && (
                         <div className="row-wrap" style={{ gap: 6, marginTop: 4 }}>
                           {hasFilter && (
                             <span className="badge badge-plum">
@@ -119,6 +120,11 @@ export default function AssignmentsTab({ course, ta }) {
                           {hasDeadlineOverrides(meta) && (
                             <span className="badge badge-amber">
                               <Icon name="clock" size={11} /> Custom deadlines
+                            </span>
+                          )}
+                          {meta.topicRegistration?.enabled && (
+                            <span className="badge badge-teal">
+                              <Icon name="tag" size={11} /> {formatTopicRuleLabel(meta)}
                             </span>
                           )}
                           {meta.doc?.path && (
@@ -213,6 +219,11 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
   const [subMode, setSubMode] = useState(initialMeta.submission?.mode || 'file');
   const [subFileFormat, setSubFileFormat] = useState(initialMeta.submission?.fileFormat || 'all');
   const [subAllowPaste, setSubAllowPaste] = useState(initialMeta.submission?.allowPaste !== false);
+  const [topicEnabled, setTopicEnabled] = useState(Boolean(initialMeta.topicRegistration?.enabled));
+  const [topicUniqueness, setTopicUniqueness] = useState(initialMeta.topicRegistration?.uniqueness || 'product');
+  const [topicDeadline, setTopicDeadline] = useState(toLocalInput(initialMeta.topicRegistration?.deadline || ''));
+  const [topicRequireBeforeSubmit, setTopicRequireBeforeSubmit] = useState(initialMeta.topicRegistration?.requireBeforeSubmit !== false);
+  const [topicUseAiCheck, setTopicUseAiCheck] = useState(initialMeta.topicRegistration?.useAiCheck !== false);
   const [saving, setSaving] = useState(false);
   const [classDeadlines, setClassDeadlines] = useState(() => {
     const out = {};
@@ -464,6 +475,13 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
               .filter(([, iso]) => Boolean(iso))
           ),
           byStudent: initialMeta.deadlines?.byStudent || {},
+        },
+        topicRegistration: {
+          enabled: topicEnabled,
+          uniqueness: topicUniqueness,
+          deadline: fromLocalInput(topicDeadline),
+          requireBeforeSubmit: topicRequireBeforeSubmit,
+          useAiCheck: topicUseAiCheck,
         },
       });
 
@@ -988,6 +1006,56 @@ export function AssignmentForm({ course, a, onClose, onSaved }) {
           )}
         </div>
 
+        <div className="stack-sm" style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--surface-2)', border: '1px solid var(--line)' }}>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={topicEnabled}
+              onChange={(e) => setTopicEnabled(e.target.checked)}
+            />
+            <span>
+              <strong>Product / Firm Pre-Registration (No Duplicates)</strong>
+              <span className="tiny muted" style={{ display: 'block' }}>
+                Students/syndicates register their chosen firm &amp; product first-come, first-served. Automatically blocks duplicates, typos, and spelling variations while keeping the taken list anonymized.
+              </span>
+            </span>
+          </label>
+          {topicEnabled && (
+            <div className="stack-sm" style={{ marginTop: 6, padding: '10px 12px', borderRadius: 8, background: 'var(--surface)', border: '1px solid var(--line-2)' }}>
+              <Field label="Uniqueness rule for this assignment">
+                <select className="select" value={topicUniqueness} onChange={(e) => setTopicUniqueness(e.target.value)}>
+                  <option value="product">Unique Product — different products from the same firm are allowed (e.g. Nestlé Milo vs Nestlé Cerelac)</option>
+                  <option value="firm">Unique Firm — once a firm is claimed, nobody else can pick any product from that firm</option>
+                  <option value="both">Unique Firm &amp; Product — both the firm and product must be unique</option>
+                </select>
+              </Field>
+              <Field label="Registration deadline (optional)" hint="leave blank to use the assignment due date">
+                <input
+                  className="input"
+                  type="datetime-local"
+                  value={topicDeadline}
+                  onChange={(e) => setTopicDeadline(e.target.value)}
+                />
+              </Field>
+              <label className="check small">
+                <input
+                  type="checkbox"
+                  checked={topicRequireBeforeSubmit}
+                  onChange={(e) => setTopicRequireBeforeSubmit(e.target.checked)}
+                />
+                <span>Require registration before students can submit the assignment</span>
+              </label>
+              <label className="check small">
+                <input
+                  type="checkbox"
+                  checked={topicUseAiCheck}
+                  onChange={(e) => setTopicUseAiCheck(e.target.checked)}
+                />
+                <span>Enable AI semantic duplicate check (catches acronyms, aliases &amp; different spellings, e.g. GCB vs Ghana Commercial Bank)</span>
+              </label>
+            </div>
+          )}
+        </div>
         <label className="check"><input type="checkbox" checked={f.allow_late} onChange={set('allow_late')} /> Accept late submissions (they are marked as late)</label>
         <label className="check"><input type="checkbox" checked={f.published} onChange={set('published')} /> Visible to students</label>
       </Modal>
