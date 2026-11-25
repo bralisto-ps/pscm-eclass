@@ -200,10 +200,16 @@ export default function Layout() {
               <span>Grades</span>
             </NavLink>
           ) : (
-            <button type="button" className="mobile-bottom-link" onClick={() => setOpen(true)}>
-              <Icon name="book" size={18} />
-              <span>Courses</span>
-            </button>
+            <>
+              <NavLink to="/teach/labs" className="mobile-bottom-link">
+                <Icon name="flask" size={18} />
+                <span>Labs</span>
+              </NavLink>
+              <button type="button" className="mobile-bottom-link" onClick={() => setOpen(true)}>
+                <Icon name="book" size={18} />
+                <span>Courses</span>
+              </button>
+            </>
           )}
           <button type="button" className="mobile-bottom-link" onClick={() => setJump(true)}>
             <Icon name="search" size={18} />

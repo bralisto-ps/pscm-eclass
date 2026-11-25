@@ -59,6 +59,16 @@ export default function QuickJumpModal({ courses = [], isStaff, onClose }) {
     const term = q.trim().toLowerCase();
     const out = [];
     const base = (cId) => (isStaff ? `/teach/course/${cId}` : `/course/${cId}`);
+    if (isStaff && (!term || 'software labs tqm spc pareto fishbone cost of quality'.includes(term))) {
+      out.push({
+        key: 'labs-hub',
+        kind: 'Labs',
+        icon: 'flask',
+        title: 'Software Labs Hub',
+        sub: 'SPC, 7 Tools of Quality, Cost of Quality — assign to classes',
+        to: '/teach/labs',
+      });
+    }
 
     for (const c of courses) {
       const hay = `${c.code} ${c.title}`.toLowerCase();

@@ -414,6 +414,9 @@ export default function Dashboard() {
               />
             </label>
           )}
+          <Link to="/teach/labs" className="btn">
+            <Icon name="flask" size={16} /> Software Labs
+          </Link>
           {courses.length > 0 && (
             <button type="button" className="btn" onClick={() => setDigestOpen(true)}>
               <Icon name="clipboard" size={16} /> <span className="hide-xs">Weekly digest</span>
