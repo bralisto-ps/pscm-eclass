@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../Icon.jsx';
 import { useToast } from '../ui.jsx';
 import { useAuth } from '../../lib/auth.jsx';
-import { supabase } from '../../lib/supabase.js';
+import { rpc, supabase } from '../../lib/supabase.js';
 import { downloadText } from '../../lib/sheets.js';
 import { findMasterDataDuplicates } from '../../lib/psisLabEngine.js';
 import {
@@ -167,7 +167,9 @@ export default function LiveLabSessionModal({
   isHost = false,
   initialLabId = 'psis_seven_names',
   initialCode = '',
+  courseId = null,
   courseCode = '',
+  courses = [],
   onClose,
 }) {
   const toast = useToast();
@@ -182,6 +184,9 @@ export default function LiveLabSessionModal({
   const [assignments, setAssignments] = useState({});
   const [labState, setLabState] = useState(() => createInitialLabState(initialLabId));
   const [eventLog, setEventLog] = useState([]);
+  const [attCourseId, setAttCourseId] = useState(courseId || courses?.[0]?.id || '');
+  const [recordingAtt, setRecordingAtt] = useState(false);
+  const [attRecordedCount, setAttRecordedCount] = useState(null);
 
   // Student-side UI controls
   const [studentDeliveryIdx, setStudentDeliveryIdx] = useState(0);
@@ -541,6 +546,49 @@ export default function LiveLabSessionModal({
     broadcastState(labId, nextState, assignments);
   }
 
+  async function recordLiveAttendance() {
+    const targetCourseId = courseId || attCourseId;
+    if (!targetCourseId) {
+      toast('Select a course first before recording attendance.', 'error');
+      return;
+    }
+    const indexed = participants.filter((p) => p.indexNo && String(p.indexNo).trim());
+    if (!indexed.length) {
+      toast('No connected students with index numbers found yet.', 'error');
+      return;
+    }
+    setRecordingAtt(true);
+    try {
+      const sessionTitle = `Live Lab: ${activeLabMeta.code} (${sessionCode})`;
+      const attSessionId = await rpc('start_manual_rollcall', {
+        p_course: targetCourseId,
+        p_title: sessionTitle,
+        p_streams: [],
+        p_classes: [],
+      });
+      let okCount = 0;
+      for (const stu of indexed) {
+        try {
+          await rpc('set_attendance', {
+            p_session: attSessionId,
+            p_index: String(stu.indexNo).trim(),
+            p_present: true,
+          });
+          okCount += 1;
+        } catch {
+          // skip student if not enrolled in selected course
+        }
+      }
+      setAttRecordedCount(okCount);
+      pushLog('Lecturer', 'ATTENDANCE_SAVED', `Credited ${okCount} student(s) into Class Attendance (${sessionTitle})`);
+      toast(`Recorded attendance for ${okCount} student${okCount === 1 ? '' : 's'} in Class Attendance & CA!`);
+    } catch (err) {
+      toast(err?.message || 'Could not record attendance. Ensure manual roll-call SQL is enabled.', 'error');
+    } finally {
+      setRecordingAtt(false);
+    }
+  }
+
   function exportEventLogCsv() {
     const header = 'Timestamp,Actor,EventType,Detail';
     const rows = [...eventLog].reverse().map((e) => [
@@ -629,9 +677,40 @@ export default function LiveLabSessionModal({
               {participants.length} STUDENT{participants.length === 1 ? '' : 'S'} ONLINE
             </div>
             {isHost && (
-              <button type="button" className="btn btn-sm" onClick={exportEventLogCsv}>
-                <Icon name="download" size={13} /> Export Event Log CSV
-              </button>
+              <>
+                {!courseId && courses?.length > 0 && (
+                  <select
+                    className="input"
+                    style={{ width: 'auto', padding: '5px 8px', fontSize: 12 }}
+                    value={attCourseId}
+                    onChange={(e) => setAttCourseId(e.target.value)}
+                    aria-label="Course for attendance credit"
+                  >
+                    {courses.map((c) => (
+                      <option key={c.id} value={c.id}>{c.code}</option>
+                    ))}
+                  </select>
+                )}
+                {(courseId || attCourseId) && (
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={recordingAtt || participants.length === 0}
+                    onClick={recordLiveAttendance}
+                    title="Create a Class Attendance session and mark all connected students present (flows directly into Attendance CA)"
+                  >
+                    <Icon name="check" size={13} />{' '}
+                    {recordingAtt
+                      ? 'Saving Attendance…'
+                      : attRecordedCount !== null
+                        ? `Attendance Saved (${attRecordedCount})`
+                        : 'Credit Attendance'}
+                  </button>
+                )}
+                <button type="button" className="btn btn-sm" onClick={exportEventLogCsv}>
+                  <Icon name="download" size={13} /> Export Log CSV
+                </button>
+              </>
             )}
             <button type="button" className="btn btn-sm" onClick={onClose}>
               <Icon name="close" size={14} /> {isHost ? 'End Live Session' : 'Leave Session'}

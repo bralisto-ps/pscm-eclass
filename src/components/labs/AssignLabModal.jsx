@@ -67,6 +67,9 @@ export default function AssignLabModal({
   const [newAssignDue, setNewAssignDue] = useState('');
   const [newAssignPublish, setNewAssignPublish] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [caComponents, setCaComponents] = useState([]);
+  const [caTarget, setCaTarget] = useState('keep');
+  const [newCaWeight, setNewCaWeight] = useState('15');
 
   // Sync existing config when switching course in LabsHub
   useEffect(() => {
@@ -93,14 +96,23 @@ export default function AssignLabModal({
       setLinkedAssignmentId('');
       setGradeMode('practice');
     }
-    supabase
-      .from('assignments')
-      .select('id, title, max_marks, due_at, published')
-      .eq('course_id', selectedCourse.id)
-      .order('created_at', { ascending: false })
-      .then(({ data }) => {
-        if (alive) setAssignments(data || []);
-      });
+    Promise.all([
+      supabase
+        .from('assignments')
+        .select('id, title, max_marks, due_at, published')
+        .eq('course_id', selectedCourse.id)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('ca_components')
+        .select('id, name, kind, weight, item_ids, position')
+        .eq('course_id', selectedCourse.id)
+        .eq('kind', 'assignments')
+        .order('position'),
+    ]).then(([aRes, caRes]) => {
+      if (!alive) return;
+      setAssignments(aRes.data || []);
+      setCaComponents(caRes.data || []);
+    });
     return () => { alive = false; };
   }, [selectedCourse?.id, labId]);
 
@@ -440,6 +452,37 @@ export default function AssignLabModal({
       );
       await run(supabase.from('courses').update({ description: serialized }).eq('id', selectedCourse.id));
 
+      // Optional direct CA component mapping (Zero SQL migrations — uses existing ca_components)
+      if (finalAssignmentId && caTarget !== 'keep') {
+        if (caTarget === 'create_labs_ca') {
+          await run(
+            supabase.from('ca_components').insert({
+              course_id: selectedCourse.id,
+              name: 'Software Labs',
+              kind: 'assignments',
+              weight: Math.max(1, Math.min(100, Number(newCaWeight) || 15)),
+              item_ids: [finalAssignmentId],
+              drop_lowest: 0,
+              max_score: 100,
+              position: caComponents.length + 1,
+            }),
+          );
+        } else {
+          const targetComp = caComponents.find((c) => c.id === caTarget);
+          if (targetComp) {
+            const existingIds = Array.isArray(targetComp.item_ids) ? targetComp.item_ids : [];
+            if (existingIds.length > 0 && !existingIds.includes(finalAssignmentId)) {
+              await run(
+                supabase
+                  .from('ca_components')
+                  .update({ item_ids: [...existingIds, finalAssignmentId] })
+                  .eq('id', targetComp.id),
+              );
+            }
+          }
+        }
+      }
+
       toast(
         gradeMode === 'create'
           ? `Lab opened for ${selectedCourse.code} and linked to new assignment.`
@@ -646,6 +689,33 @@ export default function AssignLabModal({
                 ))}
               </select>
             </Field>
+          )}
+          {gradeMode !== 'practice' && (
+            <div style={{ paddingTop: 8, borderTop: '1px solid var(--line)', display: 'grid', gridTemplateColumns: caTarget === 'create_labs_ca' ? '2fr 1fr' : '1fr', gap: 10 }}>
+              <Field label="Continuous Assessment (CA) Gradebook Mapping">
+                <select className="input" value={caTarget} onChange={(e) => setCaTarget(e.target.value)}>
+                  <option value="keep">Use existing CA Assignments pool (default)</option>
+                  {caComponents.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      Add to CA component: {c.name} ({c.weight}% weight)
+                    </option>
+                  ))}
+                  <option value="create_labs_ca">+ Create dedicated "Software Labs" CA component…</option>
+                </select>
+              </Field>
+              {caTarget === 'create_labs_ca' && (
+                <Field label="CA Weight (%)">
+                  <input
+                    className="input mono"
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={newCaWeight}
+                    onChange={(e) => setNewCaWeight(e.target.value)}
+                  />
+                </Field>
+              )}
+            </div>
           )}
         </div>
 

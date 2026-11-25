@@ -3,6 +3,7 @@ import Icon from '../Icon.jsx';
 import { Empty, Loading } from '../ui.jsx';
 import { parseCourseMeta } from '../../lib/courseMeta.js';
 import { DATA_POLICIES, getLabDef } from '../../lib/labsCatalog.js';
+import { LAB_TRACK_META } from '../../lib/labScoringBridge.js';
 import { fmtFull, fmtNumber, relative } from '../../lib/format.js';
 
 const LabRunnerModal = lazy(() => import('./LabRunnerModal.jsx'));
@@ -23,12 +24,30 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
     [assignments],
   );
 
+  const progressStats = useMemo(() => {
+    let gradedTotal = 0;
+    let gradedSubmitted = 0;
+    let gradedMarked = 0;
+    openLabs.forEach((cfg) => {
+      const linked = cfg.linkedAssignmentId ? assignById.get(cfg.linkedAssignmentId) : null;
+      if (linked) {
+        gradedTotal += 1;
+        if (linked.submission) gradedSubmitted += 1;
+        if (linked.submission?.marked && (linked.released || linked.results_released)) gradedMarked += 1;
+      }
+    });
+    const pct = gradedTotal > 0 ? Math.round((gradedSubmitted / gradedTotal) * 100) : 0;
+    return { gradedTotal, gradedSubmitted, gradedMarked, pct };
+  }, [openLabs, assignById]);
+
   const liveJoinCard = !previewOnly ? (
-    <section className="card-soft between" style={{ padding: '12px 16px', flexWrap: 'wrap', gap: 12 }}>
-      <div className="stack-xs" style={{ flex: 1, minWidth: 220 }}>
-        <div className="tiny muted">LIVE MULTI-STUDENT CLASSROOM LAB</div>
+    <section className="card-soft between" style={{ padding: '14px 18px', flexWrap: 'wrap', gap: 12 }}>
+      <div className="stack-xs" style={{ flex: 1, minWidth: 230 }}>
+        <div className="tiny mono" style={{ color: 'var(--teal-700)', fontWeight: 700 }}>
+          ● LIVE MULTI-STUDENT CLASSROOM LAB
+        </div>
         <div className="small">
-          Running a live simulation in class right now? Enter the 6-letter join code displayed on the projector.
+          In class right now? Enter the 6-letter join code displayed on your lecturer’s projector to join the live simulation.
         </div>
       </div>
       <form
@@ -43,7 +62,7 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
       >
         <input
           className="input mono"
-          style={{ width: 132, textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 700 }}
+          style={{ width: 132, textTransform: 'uppercase', letterSpacing: '0.14em', fontWeight: 700 }}
           placeholder="CODE"
           maxLength={8}
           value={joinCodeInput}
@@ -58,7 +77,7 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
 
   if (!openLabs.length) {
     return (
-      <div className="stack" style={{ maxWidth: 860 }}>
+      <div className="stack" style={{ maxWidth: 960 }}>
         {liveJoinCard}
         <div className="card">
           <Empty icon="flask" title="No software labs opened yet">
@@ -80,71 +99,110 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
   }
 
   return (
-    <div className="stack" style={{ maxWidth: 920 }}>
+    <div className="stack" style={{ maxWidth: 1020 }}>
       {liveJoinCard}
-      {openLabs.map((cfg) => {
-        const def = getLabDef(cfg.labId);
-        const linked = cfg.linkedAssignmentId ? assignById.get(cfg.linkedAssignmentId) : null;
-        const sub = linked?.submission || null;
-        const policy = DATA_POLICIES.find((p) => p.id === cfg.dataMode)?.short || 'Course or own data';
 
-        return (
-          <section key={cfg.labId} className="card stack-sm">
-            <div className="between" style={{ alignItems: 'flex-start', flexWrap: 'wrap', gap: 14 }}>
-              <div className="stack-xs" style={{ flex: 1, minWidth: 240 }}>
+      {/* Graded Lab Completion Progress Banner */}
+      {progressStats.gradedTotal > 0 && (
+        <section className="card stack-xs" style={{ padding: '14px 18px' }}>
+          <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <div className="small">
+              <strong>{course?.code || 'Course'} Lab Progress:</strong>{' '}
+              <span className="mono" style={{ fontWeight: 700, color: 'var(--teal-700)' }}>
+                {progressStats.gradedSubmitted} / {progressStats.gradedTotal}
+              </span>{' '}
+              graded lab{progressStats.gradedTotal === 1 ? '' : 's'} submitted
+              {progressStats.gradedMarked > 0 ? ` · ${progressStats.gradedMarked} marked & released to CA` : ''}
+            </div>
+            <span className="mono tiny" style={{ fontWeight: 700, color: 'var(--teal-700)' }}>
+              {progressStats.pct}% COMPLETE
+            </span>
+          </div>
+          <div className="lab-progress-track">
+            <div className="lab-progress-fill" style={{ width: `${progressStats.pct}%` }} />
+          </div>
+        </section>
+      )}
+
+      {/* 2-Column Studio Lab Gallery */}
+      <div className="lab-gallery-grid">
+        {openLabs.map((cfg) => {
+          const def = getLabDef(cfg.labId);
+          const track = LAB_TRACK_META[def.id] || { track: def.domain, accent: 'var(--teal-700)', stage: 'Interactive Lab' };
+          const linked = cfg.linkedAssignmentId ? assignById.get(cfg.linkedAssignmentId) : null;
+          const sub = linked?.submission || null;
+          const policy = DATA_POLICIES.find((p) => p.id === cfg.dataMode)?.short || 'Course or own data';
+          const markedReleased = Boolean(sub?.marked && (linked?.released || linked?.results_released));
+
+          return (
+            <article
+              key={cfg.labId}
+              className="lab-gallery-card"
+              style={{ '--lab-accent': track.accent }}
+            >
+              <div className="stack-xs">
+                <div className="between" style={{ gap: 8, alignItems: 'center' }}>
+                  <span className="tiny mono" style={{ fontWeight: 700, color: track.accent }}>
+                    {def.code} · {track.track.toUpperCase()}
+                  </span>
+                  {linked ? (
+                    <span
+                      className="tiny mono"
+                      style={{
+                        fontWeight: 700,
+                        color: markedReleased || sub ? 'var(--teal-700)' : 'var(--amber)',
+                      }}
+                    >
+                      {markedReleased
+                        ? `● ${fmtNumber(sub.marks)} / ${fmtNumber(linked.max_marks)}`
+                        : sub
+                          ? '● SUBMITTED'
+                          : '▲ NOT SUBMITTED'}
+                    </span>
+                  ) : (
+                    <span className="tiny mono muted">PRACTICE LAB</span>
+                  )}
+                </div>
+
+                <h2 style={{ margin: '2px 0 0', fontSize: 17, lineHeight: 1.3 }}>
+                  {cfg.title || def.title}
+                </h2>
+
                 <div className="tiny muted">
-                  {def.code} · {def.domain} · {policy}
+                  {track.stage} · {def.duration} · {policy}
                   {cfg.customDataset?.name ? ` · Dataset: ${cfg.customDataset.name}` : ''}
                 </div>
-                <h2 style={{ margin: 0, fontSize: 18 }}>{cfg.title || def.title}</h2>
-                <p className="small muted" style={{ margin: '2px 0 0' }}>
+
+                <p className="small muted" style={{ margin: '6px 0 0', lineHeight: 1.5 }}>
                   {cfg.instructions || def.summary}
                 </p>
+              </div>
 
+              <div className="stack-xs" style={{ paddingTop: 10, borderTop: '1px solid var(--line)' }}>
                 {linked ? (
-                  <div className="small" style={{ marginTop: 6 }}>
-                    <strong>Graded Assignment:</strong> {linked.title} · {fmtNumber(linked.max_marks)} marks
+                  <div className="tiny muted">
+                    <strong style={{ color: 'var(--text)' }}>CA Assignment:</strong> {linked.title} ({fmtNumber(linked.max_marks)} marks)
                     {linked.due_at ? ` · Due ${fmtFull(linked.due_at)} (${relative(linked.due_at)})` : ''}
                   </div>
                 ) : (
-                  <div className="tiny muted" style={{ marginTop: 6 }}>
-                    Practice Lab · Export PDF reports anytime
-                  </div>
+                  <div className="tiny muted">Ungraded sandbox · Export PDF reports anytime</div>
                 )}
-              </div>
 
-              <div className="stack-xs" style={{ alignItems: 'flex-end' }}>
-                {linked && (
-                  <span
-                    className="tiny mono"
-                    style={{
-                      fontWeight: 700,
-                      color: sub?.marked && (linked.released || linked.results_released)
-                        ? 'var(--teal-700)'
-                        : sub
-                          ? 'var(--teal-700)'
-                          : 'var(--amber)',
-                    }}
+                <div className="between" style={{ gap: 8, marginTop: 4 }}>
+                  <span className="tiny muted">Auto-saves locally</span>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => setActiveLab({ cfg, linked })}
                   >
-                    {sub?.marked && (linked.released || linked.results_released)
-                      ? `● MARKED: ${fmtNumber(sub.marks)} / ${fmtNumber(linked.max_marks)}`
-                      : sub
-                        ? '● SUBMITTED'
-                        : '▲ NOT SUBMITTED'}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => setActiveLab({ cfg, linked })}
-                >
-                  <Icon name="flask" size={16} /> {sub ? 'Open Lab / View Draft' : 'Launch Interactive Lab'}
-                </button>
+                    <Icon name="flask" size={14} /> {sub ? 'Open Lab / View Draft' : 'Launch Interactive Lab'}
+                  </button>
+                </div>
               </div>
-            </div>
-          </section>
-        );
-      })}
+            </article>
+          );
+        })}
+      </div>
 
       {liveJoinCode && (
         <Suspense fallback={<Loading label="Connecting to live classroom lab…" />}>

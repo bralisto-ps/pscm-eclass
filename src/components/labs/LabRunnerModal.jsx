@@ -6,6 +6,7 @@ import { buildTypedResponsePdfBlob } from '../../lib/textPdf.js';
 import { useAuth } from '../../lib/auth.jsx';
 import { fmtDateTime } from '../../lib/format.js';
 import { formatAutoScoredSubmissionHeader } from '../../lib/psisMilestone4Engine.js';
+import { LAB_CONCEPT_GUIDES, LAB_TRACK_META } from '../../lib/labScoringBridge.js';
 
 const SpcLab = lazy(() => import('./SpcLab.jsx'));
 const QualityToolsLab = lazy(() => import('./QualityToolsLab.jsx'));
@@ -46,8 +47,11 @@ export default function LabRunnerModal({
   const [submitting, setSubmitting] = useState(false);
   const [submitDone, setSubmitDone] = useState(false);
   const [judgementReady, setJudgementReady] = useState(false);
+  const [hasInteracted, setHasInteracted] = useState(Boolean(draftState));
+  const [guideOpen, setGuideOpen] = useState(false);
 
   const handleDraftChange = useCallback((next) => {
+    setHasInteracted(true);
     try {
       localStorage.setItem(storageKey, JSON.stringify(next));
     } catch {
@@ -66,6 +70,8 @@ export default function LabRunnerModal({
   }, []);
 
   if (!def) return null;
+  const trackMeta = LAB_TRACK_META[def.id] || { track: def.domain, accent: 'var(--teal-700)', stage: 'Interactive Lab' };
+  const conceptGuide = LAB_CONCEPT_GUIDES[def.id] || null;
 
   const dataMode = labConfig?.dataMode || 'both';
   const policyLabel = DATA_POLICIES.find((p) => p.id === dataMode)?.short || 'Course or own data';
@@ -163,6 +169,7 @@ export default function LabRunnerModal({
           flexDirection: 'column',
           padding: 0,
           overflow: 'hidden',
+          borderTop: `4px solid ${trackMeta.accent}`,
         }}
       >
         {/* Clean Sticky Lab Header */}
@@ -178,7 +185,7 @@ export default function LabRunnerModal({
         >
           <div>
             <div className="tiny muted">
-              {def.code} · {def.domain}
+              <strong className="mono" style={{ color: trackMeta.accent }}>{def.code}</strong> · {trackMeta.track} · {trackMeta.stage}
               {course ? ` · ${course.code}` : ' · Sandbox Preview'}
               {' · '}
               {policyLabel}
@@ -189,6 +196,15 @@ export default function LabRunnerModal({
           </div>
 
           <div className="row-wrap" style={{ gap: 8 }}>
+            {conceptGuide && (
+              <button
+                type="button"
+                className={`btn btn-sm ${guideOpen ? 'btn-primary' : ''}`}
+                onClick={() => setGuideOpen((v) => !v)}
+              >
+                <Icon name="book" size={14} /> {guideOpen ? 'Hide Guide' : 'Formula & Concept Guide'}
+              </button>
+            )}
             <button type="button" className="btn btn-sm" onClick={downloadPdfReport}>
               <Icon name="download" size={14} /> Download PDF Report
             </button>
@@ -200,6 +216,46 @@ export default function LabRunnerModal({
             </button>
           </div>
         </div>
+
+        {/* 4-Step Lab Workflow Stepper */}
+        <div className="lab-stepper" aria-label="Lab completion steps">
+          <div className="lab-step done">
+            <span className="lab-step-num">✓</span>
+            <span>1. Data Ready</span>
+          </div>
+          <div className={`lab-step ${hasInteracted ? 'done' : ''}`}>
+            <span className="lab-step-num">{hasInteracted ? '✓' : '2'}</span>
+            <span>2. Analysis &amp; Audit</span>
+          </div>
+          <div className={`lab-step ${judgementReady ? 'done' : ''}`}>
+            <span className="lab-step-num">{judgementReady ? '✓' : '3'}</span>
+            <span>3. Written Judgement</span>
+          </div>
+          <div className={`lab-step ${existingSub || submitDone ? 'done' : ''}`}>
+            <span className="lab-step-num">{existingSub || submitDone ? '✓' : '4'}</span>
+            <span>{assignment && !previewOnly ? '4. Submit to CA' : '4. Export PDF'}</span>
+          </div>
+        </div>
+
+        {/* Collapsible Formula & Concept Quick-Reference Drawer */}
+        {guideOpen && conceptGuide && (
+          <div className="lab-concept-drawer stack-xs">
+            <div className="between">
+              <strong className="small">{conceptGuide.title}</strong>
+              <button type="button" className="btn btn-sm" onClick={() => setGuideOpen(false)}>Close Guide</button>
+            </div>
+            <div className="lab-formula-grid">
+              {conceptGuide.formulas.map((f, idx) => (
+                <div key={idx} className="lab-formula-box">{f}</div>
+              ))}
+            </div>
+            <div className="row-wrap tiny muted" style={{ gap: 12, marginTop: 4 }}>
+              {conceptGuide.checklist.map((tip, idx) => (
+                <span key={idx}>• {tip}</span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Assignment Context Strip (if linked to a graded assignment) */}
         {assignment && !previewOnly && (
