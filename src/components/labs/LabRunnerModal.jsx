@@ -9,6 +9,9 @@ import { fmtDateTime } from '../../lib/format.js';
 const SpcLab = lazy(() => import('./SpcLab.jsx'));
 const QualityToolsLab = lazy(() => import('./QualityToolsLab.jsx'));
 const CostOfQualityLab = lazy(() => import('./CostOfQualityLab.jsx'));
+const SevenNamesLab = lazy(() => import('./SevenNamesLab.jsx'));
+const ScanItLab = lazy(() => import('./ScanItLab.jsx'));
+const TheMatchLab = lazy(() => import('./TheMatchLab.jsx'));
 
 export default function LabRunnerModal({
   labConfig,
@@ -246,6 +249,33 @@ export default function LabRunnerModal({
             )}
             {def.id === 'tqm_coq' && (
               <CostOfQualityLab
+                config={labConfig}
+                dataMode={dataMode}
+                draftState={draftState}
+                onDraftChange={handleDraftChange}
+                onRegisterReportBuilder={registerBuilder}
+              />
+            )}
+            {def.id === 'psis_seven_names' && (
+              <SevenNamesLab
+                config={labConfig}
+                dataMode={dataMode}
+                draftState={draftState}
+                onDraftChange={handleDraftChange}
+                onRegisterReportBuilder={registerBuilder}
+              />
+            )}
+            {def.id === 'psis_scan_it' && (
+              <ScanItLab
+                config={labConfig}
+                dataMode={dataMode}
+                draftState={draftState}
+                onDraftChange={handleDraftChange}
+                onRegisterReportBuilder={registerBuilder}
+              />
+            )}
+            {def.id === 'psis_the_match' && (
+              <TheMatchLab
                 config={labConfig}
                 dataMode={dataMode}
                 draftState={draftState}

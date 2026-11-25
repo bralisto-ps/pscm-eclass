@@ -171,6 +171,77 @@ export default function AssignLabModal({
           items,
         });
         setUploadNote(`Loaded ${items.length} COQ cost lines from "${file.name}".`);
+      } else if (labId === 'psis_seven_names') {
+        const masterItems = [];
+        rows.forEach((r, idx) => {
+          if (r.length < 2) return;
+          const stock = Number(String(r[2] ?? '0').replace(/[^0-9.-]/g, ''));
+          if (idx === 0 && /code|sku|item|desc/i.test(String(r[0])) && !Number.isFinite(stock)) return;
+          if (!String(r[0] || '').trim() && !String(r[1] || '').trim()) return;
+          masterItems.push({
+            code: String(r[0] || `SKU-${idx + 1}`).trim(),
+            name: String(r[1] || r[0] || `Item ${idx + 1}`).trim(),
+            stock: Number.isFinite(stock) ? Math.max(0, stock) : 0,
+            canonicalId: `custom_${idx}`,
+          });
+        });
+        if (!masterItems.length) throw new Error('Use columns: Code, ItemDescription, StockQty.');
+        setCustomDataset({ name, masterItems });
+        setUploadNote(`Loaded ${masterItems.length} item master SKUs from "${file.name}".`);
+      } else if (labId === 'psis_scan_it') {
+        const samples = [];
+        rows.forEach((r, idx) => {
+          if (!r[0]) return;
+          const digits = String(r[0]).replace(/[^0-9]/g, '');
+          if (idx === 0 && !digits) return;
+          if (!digits) return;
+          samples.push({
+            barcode: digits,
+            product: String(r[1] || `Product ${idx + 1}`).trim(),
+            category: String(r[2] || 'General').trim(),
+          });
+        });
+        if (!samples.length) throw new Error('Use columns: Barcode, ProductName, Category.');
+        setCustomDataset({ name, samples });
+        setUploadNote(`Loaded ${samples.length} GTIN barcode samples from "${file.name}".`);
+      } else if (labId === 'psis_the_match') {
+        const packets = [];
+        rows.forEach((r, idx) => {
+          if (r.length < 10) return;
+          const poQty = Number(String(r[5]).replace(/[^0-9.-]/g, ''));
+          const poUnitPrice = Number(String(r[6]).replace(/[^0-9.-]/g, ''));
+          const grnQty = Number(String(r[7]).replace(/[^0-9.-]/g, ''));
+          const invQty = Number(String(r[8]).replace(/[^0-9.-]/g, ''));
+          const invUnitPrice = Number(String(r[9]).replace(/[^0-9.-]/g, ''));
+          if (idx === 0 && !Number.isFinite(poQty)) return;
+          if (!Number.isFinite(poQty) || !Number.isFinite(poUnitPrice)) return;
+          const budgetRaw = r[10] !== undefined && String(r[10]).trim() !== ''
+            ? Number(String(r[10]).replace(/[^0-9.-]/g, ''))
+            : null;
+          const grnNo = String(r[1] || '').trim();
+          const grnPosted = Boolean(grnNo && !/pending|none|missing|-|^$/i.test(grnNo) && (Number.isFinite(grnQty) ? grnQty > 0 : false));
+          packets.push({
+            id: `lp2p_${idx}`,
+            poNo: String(r[0] || `PO-${idx + 1}`).trim(),
+            grnNo: grnNo || '(Pending)',
+            invoiceNo: String(r[2] || `INV-${idx + 1}`).trim(),
+            supplier: String(r[3] || 'Supplier').trim(),
+            item: String(r[4] || 'Item').trim(),
+            costCentre: String(r[11] || 'General Operations').trim(),
+            budgetRemaining: Number.isFinite(budgetRaw) ? budgetRaw : null,
+            poApproved: r[12] ? !/false|no|0/i.test(String(r[12])) : true,
+            grnPosted,
+            duplicateInvoice: r[13] ? /true|yes|1/i.test(String(r[13])) : false,
+            poQty: Math.max(0, poQty),
+            poUnitPrice: Math.max(0, poUnitPrice),
+            grnQty: Number.isFinite(grnQty) ? Math.max(0, grnQty) : 0,
+            invQty: Number.isFinite(invQty) ? Math.max(0, invQty) : 0,
+            invUnitPrice: Number.isFinite(invUnitPrice) ? Math.max(0, invUnitPrice) : 0,
+          });
+        });
+        if (!packets.length) throw new Error('Use the P2P 3-Way Match CSV template columns (PO_No through BudgetRemaining).');
+        setCustomDataset({ name, currency: customCurrency || 'GHS', priceTolPct: 2, qtyTolPct: 0, packets });
+        setUploadNote(`Loaded ${packets.length} P2P invoice packets from "${file.name}".`);
       }
     } catch (err) {
       toast(err.message || 'Could not import dataset.', 'error');
