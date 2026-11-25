@@ -9,6 +9,7 @@ import { DATA_POLICIES, LAB_CATALOG, LAB_DOMAINS } from '../../lib/labsCatalog.j
 import AssignLabModal from '../../components/labs/AssignLabModal.jsx';
 
 const LabRunnerModal = lazy(() => import('../../components/labs/LabRunnerModal.jsx'));
+const LiveLabSessionModal = lazy(() => import('../../components/labs/LiveLabSessionModal.jsx'));
 
 export default function LabsHub() {
   const toast = useToast();
@@ -16,6 +17,7 @@ export default function LabsHub() {
   const [assigningLabId, setAssigningLabId] = useState(null);
   const [assignTarget, setAssignTarget] = useState(null); // { labId, course, config }
   const [previewLab, setPreviewLab] = useState(null);
+  const [liveHostLabId, setLiveHostLabId] = useState(null);
 
   const { data: courses, error, loading, reload } = useLoad(
     () => run(supabase.from('courses').select('id, code, title, color, semester, description, archived').eq('archived', false).order('code')),
@@ -80,8 +82,17 @@ export default function LabsHub() {
               </button>
             ))}
           </div>
-          <div className="small muted">
-            {visibleLabs.length} module{visibleLabs.length === 1 ? '' : 's'} available · {activeCourses.length} active class{activeCourses.length === 1 ? '' : 'es'}
+          <div className="row-wrap" style={{ gap: 10 }}>
+            <span className="small muted">
+              {visibleLabs.length} module{visibleLabs.length === 1 ? '' : 's'} · {activeCourses.length} active class{activeCourses.length === 1 ? '' : 'es'}
+            </span>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => setLiveHostLabId('psis_seven_names')}
+            >
+              <Icon name="flask" size={14} /> Host Live Classroom Session
+            </button>
           </div>
         </div>
 
@@ -103,6 +114,16 @@ export default function LabsHub() {
                     </div>
 
                     <div className="row-wrap" style={{ gap: 8 }}>
+                      {lab.supportsLiveClassroom && (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{ borderColor: 'var(--teal-700)', color: 'var(--teal-700)' }}
+                          onClick={() => setLiveHostLabId(lab.id)}
+                        >
+                          ● Host Live Class
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="btn btn-sm"
@@ -227,6 +248,16 @@ export default function LabsHub() {
             setAssignTarget(null);
           }}
         />
+      )}
+
+      {liveHostLabId && (
+        <Suspense fallback={<Loading label="Starting live classroom session…" />}>
+          <LiveLabSessionModal
+            isHost
+            initialLabId={liveHostLabId}
+            onClose={() => setLiveHostLabId(null)}
+          />
+        </Suspense>
       )}
 
       {previewLab && (
