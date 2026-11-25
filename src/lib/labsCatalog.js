@@ -529,6 +529,223 @@ export const THE_MATCH_PRESETS = [
   },
 ];
 
+export const THE_WHIP_PRESETS = [
+  {
+    id: 'rumour_spike_40',
+    name: 'Classic +40% Rumour Spike (20 Weeks)',
+    context: 'Weeks 1–8 run steady at 40 units/week. In Week 9 a supply rumour triggers a +40% consumer demand spike (56 units/week) for 3 weeks before returning to 40 units/week.',
+    leadTimeWeeks: 2,
+    holdingCost: 1,
+    backlogCost: 4,
+    initialStock: 60,
+    demandSeries: [40, 40, 40, 40, 40, 40, 40, 40, 56, 56, 56, 40, 40, 40, 40, 40, 40, 40, 40, 40],
+  },
+  {
+    id: 'festive_promotion',
+    name: 'Holiday Promotion Surge & Post-Promo Slump (20 Weeks)',
+    context: 'Consumer demand holds at 50/wk, surges to 80/wk during a 3-week festive promotion, then dips to 35/wk as households work through pantry stock.',
+    leadTimeWeeks: 2,
+    holdingCost: 1.5,
+    backlogCost: 5,
+    initialStock: 75,
+    demandSeries: [50, 50, 50, 50, 50, 52, 75, 85, 80, 35, 35, 42, 48, 50, 50, 50, 50, 50, 50, 50],
+  },
+  {
+    id: 'step_shift_permanent',
+    name: 'Permanent Demand Step-Up (30 to 50 Units/Week)',
+    context: 'Baseline demand shifts permanently from 30 to 50 units/week in Week 6 following a new regional hospital contract.',
+    leadTimeWeeks: 2,
+    holdingCost: 1,
+    backlogCost: 4,
+    initialStock: 50,
+    demandSeries: [30, 30, 30, 30, 30, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50],
+  },
+];
+
+export const REQ_TO_ORDER_PRESETS = [
+  {
+    id: 'university_procurement',
+    name: 'Public Institution Catalogue & Commitment Audit',
+    currency: 'GHS',
+    context: 'Process a batch of department requisitions under Delegation-of-Authority thresholds, toggle Commitment vs Spent-Only budget checks to observe double-commitment risk, and evaluate Blanket Order ROI.',
+    budgets: {
+      'Clinical & Lab': { budget: 32000, spent: 4000 },
+      'IT & Campus Ops': { budget: 24000, spent: 2000 },
+      'Facilities': { budget: 40000, spent: 5000 },
+    },
+    catalogue: [
+      { sku: 'CAT-01', item: 'A4 Copier Paper (Box of 5 Reams)', supplier: 'Apex Stationery Depot', unitPrice: 320, defaultCostCentre: 'IT & Campus Ops' },
+      { sku: 'CAT-02', item: 'Laboratory Reagent Kit (Pack)', supplier: 'BioLab Supplies Ltd', unitPrice: 1450, defaultCostCentre: 'Clinical & Lab' },
+      { sku: 'CAT-03', item: 'Enterprise Network Switch 24-Port', supplier: 'NetCore Ghana', unitPrice: 4800, defaultCostCentre: 'IT & Campus Ops' },
+      { sku: 'CAT-04', item: 'Industrial Floor Disinfectant 20L', supplier: 'CleanCare Janitorial', unitPrice: 290, defaultCostCentre: 'Facilities' },
+      { sku: 'CAT-05', item: 'LED Security Floodlight Assembly', supplier: 'VoltEdge Electricals', unitPrice: 850, defaultCostCentre: 'Facilities' },
+    ],
+    requisitions: [
+      { id: 'r1', reqNo: 'REQ-001', item: 'Laboratory Reagent Kit (Pack)', supplier: 'BioLab Supplies Ltd', costCentre: 'Clinical & Lab', qty: 12, unitPrice: 1450, paid: false },
+      { id: 'r2', reqNo: 'REQ-002', item: 'Laboratory Reagent Kit (Pack)', supplier: 'BioLab Supplies Ltd', costCentre: 'Clinical & Lab', qty: 10, unitPrice: 1450, paid: false },
+      { id: 'r3', reqNo: 'REQ-003', item: 'A4 Copier Paper (Box of 5 Reams)', supplier: 'Apex Stationery Depot', costCentre: 'IT & Campus Ops', qty: 15, unitPrice: 320, paid: false },
+      { id: 'r4', reqNo: 'REQ-004', item: 'A4 Copier Paper (Box of 5 Reams)', supplier: 'Apex Stationery Depot', costCentre: 'IT & Campus Ops', qty: 14, unitPrice: 320, paid: false },
+      { id: 'r5', reqNo: 'REQ-005', item: 'Enterprise Network Switch 24-Port', supplier: 'NetCore Ghana', costCentre: 'IT & Campus Ops', qty: 4, unitPrice: 4800, paid: false },
+      { id: 'r6', reqNo: 'REQ-006', item: 'LED Security Floodlight Assembly', supplier: 'VoltEdge Electricals', costCentre: 'Facilities', qty: 32, unitPrice: 850, paid: false },
+    ],
+    blanketDefaults: {
+      orderCount: 11,
+      standardPoCost: 650,
+      standardCycleHours: 36,
+      blanketSetupCost: 1800,
+      callOffCost: 95,
+      callOffCycleHours: 3,
+    },
+  },
+];
+
+export const THE_TENDER_PRESETS = [
+  {
+    id: 'medical_cold_chain_rfp',
+    name: 'Solar-Powered Vaccine Cold-Chain Fridges (20 Units)',
+    currency: 'GHS',
+    budgetCeiling: 480000,
+    context: 'Evaluate 5 sealed supplier bids against published multi-criteria weights (Price, Technical Spec, Delivery Speed, Local Support), then run a live Reverse Auction to compare price compression against below-cost quality risk.',
+    weights: { price: 45, technical: 30, delivery: 15, localContent: 10 },
+    bids: [
+      { id: 'b1', supplier: 'SolarMed Engineering Ltd', price: 438000, technicalScore: 91, leadTimeDays: 21, localContentScore: 86, reserveFloor: 392000, sustainableCost: 405000, aggressiveness: 0.55 },
+      { id: 'b2', supplier: 'LowCost Global Imports', price: 396000, technicalScore: 68, leadTimeDays: 42, localContentScore: 35, reserveFloor: 352000, sustainableCost: 378000, aggressiveness: 0.90 },
+      { id: 'b3', supplier: 'WestAfrica ColdTech', price: 422000, technicalScore: 84, leadTimeDays: 28, localContentScore: 90, reserveFloor: 380000, sustainableCost: 394000, aggressiveness: 0.70 },
+      { id: 'b4', supplier: 'Nordic Freeze Systems', price: 465000, technicalScore: 95, leadTimeDays: 35, localContentScore: 48, reserveFloor: 428000, sustainableCost: 438000, aggressiveness: 0.35 },
+      { id: 'b5', supplier: 'Accra Biomedical Traders', price: 414000, technicalScore: 76, leadTimeDays: 24, localContentScore: 78, reserveFloor: 368000, sustainableCost: 386000, aggressiveness: 0.80 },
+    ],
+  },
+  {
+    id: 'fleet_tyres_framework',
+    name: 'Distribution Fleet Heavy-Duty Tyres (Annual Lot)',
+    currency: 'GHS',
+    budgetCeiling: 260000,
+    context: 'Standardized commodity specification where multiple certified distributors compete closely on price and delivery lead time.',
+    weights: { price: 60, technical: 20, delivery: 15, localContent: 5 },
+    bids: [
+      { id: 't1', supplier: 'Tema Tyre Centre', price: 238000, technicalScore: 84, leadTimeDays: 7, localContentScore: 80, reserveFloor: 204000, sustainableCost: 214000, aggressiveness: 0.75 },
+      { id: 't2', supplier: 'RoadGrip West Africa', price: 229000, technicalScore: 80, leadTimeDays: 10, localContentScore: 72, reserveFloor: 196000, sustainableCost: 208000, aggressiveness: 0.85 },
+      { id: 't3', supplier: 'Continental Fleet Hub', price: 248000, technicalScore: 92, leadTimeDays: 12, localContentScore: 60, reserveFloor: 218000, sustainableCost: 226000, aggressiveness: 0.45 },
+      { id: 't4', supplier: 'Budget Rubber Direct', price: 219000, technicalScore: 66, leadTimeDays: 18, localContentScore: 55, reserveFloor: 186000, sustainableCost: 202000, aggressiveness: 0.92 },
+    ],
+  },
+];
+
+
+export const INVENTORY_WMS_PRESETS = [
+  {
+    id: 'wms_regional_dc',
+    name: 'Regional Distribution Centre — Fast-Moving & Technical SKUs',
+    currency: 'GHS',
+    eoqDefaults: {
+      skuName: 'Standard Corrugated Shipping Carton (24-Pack)',
+      annualDemand: 18000,
+      unitCost: 36,
+      orderingCost: 480,
+      holdingRatePct: 22,
+      leadTimeDays: 12,
+      dailyDemandStd: 14,
+      serviceLevelPct: 95,
+      operatingDaysPerYear: 300,
+    },
+    abcItems: [
+      { code: 'SKU-401', name: 'Industrial Cold-Chain Compressor Unit', annualQty: 140, unitCost: 2450, demandCv: 0.62 },
+      { code: 'SKU-402', name: 'Corrugated Shipping Carton (24-Pack)', annualQty: 18000, unitCost: 36, demandCv: 0.14 },
+      { code: 'SKU-403', name: 'Thermal Pallet Shrink Wrap Roll', annualQty: 4200, unitCost: 92, demandCv: 0.18 },
+      { code: 'SKU-404', name: 'Digital Barcode Handheld Scanner', annualQty: 95, unitCost: 1650, demandCv: 0.44 },
+      { code: 'SKU-405', name: 'Food-Grade HDPE 25L Storage Drum', annualQty: 2600, unitCost: 68, demandCv: 0.31 },
+      { code: 'SKU-406', name: 'Forklift Traction Battery Pack', annualQty: 18, unitCost: 6800, demandCv: 0.74 },
+      { code: 'SKU-407', name: 'Thermal Shipping Labels (Roll of 1000)', annualQty: 3100, unitCost: 24, demandCv: 0.12 },
+      { code: 'SKU-408', name: 'Heavy-Duty Packing Tape 48mm', annualQty: 6400, unitCost: 9, demandCv: 0.15 },
+      { code: 'SKU-409', name: 'Steel Strapping Seals (Box of 500)', annualQty: 420, unitCost: 58, demandCv: 0.38 },
+      { code: 'SKU-410', name: 'Emergency Spill Containment Kit', annualQty: 26, unitCost: 420, demandCv: 0.85 },
+      { code: 'SKU-411', name: 'Warehouse Safety Vest (Hi-Vis)', annualQty: 320, unitCost: 35, demandCv: 0.28 },
+      { code: 'SKU-412', name: 'Plastic Bin Divider Clip (Pack of 50)', annualQty: 580, unitCost: 14, demandCv: 0.19 },
+    ],
+    cycleCountBins: [
+      { bin: 'A-01-02', code: 'SKU-401', item: 'Cold-Chain Compressor Unit', systemQty: 24, physicalQty: 23, unitCost: 2450, reason: '' },
+      { bin: 'A-03-01', code: 'SKU-402', item: 'Corrugated Shipping Carton (24-Pack)', systemQty: 1240, physicalQty: 1228, unitCost: 36, reason: '' },
+      { bin: 'A-04-05', code: 'SKU-404', item: 'Digital Barcode Handheld Scanner', systemQty: 18, physicalQty: 15, unitCost: 1650, reason: '' },
+      { bin: 'B-02-04', code: 'SKU-403', item: 'Thermal Pallet Shrink Wrap Roll', systemQty: 310, physicalQty: 312, unitCost: 92, reason: '' },
+      { bin: 'B-06-01', code: 'SKU-405', item: 'Food-Grade HDPE 25L Drum', systemQty: 220, physicalQty: 196, unitCost: 68, reason: '' },
+      { bin: 'C-01-08', code: 'SKU-407', item: 'Thermal Shipping Labels (Roll)', systemQty: 450, physicalQty: 446, unitCost: 24, reason: '' },
+      { bin: 'C-05-03', code: 'SKU-408', item: 'Heavy-Duty Packing Tape 48mm', systemQty: 860, physicalQty: 855, unitCost: 9, reason: '' },
+      { bin: 'C-08-02', code: 'SKU-410', item: 'Emergency Spill Containment Kit', systemQty: 12, physicalQty: 12, unitCost: 420, reason: '' },
+    ],
+  },
+  {
+    id: 'wms_hospital_stores',
+    name: 'Hospital Central Medical Stores — Critical Consumables',
+    currency: 'GHS',
+    eoqDefaults: {
+      skuName: 'Sterile Nitrile Examination Gloves (Box of 100)',
+      annualDemand: 24000,
+      unitCost: 58,
+      orderingCost: 540,
+      holdingRatePct: 24,
+      leadTimeDays: 10,
+      dailyDemandStd: 19,
+      serviceLevelPct: 99,
+      operatingDaysPerYear: 360,
+    },
+    abcItems: [
+      { code: 'MED-101', name: 'Sterile Nitrile Gloves (Box of 100)', annualQty: 24000, unitCost: 58, demandCv: 0.16 },
+      { code: 'MED-102', name: 'Diagnostic Reagent Cartridge Pack', annualQty: 1850, unitCost: 420, demandCv: 0.34 },
+      { code: 'MED-103', name: 'Infusion Pump Tubing Set', annualQty: 6800, unitCost: 44, demandCv: 0.19 },
+      { code: 'MED-104', name: 'Emergency Trauma Defibrillator Pad', annualQty: 210, unitCost: 780, demandCv: 0.68 },
+      { code: 'MED-105', name: 'Surgical Facemask 3-Ply (Box of 50)', annualQty: 14500, unitCost: 18, demandCv: 0.15 },
+      { code: 'MED-106', name: 'Digital Infrared Thermometer', annualQty: 320, unitCost: 195, demandCv: 0.42 },
+      { code: 'MED-107', name: 'Alcohol Prep Swabs (Box of 200)', annualQty: 4200, unitCost: 16, demandCv: 0.12 },
+      { code: 'MED-108', name: 'Biohazard Sharp Disposal Bin 5L', annualQty: 1100, unitCost: 34, demandCv: 0.27 },
+      { code: 'MED-109', name: 'Specialty Pediatric Splint Kit', annualQty: 48, unitCost: 310, demandCv: 0.81 },
+    ],
+    cycleCountBins: [
+      { bin: 'PH-A1', code: 'MED-101', item: 'Sterile Nitrile Gloves (Box)', systemQty: 920, physicalQty: 880, unitCost: 58, reason: '' },
+      { bin: 'PH-A2', code: 'MED-102', item: 'Diagnostic Reagent Cartridge', systemQty: 140, physicalQty: 134, unitCost: 420, reason: '' },
+      { bin: 'PH-B1', code: 'MED-103', item: 'Infusion Pump Tubing Set', systemQty: 510, physicalQty: 508, unitCost: 44, reason: '' },
+      { bin: 'PH-B4', code: 'MED-104', item: 'Trauma Defibrillator Pad', systemQty: 32, physicalQty: 29, unitCost: 780, reason: '' },
+      { bin: 'PH-C1', code: 'MED-105', item: 'Surgical Facemask 3-Ply', systemQty: 1100, physicalQty: 1112, unitCost: 18, reason: '' },
+      { bin: 'PH-C3', code: 'MED-107', item: 'Alcohol Prep Swabs', systemQty: 400, physicalQty: 398, unitCost: 16, reason: '' },
+    ],
+  },
+];
+
+export const SPEND_ANALYTICS_PRESETS = [
+  {
+    id: 'spend_campus_portfolio',
+    name: 'Institutional Operations — Annual Supplier Portfolio & Spend Cube',
+    currency: 'GHS',
+    defaultWeights: { otif: 35, quality: 30, price: 20, responsiveness: 15 },
+    suppliers: [
+      { id: 'sup_1', supplier: 'ColdTech Medical Systems', category: 'Lab & Cold-Chain', annualSpend: 540000, otifPct: 96, defectPpm: 800, priceVariancePct: 1.2, responsivenessScore: 92, onContract: true },
+      { id: 'sup_2', supplier: 'Atlantic Packaging Works', category: 'Packaging & Stores', annualSpend: 385000, otifPct: 91, defectPpm: 2100, priceVariancePct: -1.5, responsivenessScore: 86, onContract: true },
+      { id: 'sup_3', supplier: 'PrimeFleet Logistics Ltd', category: 'Freight & Haulage', annualSpend: 310000, otifPct: 74, defectPpm: 6200, priceVariancePct: 6.4, responsivenessScore: 68, onContract: true },
+      { id: 'sup_4', supplier: 'Metro IT & Peripherals', category: 'IT Hardware', annualSpend: 245000, otifPct: 88, defectPpm: 1900, priceVariancePct: 2.1, responsivenessScore: 84, onContract: true },
+      { id: 'sup_5', supplier: 'SwiftOffice Direct', category: 'Office & Stationery', annualSpend: 118000, otifPct: 82, defectPpm: 3400, priceVariancePct: 8.5, responsivenessScore: 79, onContract: false },
+      { id: 'sup_6', supplier: 'Delta Chemical Reagents', category: 'Lab & Cold-Chain', annualSpend: 162000, otifPct: 61, defectPpm: 11500, priceVariancePct: 9.2, responsivenessScore: 54, onContract: false },
+      { id: 'sup_7', supplier: 'Kente Print & Branding', category: 'Office & Stationery', annualSpend: 64000, otifPct: 94, defectPpm: 1200, priceVariancePct: 0.5, responsivenessScore: 90, onContract: true },
+      { id: 'sup_8', supplier: 'QuickFix Facility Traders', category: 'Facility Maintenance', annualSpend: 78000, otifPct: 69, defectPpm: 8800, priceVariancePct: 11.0, responsivenessScore: 62, onContract: false },
+      { id: 'sup_9', supplier: 'Apex Safety Gear Co.', category: 'Facility Maintenance', annualSpend: 42000, otifPct: 93, defectPpm: 950, priceVariancePct: 0.8, responsivenessScore: 88, onContract: true },
+      { id: 'sup_10', supplier: 'Local Express Couriers', category: 'Freight & Haulage', annualSpend: 36000, otifPct: 79, defectPpm: 4500, priceVariancePct: 7.4, responsivenessScore: 75, onContract: false },
+    ],
+  },
+  {
+    id: 'spend_industrial_mro',
+    name: 'Manufacturing Plant — Raw Materials & MRO Spend Base',
+    currency: 'GHS',
+    defaultWeights: { otif: 30, quality: 35, price: 25, responsiveness: 10 },
+    suppliers: [
+      { id: 'mro_1', supplier: 'Volta Polymer Resins Ltd', category: 'Raw Materials', annualSpend: 920000, otifPct: 95, defectPpm: 1100, priceVariancePct: 0.4, responsivenessScore: 89, onContract: true },
+      { id: 'mro_2', supplier: 'Accra Steel & Bearings', category: 'MRO Spares', annualSpend: 410000, otifPct: 86, defectPpm: 2800, priceVariancePct: 3.1, responsivenessScore: 82, onContract: true },
+      { id: 'mro_3', supplier: 'Coastal Corrugated Boxes', category: 'Packaging', annualSpend: 295000, otifPct: 92, defectPpm: 1400, priceVariancePct: -0.8, responsivenessScore: 91, onContract: true },
+      { id: 'mro_4', supplier: 'SpotTrade Industrial Brokers', category: 'MRO Spares', annualSpend: 185000, otifPct: 64, defectPpm: 13200, priceVariancePct: 12.6, responsivenessScore: 55, onContract: false },
+      { id: 'mro_5', supplier: 'Tema Bulk Hauliers', category: 'Logistics', annualSpend: 240000, otifPct: 78, defectPpm: 5400, priceVariancePct: 5.2, responsivenessScore: 72, onContract: true },
+      { id: 'mro_6', supplier: 'RapidValve Fittings', category: 'MRO Spares', annualSpend: 68000, otifPct: 71, defectPpm: 7600, priceVariancePct: 9.8, responsivenessScore: 66, onContract: false },
+      { id: 'mro_7', supplier: 'GreenEnergy Lubricants', category: 'Utilities & Oils', annualSpend: 52000, otifPct: 90, defectPpm: 1500, priceVariancePct: 1.0, responsivenessScore: 85, onContract: true },
+    ],
+  },
+];
+
 export const LAB_CATALOG = [
   {
     id: 'tqm_spc',
@@ -589,6 +806,7 @@ export const LAB_CATALOG = [
   },
   {
     id: 'psis_seven_names',
+    supportsLiveClassroom: true,
     domain: 'PSIS',
     code: 'PSIS-LAB 02',
     title: 'Master Data & Duplicate SKUs (Seven Names)',
@@ -627,6 +845,7 @@ export const LAB_CATALOG = [
   },
   {
     id: 'psis_the_match',
+    supportsLiveClassroom: true,
     domain: 'PSIS',
     code: 'PSIS-LAB 04',
     title: 'Procure-to-Pay 3-Way Match & Segregation of Duties (The Match)',
@@ -642,6 +861,102 @@ export const LAB_CATALOG = [
       { id: 'c2', title: 'Ghost-Vendor Fraud Mechanism Explanation', maxMarks: 25 },
       { id: 'c3', title: 'RBAC & Toxic Role Matrix Remediation', maxMarks: 25 },
       { id: 'c4', title: 'Internal Control & Governance Judgement', maxMarks: 25 },
+    ],
+  },
+  {
+    id: 'psis_the_whip',
+    supportsLiveClassroom: true,
+    domain: 'PSIS',
+    code: 'PSIS-LAB 01',
+    title: 'The Bullwhip Effect Simulator (The Whip)',
+    shortTitle: 'The Whip (Bullwhip)',
+    summary: 'Operate a 4-tier supply chain under genuine information asymmetry, inject a +40% demand rumour spike or Paper-Mode latency delay, then replay with shared POS visibility to quantify bullwhip compression.',
+    duration: '60 min',
+    supportsOwnData: true,
+    presets: THE_WHIP_PRESETS,
+    defaultPresetId: THE_WHIP_PRESETS[0].id,
+    defaultPrompt: 'Quantify the order variance amplification (Bullwhip Ratio, Peak Order, CV, and Total Chain Cost) across tiers in Blind Mode vs. Shared POS Mode, explain how Paper-Mode information delay worsens oscillations, and recommend two information-sharing mechanisms.',
+    rubricCriteria: [
+      { id: 'c1', title: 'Bullwhip Ratio & Order Amplification Quantification', maxMarks: 25 },
+      { id: 'c2', title: 'Blind Mode vs. Shared POS Visibility Comparison', maxMarks: 25 },
+      { id: 'c3', title: 'Impact of Lead Time & Paper-Mode Information Delay', maxMarks: 25 },
+      { id: 'c4', title: 'Managerial Information-Sharing Recommendation', maxMarks: 25 },
+    ],
+  },
+  {
+    id: 'psis_req_to_order',
+    domain: 'PSIS',
+    code: 'PSIS-LAB 05',
+    title: 'Requisition to Order, DoA & Commitment Accounting',
+    shortTitle: 'Requisition to Order',
+    summary: 'Route catalogue requisitions through Delegation-of-Authority thresholds, detect split-order avoidance, switch between Spent-Only and Commitment Accounting to witness double-commitment failure, and calculate Blanket Order ROI.',
+    duration: '60 min',
+    supportsOwnData: true,
+    presets: REQ_TO_ORDER_PRESETS,
+    defaultPresetId: REQ_TO_ORDER_PRESETS[0].id,
+    defaultPrompt: 'Explain how Spent-Only accounting allowed the organization to commit itself beyond budget, identify any split-order avoidance risks in your DoA queue, and justify when to replace standard POs with a Blanket Purchase Agreement using break-even analysis.',
+    rubricCriteria: [
+      { id: 'c1', title: 'Delegation of Authority Routing & Split-Order Detection', maxMarks: 25 },
+      { id: 'c2', title: 'Commitment vs. Spent-Only Budget Trap Analysis', maxMarks: 25 },
+      { id: 'c3', title: 'Blanket Order vs. Standard PO Cost & Break-Even Math', maxMarks: 25 },
+      { id: 'c4', title: 'Procurement Policy & ERP Configuration Judgement', maxMarks: 25 },
+    ],
+  },
+  {
+    id: 'psis_the_tender',
+    domain: 'PSIS',
+    code: 'PSIS-LAB 06',
+    title: 'Sealed Tender Evaluation & Live Reverse Auction (The Tender)',
+    shortTitle: 'The Tender (e-Sourcing)',
+    summary: 'Conduct a transparent weighted sealed-bid evaluation (Price, Technical, Delivery, Local Content), test award sensitivity to criteria weights, and run a multi-round live Reverse Auction to evaluate savings vs. winner’s curse risk.',
+    duration: '60–75 min',
+    supportsOwnData: true,
+    presets: THE_TENDER_PRESETS,
+    defaultPresetId: THE_TENDER_PRESETS[0].id,
+    defaultPrompt: 'Defend your tender award by comparing Lowest-Price vs. Best-Value weighted scores, evaluate the price savings achieved in the Reverse Auction against below-cost quality/default risks, and specify which sourcing method fits strategic vs. commodity spend.',
+    rubricCriteria: [
+      { id: 'c1', title: 'Weighted Multi-Criteria Sealed Tender Evaluation', maxMarks: 25 },
+      { id: 'c2', title: 'Criteria Weight Sensitivity & Transparency Analysis', maxMarks: 25 },
+      { id: 'c3', title: 'Reverse Auction Dynamics & Winner’s Curse Diagnosis', maxMarks: 25 },
+      { id: 'c4', title: 'Strategic Award & Sourcing Method Recommendation', maxMarks: 25 },
+    ],
+  },
+  {
+    id: 'psis_inventory_wms',
+    domain: 'PSIS',
+    code: 'PSIS-LAB 07',
+    title: 'Inventory Control, ABC-XYZ & Cycle Count (WMS)',
+    shortTitle: 'Inventory & WMS',
+    summary: 'Optimize Economic Order Quantity (EOQ), Safety Stock, and Reorder Points under service-level targets; segment SKUs across the 9-quadrant ABC-XYZ matrix; and conduct a warehouse book-to-physical cycle count variance audit.',
+    duration: '60 min',
+    supportsOwnData: true,
+    presets: INVENTORY_WMS_PRESETS,
+    defaultPresetId: INVENTORY_WMS_PRESETS[0].id,
+    defaultPrompt: 'Justify your EOQ, Safety Stock, and Reorder Point settings under lead-time demand uncertainty, explain how you differentiate replenishment policies between AX and AZ/CZ SKUs in the ABC-XYZ matrix, and diagnose the root causes of your cycle count shrinkage.',
+    rubricCriteria: [
+      { id: 'c1', title: 'EOQ, Safety Stock & Reorder Point Calculation', maxMarks: 25 },
+      { id: 'c2', title: 'ABC-XYZ 9-Quadrant Policy Differentiation', maxMarks: 25 },
+      { id: 'c3', title: 'Cycle Count Variance & Shrinkage Audit', maxMarks: 25 },
+      { id: 'c4', title: 'Warehouse Control & WMS Governance Judgement', maxMarks: 25 },
+    ],
+  },
+  {
+    id: 'psis_spend_analytics',
+    domain: 'PSIS',
+    code: 'PSIS-LAB 08',
+    title: 'Supplier Scorecard & Spend Cube Analytics',
+    shortTitle: 'Supplier & Spend Analytics',
+    summary: 'Evaluate supplier KPIs (OTIF, Defect PPM, Price Variance, Responsiveness) with customizable weights, uncover Maverick/Off-Contract and Tail Spend inside the Spend Cube, and import P2P/Requisition CSV exports directly from earlier labs.',
+    duration: '60 min',
+    supportsOwnData: true,
+    presets: SPEND_ANALYTICS_PRESETS,
+    defaultPresetId: SPEND_ANALYTICS_PRESETS[0].id,
+    defaultPrompt: 'Defend your weighted supplier tiering (Preferred vs. Watchlist/At-Risk), quantify the financial leakage from Maverick (off-contract) and Tail Spend in your Spend Cube, and recommend a supplier consolidation and SLA corrective-action plan.',
+    rubricCriteria: [
+      { id: 'c1', title: 'Weighted Supplier KPI Scorecard & Tiering', maxMarks: 25 },
+      { id: 'c2', title: 'Spend Cube Pareto & Concentration Analysis', maxMarks: 25 },
+      { id: 'c3', title: 'Maverick & Tail Spend Compliance Diagnosis', maxMarks: 25 },
+      { id: 'c4', title: 'Category Strategy & Supplier Development Plan', maxMarks: 25 },
     ],
   },
 ];
@@ -716,6 +1031,36 @@ export function buildLabCsvTemplate(labId, variant = '') {
     return {
       filename: 'p2p-three-way-match-template.csv',
       content: 'PO_No,GRN_No,Invoice_No,Supplier,Item,PO_Qty,PO_UnitPrice,GRN_Qty,Inv_Qty,Inv_UnitPrice,BudgetRemaining\nPO-101,GRN-501,INV-901,Apex Supplies,A4 Paper Box,60,310,60,60,310,30000\nPO-102,GRN-502,INV-902,MediSafe Ltd,Surgical Gloves,200,120,160,200,120,30000\n',
+    };
+  }
+  if (labId === 'psis_the_whip') {
+    return {
+      filename: 'bullwhip-demand-series-template.csv',
+      content: 'Week,ConsumerDemand\n1,40\n2,40\n3,40\n4,40\n5,40\n6,40\n7,40\n8,40\n9,56\n10,56\n11,56\n12,40\n13,40\n14,40\n15,40\n16,40\n',
+    };
+  }
+  if (labId === 'psis_req_to_order') {
+    return {
+      filename: 'requisitions-doa-template.csv',
+      content: 'ReqNo,Item,Supplier,CostCentre,Qty,UnitPrice\nREQ-001,Laboratory Reagent Kit,BioLab Supplies Ltd,Clinical & Lab,12,1450\nREQ-002,Laboratory Reagent Kit,BioLab Supplies Ltd,Clinical & Lab,10,1450\nREQ-003,A4 Copier Paper Box,Apex Stationery Depot,IT & Campus Ops,15,320\n',
+    };
+  }
+  if (labId === 'psis_the_tender') {
+    return {
+      filename: 'tender-supplier-bids-template.csv',
+      content: 'Supplier,BidPrice,TechnicalScore_0_100,LeadTimeDays,LocalContent_0_100,ReserveFloor\nSolarMed Engineering Ltd,438000,91,21,86,392000\nLowCost Global Imports,396000,68,42,35,352000\nWestAfrica ColdTech,422000,84,28,90,380000\n',
+    };
+  }
+  if (labId === 'psis_inventory_wms') {
+    return {
+      filename: 'inventory-abc-xyz-template.csv',
+      content: 'Code,ItemName,AnnualQty,UnitCost,DemandCV,SystemQty,PhysicalQty,Bin\nSKU-501,Corrugated Carton 24-Pack,18000,36,0.14,1240,1228,A-01-01\nSKU-502,Cold-Chain Compressor,140,2450,0.62,24,23,A-02-03\nSKU-503,Thermal Labels Roll,3100,24,0.12,450,446,C-01-04\n',
+    };
+  }
+  if (labId === 'psis_spend_analytics') {
+    return {
+      filename: 'supplier-scorecard-spend-template.csv',
+      content: 'Supplier,Category,AnnualSpend,OTIF_Pct,Defect_PPM,PriceVariance_Pct,Responsiveness_0_100,OnContract\nColdTech Medical Systems,Lab & Cold-Chain,540000,96,800,1.2,92,Yes\nPrimeFleet Logistics Ltd,Freight & Haulage,310000,74,6200,6.4,68,Yes\nSwiftOffice Direct,Office & Stationery,118000,82,3400,8.5,79,No\n',
     };
   }
   // tqm_coq
