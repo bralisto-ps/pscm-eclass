@@ -11,6 +11,7 @@ import {
   parseAndValidateGtin,
   transposeAdjacentDigits,
 } from '../../lib/psisLabEngine.js';
+import { decodeBarcodeFromVideoCanvas } from '../../lib/barcodeCanvasDecoder.js';
 import { downloadText } from '../../lib/sheets.js';
 
 export default function ScanItLab({
@@ -48,7 +49,10 @@ export default function ScanItLab({
   // Camera barcode scanner state
   const [cameraOn, setCameraOn] = useState(false);
   const [cameraError, setCameraError] = useState('');
+  const [scannerMode, setScannerMode] = useState('');
   const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const lastCanvasScanRef = useRef(0);
   const streamRef = useRef(null);
   const scanLoopRef = useRef(null);
   const fileRef = useRef(null);
@@ -128,6 +132,7 @@ export default function ScanItLab({
       streamRef.current = null;
     }
     setCameraOn(false);
+    setScannerMode('');
   }
 
   async function startCamera() {
@@ -149,11 +154,35 @@ export default function ScanItLab({
           videoRef.current.srcObject = stream;
           await videoRef.current.play().catch(() => {});
         }
+        const startCanvasFallback = () => {
+          setScannerMode('canvas');
+          const tickCanvas = (now) => {
+            if (!videoRef.current || !streamRef.current) return;
+            if (now - lastCanvasScanRef.current >= 110) {
+              lastCanvasScanRef.current = now;
+              try {
+                const decoded = decodeBarcodeFromVideoCanvas(videoRef.current, canvasRef.current);
+                if (decoded) {
+                  setBarcodeInput(decoded);
+                  toast(`Scanned EAN-13/UPC-A barcode: ${decoded}`);
+                  stopCamera();
+                  return;
+                }
+              } catch {
+                // ignore transient frame errors
+              }
+            }
+            scanLoopRef.current = requestAnimationFrame(tickCanvas);
+          };
+          scanLoopRef.current = requestAnimationFrame(tickCanvas);
+        };
+
         if ('BarcodeDetector' in window) {
           try {
             const detector = new window.BarcodeDetector({
               formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'itf', 'code_128'],
             });
+            setScannerMode('native');
             const tick = async () => {
               if (!videoRef.current || !streamRef.current) return;
               try {
@@ -171,10 +200,10 @@ export default function ScanItLab({
             };
             scanLoopRef.current = requestAnimationFrame(tick);
           } catch {
-            setCameraError('Camera active, but automatic BarcodeDetector is unavailable in this browser. Read the printed digits below the bars and type them into the dissector.');
+            startCanvasFallback();
           }
         } else {
-          setCameraError('Live camera preview is active. This browser does not expose native BarcodeDetector — read the digits printed beneath the barcode and key them in below.');
+          startCanvasFallback();
         }
       }, 150);
     } catch (err) {
@@ -317,13 +346,38 @@ export default function ScanItLab({
 
         {cameraOn && (
           <div className="card-soft stack-xs" style={{ padding: 10, alignItems: 'center' }}>
-            <video
-              ref={videoRef}
-              playsInline
-              muted
-              style={{ width: '100%', maxWidth: 420, maxHeight: 240, borderRadius: 8, background: '#111', objectFit: 'cover' }}
-            />
-            <span className="tiny muted">Point camera steadily at a 1D barcode (EAN-13 / UPC-A / EAN-8).</span>
+            <div style={{ position: 'relative', width: '100%', maxWidth: 440, borderRadius: 8, overflow: 'hidden', background: '#111' }}>
+              <video
+                ref={videoRef}
+                playsInline
+                muted
+                style={{ width: '100%', maxHeight: 240, display: 'block', objectFit: 'cover' }}
+              />
+              <div
+                aria-hidden="true"
+                style={{
+                  position: 'absolute',
+                  left: '8%',
+                  right: '8%',
+                  top: '50%',
+                  height: 2,
+                  background: 'rgba(220, 38, 38, 0.85)',
+                  boxShadow: '0 0 8px rgba(220, 38, 38, 0.9)',
+                  pointerEvents: 'none',
+                }}
+              />
+            </div>
+            <canvas ref={canvasRef} style={{ display: 'none' }} />
+            <div className="row-wrap" style={{ gap: 8, justifyContent: 'center' }}>
+              <span className="tiny mono" style={{ fontWeight: 700, color: 'var(--teal-700)' }}>
+                {scannerMode === 'native'
+                  ? '● CAMERA ACTIVE — NATIVE BARCODE DETECTOR'
+                  : '● CAMERA ACTIVE — UNIVERSAL CANVAS EAN-13/UPC-A SCANNER (iOS / SAFARI / FIREFOX)'}
+              </span>
+            </div>
+            <span className="tiny muted">
+              Align the horizontal red scanline cleanly across the vertical bars in good light, or key the printed digits below.
+            </span>
           </div>
         )}
       </div>

@@ -5,6 +5,7 @@ import { DATA_POLICIES, getLabDef, submitLabReportToAssignment } from '../../lib
 import { buildTypedResponsePdfBlob } from '../../lib/textPdf.js';
 import { useAuth } from '../../lib/auth.jsx';
 import { fmtDateTime } from '../../lib/format.js';
+import { formatAutoScoredSubmissionHeader } from '../../lib/psisMilestone4Engine.js';
 
 const SpcLab = lazy(() => import('./SpcLab.jsx'));
 const QualityToolsLab = lazy(() => import('./QualityToolsLab.jsx'));
@@ -12,6 +13,11 @@ const CostOfQualityLab = lazy(() => import('./CostOfQualityLab.jsx'));
 const SevenNamesLab = lazy(() => import('./SevenNamesLab.jsx'));
 const ScanItLab = lazy(() => import('./ScanItLab.jsx'));
 const TheMatchLab = lazy(() => import('./TheMatchLab.jsx'));
+const TheWhipLab = lazy(() => import('./TheWhipLab.jsx'));
+const ReqToOrderLab = lazy(() => import('./ReqToOrderLab.jsx'));
+const TheTenderLab = lazy(() => import('./TheTenderLab.jsx'));
+const InventoryWmsLab = lazy(() => import('./InventoryWmsLab.jsx'));
+const SpendAnalyticsLab = lazy(() => import('./SpendAnalyticsLab.jsx'));
 
 export default function LabRunnerModal({
   labConfig,
@@ -39,6 +45,7 @@ export default function LabRunnerModal({
 
   const [submitting, setSubmitting] = useState(false);
   const [submitDone, setSubmitDone] = useState(false);
+  const [judgementReady, setJudgementReady] = useState(false);
 
   const handleDraftChange = useCallback((next) => {
     try {
@@ -50,6 +57,12 @@ export default function LabRunnerModal({
 
   const registerBuilder = useCallback((fn) => {
     reportBuilderRef.current = fn;
+    try {
+      const probe = fn?.();
+      if (probe) setJudgementReady(Boolean(probe.hasJudgement));
+    } catch {
+      // ignore
+    }
   }, []);
 
   if (!def) return null;
@@ -69,7 +82,12 @@ export default function LabRunnerModal({
       title: built.title,
       studentLine: studentLine || 'Interactive Lab Report',
       submittedAt: new Date().toLocaleString(),
-      body: built.body,
+      body: formatAutoScoredSubmissionHeader({
+        labCode: def.code,
+        labTitle: labConfig?.title || def.title,
+        body: built.body,
+        hasJudgement: built.hasJudgement,
+      }),
     });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -95,7 +113,12 @@ export default function LabRunnerModal({
         profile,
         session,
         reportTitle: built.title,
-        reportBody: built.body,
+        reportBody: formatAutoScoredSubmissionHeader({
+          labCode: def.code,
+          labTitle: labConfig?.title || def.title,
+          body: built.body,
+          hasJudgement: built.hasJudgement,
+        }),
         note: `Submitted from ${def.shortTitle} Lab`,
       });
       setSubmitDone(true);
@@ -283,6 +306,51 @@ export default function LabRunnerModal({
                 onRegisterReportBuilder={registerBuilder}
               />
             )}
+            {def.id === 'psis_the_whip' && (
+              <TheWhipLab
+                config={labConfig}
+                dataMode={dataMode}
+                draftState={draftState}
+                onDraftChange={handleDraftChange}
+                onRegisterReportBuilder={registerBuilder}
+              />
+            )}
+            {def.id === 'psis_req_to_order' && (
+              <ReqToOrderLab
+                config={labConfig}
+                dataMode={dataMode}
+                draftState={draftState}
+                onDraftChange={handleDraftChange}
+                onRegisterReportBuilder={registerBuilder}
+              />
+            )}
+            {def.id === 'psis_the_tender' && (
+              <TheTenderLab
+                config={labConfig}
+                dataMode={dataMode}
+                draftState={draftState}
+                onDraftChange={handleDraftChange}
+                onRegisterReportBuilder={registerBuilder}
+              />
+            )}
+            {def.id === 'psis_inventory_wms' && (
+              <InventoryWmsLab
+                config={labConfig}
+                dataMode={dataMode}
+                draftState={draftState}
+                onDraftChange={handleDraftChange}
+                onRegisterReportBuilder={registerBuilder}
+              />
+            )}
+            {def.id === 'psis_spend_analytics' && (
+              <SpendAnalyticsLab
+                config={labConfig}
+                dataMode={dataMode}
+                draftState={draftState}
+                onDraftChange={handleDraftChange}
+                onRegisterReportBuilder={registerBuilder}
+              />
+            )}
           </Suspense>
         </div>
 
@@ -298,9 +366,19 @@ export default function LabRunnerModal({
               flexWrap: 'wrap',
             }}
           >
-            <span className="tiny muted">
-              Your work auto-saves locally on this device. Submitting generates a complete PDF report + written judgement into your course gradebook.
-            </span>
+            <div className="row-wrap" style={{ gap: 10 }}>
+              <span
+                className="tiny mono"
+                style={{ fontWeight: 700, color: judgementReady ? 'var(--teal-700)' : 'var(--amber)' }}
+              >
+                {judgementReady
+                  ? '● AUTO-SCORED VERIFICATION HEADER READY'
+                  : '▲ COMPLETE WRITTEN MANAGERIAL JUDGEMENT BEFORE SUBMITTING'}
+              </span>
+              <span className="tiny muted">
+                Auto-saved locally · Generates PDF + structured marking summary
+              </span>
+            </div>
             <button
               type="button"
               className="btn btn-primary btn-sm"

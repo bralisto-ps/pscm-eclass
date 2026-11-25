@@ -242,6 +242,115 @@ export default function AssignLabModal({
         if (!packets.length) throw new Error('Use the P2P 3-Way Match CSV template columns (PO_No through BudgetRemaining).');
         setCustomDataset({ name, currency: customCurrency || 'GHS', priceTolPct: 2, qtyTolPct: 0, packets });
         setUploadNote(`Loaded ${packets.length} P2P invoice packets from "${file.name}".`);
+      } else if (labId === 'psis_the_whip') {
+        const demandSeries = [];
+        rows.forEach((r, idx) => {
+          const val = Number(String(r[1] ?? r[0]).replace(/[^0-9.-]/g, ''));
+          if (idx === 0 && !Number.isFinite(val)) return;
+          if (Number.isFinite(val) && val >= 0) demandSeries.push(Math.round(val));
+        });
+        if (demandSeries.length < 6) throw new Error('Include at least 6 weekly demand rows (Week, ConsumerDemand).');
+        setCustomDataset({ name, demandSeries: demandSeries.slice(0, 40) });
+        setUploadNote(`Loaded ${Math.min(40, demandSeries.length)} weeks of consumer demand from "${file.name}".`);
+      } else if (labId === 'psis_req_to_order') {
+        const requisitions = [];
+        rows.forEach((r, idx) => {
+          if (r.length < 6) return;
+          const qty = Number(String(r[4]).replace(/[^0-9.-]/g, ''));
+          const unitPrice = Number(String(r[5]).replace(/[^0-9.-]/g, ''));
+          if (idx === 0 && !Number.isFinite(qty)) return;
+          if (!Number.isFinite(qty) || !Number.isFinite(unitPrice)) return;
+          requisitions.push({
+            id: `lreq_${idx}`,
+            reqNo: String(r[0] || `REQ-${idx + 1}`).trim(),
+            item: String(r[1] || 'Item').trim(),
+            supplier: String(r[2] || 'Supplier').trim(),
+            costCentre: String(r[3] || 'General').trim(),
+            qty: Math.max(1, Math.round(qty)),
+            unitPrice: Math.max(0, unitPrice),
+            paid: false,
+          });
+        });
+        if (!requisitions.length) throw new Error('Use columns: ReqNo, Item, Supplier, CostCentre, Qty, UnitPrice.');
+        setCustomDataset({ name, currency: customCurrency || 'GHS', requisitions });
+        setUploadNote(`Loaded ${requisitions.length} requisitions from "${file.name}".`);
+      } else if (labId === 'psis_the_tender') {
+        const bids = [];
+        rows.forEach((r, idx) => {
+          if (r.length < 4) return;
+          const price = Number(String(r[1]).replace(/[^0-9.-]/g, ''));
+          if (idx === 0 && !Number.isFinite(price)) return;
+          if (!Number.isFinite(price) || price <= 0) return;
+          const tech = Number(String(r[2]).replace(/[^0-9.-]/g, ''));
+          const days = Number(String(r[3]).replace(/[^0-9.-]/g, ''));
+          const local = Number(String(r[4] ?? '70').replace(/[^0-9.-]/g, ''));
+          const floor = Number(String(r[5] ?? Math.round(price * 0.88)).replace(/[^0-9.-]/g, ''));
+          bids.push({
+            id: `lbid_${idx}`,
+            supplier: String(r[0] || `Supplier ${idx + 1}`).trim(),
+            price,
+            technicalScore: Number.isFinite(tech) ? Math.max(0, Math.min(100, tech)) : 75,
+            leadTimeDays: Number.isFinite(days) && days > 0 ? days : 21,
+            localContentScore: Number.isFinite(local) ? Math.max(0, Math.min(100, local)) : 70,
+            reserveFloor: Number.isFinite(floor) && floor > 0 ? floor : Math.round(price * 0.88),
+            sustainableCost: Math.round((Number.isFinite(floor) && floor > 0 ? floor : price * 0.88) * 1.04),
+            aggressiveness: 0.65 + (idx % 3) * 0.1,
+          });
+        });
+        if (bids.length < 2) throw new Error('Include at least 2 supplier bids (Supplier, BidPrice, TechnicalScore_0_100, LeadTimeDays, LocalContent_0_100, ReserveFloor).');
+        setCustomDataset({ name, currency: customCurrency || 'GHS', bids });
+        setUploadNote(`Loaded ${bids.length} supplier bids from "${file.name}".`);
+      } else if (labId === 'psis_inventory_wms') {
+        const abcItems = [];
+        const cycleCountBins = [];
+        rows.forEach((r, idx) => {
+          if (r.length < 4) return;
+          const qty = Number(String(r[2]).replace(/[^0-9.-]/g, ''));
+          const cost = Number(String(r[3]).replace(/[^0-9.-]/g, ''));
+          if (idx === 0 && !Number.isFinite(qty)) return;
+          if (!Number.isFinite(qty) || !Number.isFinite(cost)) return;
+          const cv = Number(String(r[4] ?? '0.25').replace(/[^0-9.-]/g, ''));
+          const code = String(r[0] || `SKU-${idx + 1}`).trim();
+          const itemName = String(r[1] || `Item ${idx + 1}`).trim();
+          abcItems.push({ code, name: itemName, annualQty: Math.max(0, qty), unitCost: Math.max(0, cost), demandCv: Number.isFinite(cv) ? Math.max(0, cv) : 0.25 });
+          if (r.length >= 7) {
+            const sys = Number(String(r[5]).replace(/[^0-9.-]/g, ''));
+            const phys = Number(String(r[6]).replace(/[^0-9.-]/g, ''));
+            if (Number.isFinite(sys) && Number.isFinite(phys)) {
+              cycleCountBins.push({ bin: String(r[7] || `BIN-${idx + 1}`).trim(), code, item: itemName, systemQty: Math.max(0, sys), physicalQty: Math.max(0, phys), unitCost: Math.max(0, cost), reason: '' });
+            }
+          }
+        });
+        if (!abcItems.length) throw new Error('Use columns: Code, ItemName, AnnualQty, UnitCost, DemandCV, [SystemQty, PhysicalQty, Bin].');
+        setCustomDataset({ name, currency: customCurrency || 'GHS', abcItems, ...(cycleCountBins.length ? { cycleCountBins } : {}) });
+        setUploadNote(`Loaded ${abcItems.length} SKUs${cycleCountBins.length ? ` and ${cycleCountBins.length} cycle-count bins` : ''} from "${file.name}".`);
+      } else if (labId === 'psis_spend_analytics') {
+        const suppliers = [];
+        rows.forEach((r, idx) => {
+          if (r.length < 3) return;
+          const spend = Number(String(r[2]).replace(/[^0-9.-]/g, ''));
+          if (idx === 0 && !Number.isFinite(spend)) return;
+          if (!Number.isFinite(spend)) return;
+          const otif = Number(String(r[3] ?? '88').replace(/[^0-9.-]/g, ''));
+          const ppm = Number(String(r[4] ?? '2000').replace(/[^0-9.-]/g, ''));
+          const pvar = Number(String(r[5] ?? '1.5').replace(/[^0-9.-]/g, ''));
+          const resp = Number(String(r[6] ?? '80').replace(/[^0-9.-]/g, ''));
+          const onContract = r[7] !== undefined ? !/no|false|0|off|maverick/i.test(String(r[7])) : true;
+          suppliers.push({
+            id: `lsup_${idx + 1}`,
+            supplier: String(r[0] || `Supplier ${idx + 1}`).trim(),
+            category: String(r[1] || 'General').trim(),
+            annualSpend: Math.max(0, spend),
+            otifPct: Number.isFinite(otif) ? otif : 85,
+            defectPpm: Number.isFinite(ppm) ? ppm : 2000,
+            priceVariancePct: Number.isFinite(pvar) ? pvar : 1.5,
+            responsivenessScore: Number.isFinite(resp) ? resp : 80,
+            onContract,
+          });
+        });
+        if (!suppliers.length) throw new Error('Use columns: Supplier, Category, AnnualSpend, OTIF_Pct, Defect_PPM, PriceVariance_Pct, Responsiveness_0_100, OnContract.');
+        setCustomDataset({ name, currency: customCurrency || 'GHS', suppliers });
+        setUploadNote(`Loaded ${suppliers.length} supplier spend records from "${file.name}".`);
       }
     } catch (err) {
       toast(err.message || 'Could not import dataset.', 'error');
