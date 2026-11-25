@@ -14,6 +14,7 @@ const ReviewQuiz = lazy(() => import('./pages/student/ReviewQuiz.jsx'));
 const Grades = lazy(() => import('./pages/student/Grades.jsx'));
 const Dashboard = lazy(() => import('./pages/lecturer/Dashboard.jsx'));
 const ManageCourse = lazy(() => import('./pages/lecturer/ManageCourse.jsx'));
+const LabsHub = lazy(() => import('./pages/lecturer/LabsHub.jsx'));
 const QuizBuilder = lazy(() => import('./pages/lecturer/QuizBuilder.jsx'));
 const QuizResults = lazy(() => import('./pages/lecturer/QuizResults.jsx'));
 const AssignmentMarking = lazy(() => import('./pages/lecturer/AssignmentMarking.jsx'));
@@ -73,6 +74,7 @@ function Gate() {
             {isStaff ? (
               <>
                 <Route index element={<Dashboard />} />
+                <Route path="teach/labs" element={<LabsHub />} />
                 <Route path="teach/course/:courseId" element={<ManageCourse />} />
                 <Route path="teach/quiz/:quizId" element={<QuizBuilder />} />
                 <Route path="teach/quiz/:quizId/results" element={<QuizResults />} />

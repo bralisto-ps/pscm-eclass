@@ -1,6 +1,24 @@
 // Helpers for storing and retrieving course-level metadata (CA 1 & 2 grouping, exam marks, and release status)
 // Safely serialized in courses.description without requiring database schema changes or breaking PostgREST cache.
 
+export function normalizeLabsConfig(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((item) => item && typeof item === 'object' && item.labId)
+    .map((item) => ({
+      id: String(item.id || item.labId),
+      labId: String(item.labId),
+      title: String(item.title || '').trim(),
+      enabled: item.enabled !== false,
+      dataMode: ['both', 'lecturer_only', 'student_only'].includes(item.dataMode) ? item.dataMode : 'both',
+      presetId: String(item.presetId || ''),
+      customDataset: item.customDataset && typeof item.customDataset === 'object' ? item.customDataset : null,
+      instructions: String(item.instructions || '').trim(),
+      linkedAssignmentId: item.linkedAssignmentId ? String(item.linkedAssignmentId) : null,
+      updatedAt: item.updatedAt || null,
+    }));
+}
+
 export function parseCourseMeta(course) {
   const raw = course?.description || '';
   const fallback = {
@@ -24,6 +42,7 @@ export function parseCourseMeta(course) {
       officeHours: '',
       syllabusNote: '',
     },
+    labs_config: [],
   };
 
   if (!raw || typeof raw !== 'string') return fallback;
@@ -52,13 +71,14 @@ export function parseCourseMeta(course) {
         officeHours: String(parsed.course_info?.officeHours || ''),
         syllabusNote: String(parsed.course_info?.syllabusNote || ''),
       },
+      labs_config: normalizeLabsConfig(parsed.labs_config),
     };
   } catch {
     return fallback;
   }
 }
 
-export function serializeCourseMeta(about, ca_config, exam_config, course_info) {
+export function serializeCourseMeta(about, ca_config, exam_config, course_info, labs_config) {
   const info = course_info || {};
   return JSON.stringify({
     about: String(about || '').trim(),
@@ -81,6 +101,7 @@ export function serializeCourseMeta(about, ca_config, exam_config, course_info) 
       officeHours: String(info.officeHours || '').trim(),
       syllabusNote: String(info.syllabusNote || '').trim(),
     },
+    ...(Array.isArray(labs_config) && labs_config.length > 0 ? { labs_config: normalizeLabsConfig(labs_config) } : {}),
   });
 }
 

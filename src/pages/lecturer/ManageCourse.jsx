@@ -9,6 +9,7 @@ import { CourseSkeleton, Empty, ErrorBoundary, ErrorNote, Loading, Tabs, useLoad
 const MaterialsTab = lazy(() => import('./course/MaterialsTab.jsx'));
 const QuizzesTab = lazy(() => import('./course/QuizzesTab.jsx'));
 const AssignmentsTab = lazy(() => import('./course/AssignmentsTab.jsx'));
+const LabsTab = lazy(() => import('./course/LabsTab.jsx'));
 const AttendanceTab = lazy(() => import('./course/AttendanceTab.jsx'));
 const StudentsTab = lazy(() => import('./course/StudentsTab.jsx'));
 const CATab = lazy(() => import('./course/CATab.jsx'));
@@ -25,6 +26,7 @@ const TABS = [
   { id: 'materials', label: 'Materials' },
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'assignments', label: 'Assignments' },
+  { id: 'labs', label: 'Labs' },
   { id: 'attendance', label: 'Attendance' },
   { id: 'students', label: 'Students' },
   { id: 'ca', label: 'CA' },
@@ -37,9 +39,9 @@ const TABS = [
   { id: 'settings', label: 'Settings' },
 ];
 // What a teaching assistant sees.
-const TA_TABS = ['quizzes', 'assignments', 'attendance', 'students', 'slots', 'polls', 'qa', 'messages', 'announcements'];
+const TA_TABS = ['quizzes', 'assignments', 'labs', 'attendance', 'students', 'slots', 'polls', 'qa', 'messages', 'announcements'];
 // What an external examiner sees (read-only institutional governance & moderation).
-const EXAMINER_TABS = ['quizzes', 'assignments', 'ca', 'outcomes', 'students', 'settings'];
+const EXAMINER_TABS = ['quizzes', 'assignments', 'labs', 'ca', 'outcomes', 'students', 'settings'];
 
 export default function ManageCourse() {
   const { courseId } = useParams();
@@ -155,6 +157,7 @@ export default function ManageCourse() {
                 {tab === 'materials' && !isPureTA && !isExaminer && <MaterialsTab course={course} />}
                 {tab === 'quizzes' && <QuizzesTab course={course} ta={isPureTA || isExaminer} readOnly={isExaminer} />}
                 {tab === 'assignments' && <AssignmentsTab course={course} ta={isPureTA || isExaminer} />}
+                {tab === 'labs' && <LabsTab course={course} readOnly={isPureTA || isExaminer} onCourseChanged={reload} />}
                 {tab === 'attendance' && !isExaminer && <AttendanceTab course={course} />}
                 {tab === 'students' && <StudentsTab course={course} ta={isPureTA || isExaminer} readOnly={isExaminer} />}
                 {tab === 'ca' && !isPureTA && <CATab course={course} readOnly={isExaminer} onCourseChanged={reload} />}

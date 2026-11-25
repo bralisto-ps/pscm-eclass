@@ -1982,3 +1982,7 @@ html.dark .notif-item.unread {
   .kpi-row-3 .kpi .v { font-size: 20px; }
   .kpi-row-3 .kpi .l { font-size: 11px; }
 }
+
+@media (max-width: 860px) {
+  .lab-split-grid { grid-template-columns: 1fr !important; }
+}

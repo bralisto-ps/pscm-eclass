@@ -980,7 +980,8 @@ export function CourseForm({ course, onClose, onSaved }) {
         schedule: f.schedule,
         officeHours: f.officeHours,
         syllabusNote: f.syllabusNote,
-      }
+      },
+      existingMeta.labs_config,
     );
     const row = {
       code: f.code.trim().toUpperCase(),

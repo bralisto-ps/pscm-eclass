@@ -11,11 +11,13 @@ import { formatAnnouncementAudience, sortAnnouncementsPinnedFirst } from '../lib
 import { Empty, ErrorNote, KindTag, Loading, Tabs, useAction, useLoad } from './ui.jsx';
 
 const SecureSlideViewer = lazy(() => import('./SecureSlideViewer.jsx'));
+const StudentCourseLabs = lazy(() => import('./labs/StudentCourseLabs.jsx'));
 
 const PREVIEW_TABS = [
   { id: 'materials', label: 'Materials' },
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'assignments', label: 'Assignments' },
+  { id: 'labs', label: 'Labs' },
   { id: 'announcements', label: 'Announcements' },
 ];
 
@@ -233,6 +235,12 @@ export default function StudentPreview({ course, onExit }) {
                 })}
               </div>
             )
+          )}
+
+          {tab === 'labs' && (
+            <Suspense fallback={<Loading label="Loading software labs…" />}>
+              <StudentCourseLabs course={course} assignments={pubAssignments} previewOnly reload={reload} />
+            </Suspense>
           )}
 
           {tab === 'announcements' && (

@@ -14,6 +14,8 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { rpc, run, supabase, safeFileName } from '../../lib/supabase.js';
 import { getSignedFileUrl, isViewOnlyPath, openStoredFile, setViewOnlyFlag, stripViewOnly, uploadFile, SUBMISSION_ACCEPT } from '../../lib/files.js';
 const SecureSlideViewer = lazy(() => import('../../components/SecureSlideViewer.jsx'));
+const StudentCourseLabs = lazy(() => import('../../components/labs/StudentCourseLabs.jsx'));
+const LabRunnerModal = lazy(() => import('../../components/labs/LabRunnerModal.jsx'));
 import CheckInModal from '../../components/CheckIn.jsx';
 import Forum from '../../components/Forum.jsx';
 import NotificationBell from '../../components/NotificationBell.jsx';
@@ -32,6 +34,7 @@ const TABS = [
   { id: 'materials', label: 'Materials' },
   { id: 'quizzes', label: 'Quizzes' },
   { id: 'assignments', label: 'Assignments' },
+  { id: 'labs', label: 'Labs' },
   { id: 'attendance', label: 'Attendance' },
   { id: 'grades', label: 'My grades' },
   { id: 'announcements', label: 'Announcements' },
@@ -185,9 +188,13 @@ export default function StudentCourse() {
       TABS.map((t) => {
         if (t.id === 'announcements' && unreadNewsCount > 0) return { ...t, count: unreadNewsCount };
         if (t.id === 'polls' && (data?.attCounts?.open_polls || 0) > 0) return { ...t, count: data.attCounts.open_polls };
+        if (t.id === 'labs') {
+          const openLabCount = (parseCourseMeta(data?.course).labs_config || []).filter((l) => l.enabled !== false).length;
+          if (openLabCount > 0) return { ...t, count: openLabCount };
+        }
         return t;
       }),
-    [unreadNewsCount, data?.attCounts?.open_polls]
+    [unreadNewsCount, data?.attCounts?.open_polls, data?.course]
   );
 
   if (loading) return <CourseSkeleton />;
@@ -247,6 +254,11 @@ export default function StudentCourse() {
           {tab === 'materials' && <Materials data={data} course={course} profile={profile} onQuizzes={() => setTab('quizzes')} graded={graded} />}
           {tab === 'quizzes' && <Quizzes quizzes={data.quizzes} seats={data.seats} reload={reload} />}
           {tab === 'assignments' && <Assignments assignments={visibleAssignments} exemplars={data.exemplars} course={course} profile={profile} cohort={data.cohort} reviewBySubmission={reviewBySubmission} reload={reload} />}
+          {tab === 'labs' && (
+            <Suspense fallback={<Loading label="Loading software labs…" />}>
+              <StudentCourseLabs course={course} assignments={visibleAssignments} reload={reload} />
+            </Suspense>
+          )}
           {tab === 'slots' && <SlotsPanel course={course} />}
           {tab === 'attendance' && (
             <StudentAttendanceView attendance={data.attendance} course={course} excuses={data.excuses} onCheckIn={() => setCheckingIn(true)} reload={reload} />
@@ -826,6 +838,14 @@ function Quizzes({ quizzes, seats = [] }) {
 function Assignments({ assignments, exemplars = [], course, profile, cohort, reviewBySubmission, reload }) {
   const toast = useToast();
   const [readingDoc, setReadingDoc] = useState(null);
+  const [launchingLab, setLaunchingLab] = useState(null);
+  const labByAssignmentId = useMemo(() => {
+    const map = new Map();
+    (parseCourseMeta(course).labs_config || []).forEach((cfg) => {
+      if (cfg.enabled !== false && cfg.linkedAssignmentId) map.set(cfg.linkedAssignmentId, cfg);
+    });
+    return map;
+  }, [course]);
   if (!assignments.length) return <div className="card"><Empty icon="clipboard" title="No assignments yet">Assignments will appear here when your lecturer posts them.</Empty></div>;
   return (
     <div className="stack" style={{ maxWidth: 900 }}>
@@ -843,9 +863,22 @@ function Assignments({ assignments, exemplars = [], course, profile, cohort, rev
             storage_path: setViewOnlyFlag(doc.path, true),
             bucket,
           })}
+          linkedLab={labByAssignmentId.get(a.id) || null}
+          onOpenLab={(cfg) => setLaunchingLab({ cfg, assignment: a })}
           reload={reload}
         />
       ))}
+      {launchingLab && (
+        <Suspense fallback={<Loading label="Opening interactive lab…" />}>
+          <LabRunnerModal
+            labConfig={launchingLab.cfg}
+            course={course}
+            assignment={launchingLab.assignment}
+            onSubmitted={reload}
+            onClose={() => setLaunchingLab(null)}
+          />
+        </Suspense>
+      )}
       {readingDoc && (
         <Suspense fallback={<div className="secure-reader-backdrop" style={{ alignItems: 'center', justifyContent: 'center' }}><div className="spinner" /></div>}>
           <SecureSlideViewer
@@ -870,7 +903,7 @@ function Assignments({ assignments, exemplars = [], course, profile, cohort, rev
 
 const MAX_BYTES = 5 * 1024 * 1024;
 
-function AssignmentCard({ a, courseId, exemplars = [], cohort, review, onReadDoc, reload }) {
+function AssignmentCard({ a, courseId, exemplars = [], cohort, review, onReadDoc, linkedLab = null, onOpenLab = null, reload }) {
   const { session, profile } = useAuth();
   const toast = useToast();
   const [act] = useAction();
@@ -1164,6 +1197,20 @@ function AssignmentCard({ a, courseId, exemplars = [], cohort, review, onReadDoc
           <span className="badge badge-amber">Not submitted</span>
         )}
       </div>
+
+      {linkedLab && (
+        <div className="card-soft between small" style={{ padding: '10px 14px', flexWrap: 'wrap', gap: 10 }}>
+          <div className="row" style={{ gap: 8 }}>
+            <Icon name="flask" size={16} />
+            <span>
+              <strong>Interactive Software Lab Linked:</strong> Complete your analysis in <strong>{linkedLab.title || 'the lab workbench'}</strong> and submit your report directly into this assignment.
+            </span>
+          </div>
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => onOpenLab?.(linkedLab)}>
+            <Icon name="flask" size={14} /> Launch Interactive Lab
+          </button>
+        </div>
+      )}
 
       {mySyndicate && (
         <div className="notice notice-info small stack-sm" style={{ gap: 8 }}>

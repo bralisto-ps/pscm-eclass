@@ -96,6 +96,11 @@ export default function Layout() {
         <NavLink to="/" end className="nav-link">
           <Icon name="home" /> {isLecturer ? 'Faculty Dashboard' : 'Home'}
         </NavLink>
+        {isLecturer && (
+          <NavLink to="/teach/labs" className="nav-link">
+            <Icon name="flask" /> Software Labs
+          </NavLink>
+        )}
         {!isLecturer && (
           <NavLink to="/grades" className="nav-link">
             <Icon name="chart" /> My Grades
