@@ -8,11 +8,13 @@ import { DATA_POLICIES, getLabDef, LAB_CATALOG } from '../../../lib/labsCatalog.
 import AssignLabModal from '../../../components/labs/AssignLabModal.jsx';
 
 const LabRunnerModal = lazy(() => import('../../../components/labs/LabRunnerModal.jsx'));
+const LiveLabSessionModal = lazy(() => import('../../../components/labs/LiveLabSessionModal.jsx'));
 
 export default function LabsTab({ course, readOnly = false, onCourseChanged }) {
   const toast = useToast();
   const [configuring, setConfiguring] = useState(null); // { labId, existingConfig }
   const [previewLab, setPreviewLab] = useState(null);
+  const [liveHostOpen, setLiveHostOpen] = useState(false);
 
   const { data: loaded, reload } = useLoad(async () => {
     const [freshCourse, assignments] = await Promise.all([
@@ -71,9 +73,18 @@ export default function LabsTab({ course, readOnly = false, onCourseChanged }) {
           </p>
         </div>
         {!readOnly && (
-          <Link to="/teach/labs" className="btn btn-sm">
-            <Icon name="flask" size={14} /> Open Full Labs Hub
-          </Link>
+          <div className="row-wrap" style={{ gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => setLiveHostOpen(true)}
+            >
+              ● Host Live Classroom Session
+            </button>
+            <Link to="/teach/labs" className="btn btn-sm">
+              <Icon name="flask" size={14} /> Open Full Labs Hub
+            </Link>
+          </div>
         )}
       </div>
 
@@ -191,6 +202,17 @@ export default function LabsTab({ course, readOnly = false, onCourseChanged }) {
           }}
           onClose={() => setConfiguring(null)}
         />
+      )}
+
+      {liveHostOpen && (
+        <Suspense fallback={<Loading label="Starting live classroom session…" />}>
+          <LiveLabSessionModal
+            isHost
+            initialLabId="psis_seven_names"
+            courseCode={course?.code || ''}
+            onClose={() => setLiveHostOpen(false)}
+          />
+        </Suspense>
       )}
 
       {previewLab && (
