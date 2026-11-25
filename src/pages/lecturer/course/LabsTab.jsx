@@ -209,6 +209,7 @@ export default function LabsTab({ course, readOnly = false, onCourseChanged }) {
           <LiveLabSessionModal
             isHost
             initialLabId="psis_seven_names"
+            courseId={course?.id || null}
             courseCode={course?.code || ''}
             onClose={() => setLiveHostOpen(false)}
           />
