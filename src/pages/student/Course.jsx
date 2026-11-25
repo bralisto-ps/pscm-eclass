@@ -1199,15 +1199,17 @@ function AssignmentCard({ a, courseId, exemplars = [], cohort, review, onReadDoc
       </div>
 
       {linkedLab && (
-        <div className="card-soft between small" style={{ padding: '10px 14px', flexWrap: 'wrap', gap: 10 }}>
-          <div className="row" style={{ gap: 8 }}>
-            <Icon name="flask" size={16} />
-            <span>
-              <strong>Interactive Software Lab Linked:</strong> Complete your analysis in <strong>{linkedLab.title || 'the lab workbench'}</strong> and submit your report directly into this assignment.
-            </span>
+        <div className="lab-assign-cta small">
+          <div className="stack-xs" style={{ flex: 1, minWidth: 220 }}>
+            <div className="tiny mono" style={{ color: 'var(--teal-700)', fontWeight: 700 }}>
+              ● INTERACTIVE SOFTWARE LAB ASSIGNMENT
+            </div>
+            <div>
+              Launch <strong>{linkedLab.title || 'the interactive lab workbench'}</strong> to run your analysis and submit your auto-verified PDF report directly into this assignment (no manual PDF upload needed).
+            </div>
           </div>
-          <button type="button" className="btn btn-primary btn-sm" onClick={() => onOpenLab?.(linkedLab)}>
-            <Icon name="flask" size={14} /> Launch Interactive Lab
+          <button type="button" className="btn btn-primary" onClick={() => onOpenLab?.(linkedLab)}>
+            <Icon name="flask" size={15} /> {s ? 'Open Lab / View Draft' : 'Launch Interactive Lab'}
           </button>
         </div>
       )}
