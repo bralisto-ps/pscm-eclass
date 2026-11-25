@@ -13,6 +13,7 @@ import { byNameIndex, compareDate, compareNumber, compareText } from '../../lib/
 import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import RubricGrader from '../../components/RubricGrader.jsx';
+import { parseLabVerificationSummary, suggestLabRubricMarks } from '../../lib/labScoringBridge.js';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { AssignmentForm } from './course/AssignmentsTab.jsx';
 import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
@@ -1037,6 +1038,14 @@ function MarkModal({ a, assignMeta, allRows, row, blindMode = false, blindMap = 
   const typedText = effectiveSub.response_text || '';
   const typedWords = typedText.trim() ? typedText.trim().split(/\s+/).length : 0;
   const tMeta = effectiveSub.typing_meta || {};
+  const labEvidence = useMemo(
+    () => parseLabVerificationSummary(typedText, tMeta),
+    [typedText, tMeta],
+  );
+  const labSuggestion = useMemo(
+    () => (labEvidence ? suggestLabRubricMarks({ parsed: labEvidence, criteria: assignMeta.rubric, maxMarks: Number(a.max_marks) }) : null),
+    [labEvidence, assignMeta.rubric, a.max_marks],
+  );
 
   return (
     <Modal
@@ -1201,6 +1210,63 @@ function MarkModal({ a, assignMeta, allRows, row, blindMode = false, blindMap = 
       )}
 
       {effectiveSub.note && <p className="small"><span className="eyebrow">Student&apos;s note: </span>{effectiveSub.note}</p>}
+
+      {labEvidence && (
+        <div className="lab-evidence-card">
+          <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <div>
+              <div className="tiny mono" style={{ color: 'var(--teal-700)', fontWeight: 700 }}>
+                ● INTERACTIVE LAB VERIFICATION EVIDENCE
+              </div>
+              <strong className="small">{labEvidence.moduleLine}</strong>
+            </div>
+            {!readOnly && labSuggestion && (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => {
+                  setMarks(labSuggestion.suggestedTotal);
+                  setFeedback((prev) =>
+                    prev && prev.trim()
+                      ? (prev.includes('Lab Rubric Assessment') || prev.includes('Lab Evidence Verification')
+                          ? labSuggestion.feedbackNote
+                          : `${labSuggestion.feedbackNote}\n\n${prev.trim()}`)
+                      : labSuggestion.feedbackNote,
+                  );
+                  toast(`Applied suggested mark (${labSuggestion.suggestedTotal} / ${fmtNumber(a.max_marks)}). Review the Managerial Judgement criterion before saving.`);
+                }}
+              >
+                <Icon name="check" size={14} /> Auto-Suggest Quantitative Marks ({labSuggestion.suggestedTotal} / {fmtNumber(a.max_marks)})
+              </button>
+            )}
+          </div>
+
+          <div className="lab-evidence-grid">
+            {labEvidence.metrics.map((m, idx) => (
+              <div key={idx} className="lab-evidence-metric">
+                <span className="tiny muted">{m.label}</span>
+                <strong className="mono small">{m.value}</strong>
+              </div>
+            ))}
+            <div className="lab-evidence-metric">
+              <span className="tiny muted">Managerial Judgement</span>
+              <strong
+                className="mono small"
+                style={{ color: labEvidence.judgementPass ? 'var(--teal-700)' : 'var(--amber)' }}
+              >
+                {labEvidence.judgementPass ? `● PASS (${labEvidence.judgementWords} words)` : `▲ REVIEW (${labEvidence.judgementWords} words)`}
+              </strong>
+            </div>
+          </div>
+
+          {labEvidence.judgementExcerpt && (
+            <div className="small" style={{ background: 'var(--surface)', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--line)' }}>
+              <span className="tiny muted" style={{ display: 'block', marginBottom: 2 }}>STUDENT WRITTEN JUDGEMENT EXCERPT:</span>
+              {labEvidence.judgementExcerpt}{labEvidence.judgementExcerpt.length >= 420 ? '…' : ''}
+            </div>
+          )}
+        </div>
+      )}
 
       <RubricGrader
         criteria={assignMeta.rubric}

@@ -6,6 +6,7 @@ import { Empty, ErrorNote, Loading, useLoad, useToast } from '../../components/u
 import { run, supabase } from '../../lib/supabase.js';
 import { parseCourseMeta, serializeCourseMeta } from '../../lib/courseMeta.js';
 import { DATA_POLICIES, LAB_CATALOG, LAB_DOMAINS } from '../../lib/labsCatalog.js';
+import { LAB_TRACK_META } from '../../lib/labScoringBridge.js';
 import AssignLabModal from '../../components/labs/AssignLabModal.jsx';
 
 const LabRunnerModal = lazy(() => import('../../components/labs/LabRunnerModal.jsx'));
@@ -19,12 +20,32 @@ export default function LabsHub() {
   const [previewLab, setPreviewLab] = useState(null);
   const [liveHostLabId, setLiveHostLabId] = useState(null);
 
-  const { data: courses, error, loading, reload } = useLoad(
-    () => run(supabase.from('courses').select('id, code, title, color, semester, description, archived').eq('archived', false).order('code')),
-    [],
-  );
+  const { data: loaded, error, loading, reload } = useLoad(async () => {
+    const courses = await run(
+      supabase
+        .from('courses')
+        .select('id, code, title, color, semester, description, archived')
+        .eq('archived', false)
+        .order('code'),
+    );
+    const courseIds = (courses || []).map((c) => c.id);
+    let assignStats = [];
+    if (courseIds.length) {
+      assignStats = await run(
+        supabase
+          .from('assignments')
+          .select('id, course_id, title, max_marks, submissions(count)')
+          .in('course_id', courseIds),
+      ).catch(() => []);
+    }
+    return { courses: courses || [], assignStats: assignStats || [] };
+  }, []);
 
-  const activeCourses = courses || [];
+  const activeCourses = loaded?.courses || [];
+  const assignStatsById = useMemo(
+    () => new Map((loaded?.assignStats || []).map((a) => [a.id, a])),
+    [loaded?.assignStats],
+  );
 
   const assignmentsByLab = useMemo(() => {
     const map = new Map();
@@ -39,9 +60,15 @@ export default function LabsHub() {
     return map;
   }, [activeCourses]);
 
-  const visibleLabs = useMemo(
-    () => (domain === 'all' ? LAB_CATALOG : LAB_CATALOG.filter((l) => l.domain === domain)),
-    [domain],
+  const visibleLabs = useMemo(() => {
+    if (domain === 'all') return LAB_CATALOG;
+    if (domain === 'live') return LAB_CATALOG.filter((l) => l.supportsLiveClassroom);
+    return LAB_CATALOG.filter((l) => l.domain === domain);
+  }, [domain]);
+
+  const liveCount = useMemo(
+    () => LAB_CATALOG.filter((l) => l.supportsLiveClassroom).length,
+    [],
   );
 
   async function removeLabFromCourse(course, labId) {
@@ -61,15 +88,15 @@ export default function LabsHub() {
   return (
     <>
       <Topbar
-        title="Software Laboratories"
-        sub="Select which interactive lab modules are opened to each class, with your own data or student data"
+        title="Software Laboratories Studio"
+        sub="Open interactive TQM & PSIS labs to classes, map directly to CA gradebook components, or host live multi-student classroom games"
       />
 
       <div className="page stack-lg">
         {error && <ErrorNote error={error} onRetry={reload} />}
 
-        {/* Domain Filter Bar */}
-        <div className="between" style={{ flexWrap: 'wrap', gap: 12 }}>
+        {/* Domain Filter & Live Session Toolbar */}
+        <div className="card-soft between" style={{ padding: '12px 16px', flexWrap: 'wrap', gap: 12 }}>
           <div className="row-wrap" style={{ gap: 6 }}>
             {LAB_DOMAINS.map((d) => (
               <button
@@ -81,10 +108,17 @@ export default function LabsHub() {
                 {d.label}
               </button>
             ))}
+            <button
+              type="button"
+              className={`btn btn-sm ${domain === 'live' ? 'btn-primary' : ''}`}
+              onClick={() => setDomain('live')}
+            >
+              ● Live Classroom Ready ({liveCount})
+            </button>
           </div>
           <div className="row-wrap" style={{ gap: 10 }}>
-            <span className="small muted">
-              {visibleLabs.length} module{visibleLabs.length === 1 ? '' : 's'} · {activeCourses.length} active class{activeCourses.length === 1 ? '' : 'es'}
+            <span className="tiny mono muted">
+              {visibleLabs.length} LABS · {activeCourses.length} ACTIVE CLASS{activeCourses.length === 1 ? '' : 'ES'}
             </span>
             <button
               type="button"
@@ -97,138 +131,147 @@ export default function LabsHub() {
         </div>
 
         {loading ? (
-          <Loading label="Loading laboratory catalog…" />
+          <Loading label="Loading laboratory studio…" />
         ) : (
-          <div className="stack">
-            {visibleLabs.map((lab) => {
-              const assigned = assignmentsByLab.get(lab.id) || [];
-              return (
-                <section key={lab.id} className="card stack">
-                  <div className="between" style={{ alignItems: 'flex-start', flexWrap: 'wrap', gap: 14 }}>
-                    <div className="stack-xs" style={{ flex: 1, minWidth: 260 }}>
-                      <div className="tiny muted">
-                        {lab.code} · {lab.domain} · {lab.duration} · Course data &amp; student own data supported
+          <div className="stack-lg">
+            <div className="lab-gallery-grid">
+              {visibleLabs.map((lab) => {
+                const assigned = assignmentsByLab.get(lab.id) || [];
+                const track = LAB_TRACK_META[lab.id] || { track: lab.domain, accent: 'var(--teal-700)', stage: 'Interactive Lab' };
+
+                return (
+                  <section
+                    key={lab.id}
+                    className="lab-gallery-card"
+                    style={{ '--lab-accent': track.accent }}
+                  >
+                    <div className="stack-xs">
+                      <div className="between" style={{ gap: 8, alignItems: 'center' }}>
+                        <span className="tiny mono" style={{ fontWeight: 700, color: track.accent }}>
+                          {lab.code} · {track.track.toUpperCase()}
+                        </span>
+                        <span className="tiny mono muted">
+                          {lab.supportsLiveClassroom ? '● LIVE CLASS + SOLO' : lab.duration}
+                        </span>
                       </div>
-                      <h2 style={{ margin: 0, fontSize: 19 }}>{lab.title}</h2>
-                      <p className="small muted" style={{ margin: '4px 0 0', maxWidth: 760 }}>{lab.summary}</p>
+
+                      <h2 style={{ margin: '2px 0 0', fontSize: 18, lineHeight: 1.3 }}>{lab.title}</h2>
+
+                      <div className="tiny muted">
+                        {track.stage} · {lab.duration} · Presets, lecturer CSV &amp; student own data
+                      </div>
+
+                      <p className="small muted" style={{ margin: '6px 0 0', lineHeight: 1.5 }}>
+                        {lab.summary}
+                      </p>
                     </div>
 
-                    <div className="row-wrap" style={{ gap: 8 }}>
-                      {lab.supportsLiveClassroom && (
+                    <div className="stack-sm" style={{ paddingTop: 10, borderTop: '1px solid var(--line)' }}>
+                      <div className="row-wrap" style={{ gap: 6 }}>
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm"
+                          disabled={!activeCourses.length}
+                          onClick={() => {
+                            setAssignTarget(null);
+                            setAssigningLabId(lab.id);
+                          }}
+                        >
+                          <Icon name="plus" size={13} /> Assign to Class
+                        </button>
                         <button
                           type="button"
                           className="btn btn-sm"
-                          style={{ borderColor: 'var(--teal-700)', color: 'var(--teal-700)' }}
-                          onClick={() => setLiveHostLabId(lab.id)}
+                          onClick={() => setPreviewLab({ labId: lab.id, title: lab.title, dataMode: 'both', presetId: lab.defaultPresetId })}
                         >
-                          ● Host Live Class
+                          <Icon name="eye" size={13} /> Preview
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() => setPreviewLab({ labId: lab.id, title: lab.title, dataMode: 'both', presetId: lab.defaultPresetId })}
-                      >
-                        <Icon name="play" size={14} /> Try / Preview Lab
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-primary btn-sm"
-                        disabled={!activeCourses.length}
-                        onClick={() => {
-                          setAssignTarget(null);
-                          setAssigningLabId(lab.id);
-                        }}
-                      >
-                        <Icon name="plus" size={14} /> Open for a Class
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Assigned Classes Table */}
-                  <div style={{ paddingTop: 10, borderTop: '1px solid var(--line-2)' }}>
-                    {assigned.length === 0 ? (
-                      <div className="tiny muted">
-                        Not opened to any class yet. Click <strong>Open for a Class</strong> to assign this module, configure its dataset, and optionally link a graded assignment.
+                        {lab.supportsLiveClassroom && (
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            style={{ borderColor: 'var(--teal-700)', color: 'var(--teal-700)' }}
+                            onClick={() => setLiveHostLabId(lab.id)}
+                          >
+                            ● Host Live Class
+                          </button>
+                        )}
                       </div>
-                    ) : (
-                      <div style={{ overflowX: 'auto' }}>
-                        <table className="table" style={{ fontSize: 13 }}>
-                          <thead>
-                            <tr>
-                              <th>Class</th>
-                              <th>Status</th>
-                              <th>Data Source</th>
-                              <th>Gradebook Link</th>
-                              <th style={{ textAlign: 'right' }}>Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {assigned.map(({ course, config }) => {
-                              const policy = DATA_POLICIES.find((p) => p.id === config.dataMode)?.short || config.dataMode;
-                              return (
-                                <tr key={course.id}>
-                                  <td>
-                                    <Link to={`/teach/course/${course.id}?tab=labs`} style={{ fontWeight: 600 }}>
+
+                      {assigned.length === 0 ? (
+                        <div className="tiny muted">Not opened for any class yet.</div>
+                      ) : (
+                        <div className="stack-xs">
+                          {assigned.map(({ course, config }) => {
+                            const policy = DATA_POLICIES.find((p) => p.id === config.dataMode)?.short || config.dataMode;
+                            const aStat = config.linkedAssignmentId ? assignStatsById.get(config.linkedAssignmentId) : null;
+                            const subCount = aStat?.submissions?.[0]?.count ?? null;
+                            return (
+                              <div
+                                key={course.id}
+                                className="between card-soft"
+                                style={{ padding: '7px 10px', gap: 8, flexWrap: 'wrap' }}
+                              >
+                                <div className="stack-xs" style={{ gap: 2 }}>
+                                  <div className="small">
+                                    <Link to={`/teach/course/${course.id}?tab=labs`} style={{ fontWeight: 700 }}>
                                       {course.code}
                                     </Link>
-                                    <span className="muted tiny" style={{ marginLeft: 8 }}>{course.title}</span>
-                                  </td>
-                                  <td className="tiny mono" style={{ fontWeight: 600, color: config.enabled ? 'var(--teal-700)' : 'var(--muted)' }}>
-                                    {config.enabled ? '● OPEN' : 'CLOSED'}
-                                  </td>
-                                  <td className="tiny">
+                                    <span
+                                      className="tiny mono"
+                                      style={{ marginLeft: 8, fontWeight: 700, color: config.enabled ? 'var(--teal-700)' : 'var(--muted)' }}
+                                    >
+                                      {config.enabled ? '● OPEN' : 'CLOSED'}
+                                    </span>
+                                  </div>
+                                  <div className="tiny muted">
                                     {policy}
-                                    {config.customDataset?.name ? ` · Custom: ${config.customDataset.name}` : ''}
-                                  </td>
-                                  <td className="tiny">
                                     {config.linkedAssignmentId ? (
-                                      <Link to={`/teach/assignment/${config.linkedAssignmentId}`} style={{ fontWeight: 600, color: 'var(--teal-700)' }}>
-                                        Graded Assignment → Mark
-                                      </Link>
-                                    ) : (
-                                      <span className="muted">Practice (ungraded)</span>
-                                    )}
-                                  </td>
-                                  <td style={{ textAlign: 'right' }}>
-                                    <div className="row" style={{ justifyContent: 'flex-end', gap: 6 }}>
-                                      <button
-                                        type="button"
-                                        className="btn btn-sm"
-                                        onClick={() => {
-                                          setAssignTarget({ labId: lab.id, course, config });
-                                          setAssigningLabId(lab.id);
-                                        }}
-                                      >
-                                        Configure
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="icon-btn plain"
-                                        title={`Remove from ${course.code}`}
-                                        aria-label={`Remove from ${course.code}`}
-                                        onClick={() => removeLabFromCourse(course, lab.id)}
-                                      >
-                                        <Icon name="trash" size={14} />
-                                      </button>
-                                    </div>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                </section>
-              );
-            })}
+                                      <>
+                                        {' · '}
+                                        <Link to={`/teach/assignment/${config.linkedAssignmentId}`} style={{ fontWeight: 600, color: 'var(--teal-700)' }}>
+                                          CA Assignment{subCount !== null ? ` (${subCount} submitted)` : ''} → Mark
+                                        </Link>
+                                      </>
+                                    ) : ' · Practice'}
+                                  </div>
+                                </div>
+                                <div className="row" style={{ gap: 4 }}>
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm"
+                                    onClick={() => {
+                                      setAssignTarget({ labId: lab.id, course, config });
+                                      setAssigningLabId(lab.id);
+                                    }}
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="icon-btn plain"
+                                    title={`Remove from ${course.code}`}
+                                    aria-label={`Remove from ${course.code}`}
+                                    onClick={() => removeLabFromCourse(course, lab.id)}
+                                  >
+                                    <Icon name="trash" size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
 
             {!activeCourses.length && (
               <div className="card">
                 <Empty icon="book" title="Create a course first">
-                  Once you have at least one active course, you can open any laboratory module for that class and link it to assignments.
+                  Once you have at least one active course, you can open any laboratory module for that class and map it directly to CA assignments.
                 </Empty>
               </div>
             )}
@@ -255,6 +298,7 @@ export default function LabsHub() {
           <LiveLabSessionModal
             isHost
             initialLabId={liveHostLabId}
+            courses={activeCourses}
             onClose={() => setLiveHostLabId(null)}
           />
         </Suspense>
