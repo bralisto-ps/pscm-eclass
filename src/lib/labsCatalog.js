@@ -10,6 +10,7 @@ import { parseDelimited } from './sheets.js';
 export const LAB_DOMAINS = [
   { id: 'all', label: 'All Labs' },
   { id: 'TQM', label: 'Total Quality Management' },
+  { id: 'PSIS', label: 'Purchasing & Supply IS' },
 ];
 
 export const DATA_POLICIES = [
@@ -338,6 +339,196 @@ export const COQ_PRESETS = [
 // CENTRAL LAB CATALOG
 // ============================================================================
 
+export const SEVEN_NAMES_PRESETS = [
+  {
+    id: 'medical_office_stores',
+    name: 'Regional Hospital & Admin Stores Receiving Dock',
+    context: 'Incoming supplier dockets arrive with inconsistent wording. Match each docket to an existing ERP Item Master SKU, or quick-create a new code under dock time pressure.',
+    masterItems: [
+      { code: 'SKU-101', name: 'A4 Photocopy Paper 80gsm (500 Sheets)', stock: 140, canonicalId: 'c_paper' },
+      { code: 'SKU-102', name: 'Nitrile Examination Gloves Medium (Box of 100)', stock: 85, canonicalId: 'c_gloves' },
+      { code: 'SKU-103', name: 'Hand Sanitizer Alcohol Gel 500ml', stock: 60, canonicalId: 'c_sanitizer' },
+      { code: 'SKU-104', name: 'HP 85A Black LaserJet Toner Cartridge', stock: 18, canonicalId: 'c_toner' },
+      { code: 'SKU-105', name: 'Paracetamol 500mg Tablets (Box of 1000)', stock: 42, canonicalId: 'c_para' },
+    ],
+    dockets: [
+      { id: 'dk1', supplier: 'Apex Stationery Depot', docketText: 'Paper A4 80g Ream (500sh)', qty: 50, trueCode: 'SKU-101', canonicalId: 'c_paper' },
+      { id: 'dk2', supplier: 'MediCore Supplies', docketText: 'Exam Gloves Nitrile Size Med 100s', qty: 40, trueCode: 'SKU-102', canonicalId: 'c_gloves' },
+      { id: 'dk3', supplier: 'CleanCare Hygiene', docketText: 'Alcohol Hand Sanitiser Gel 500 mls', qty: 35, trueCode: 'SKU-103', canonicalId: 'c_sanitizer' },
+      { id: 'dk4', supplier: 'PrintMax Solutions', docketText: 'LaserJet Cartridge Black 85A HP', qty: 12, trueCode: 'SKU-104', canonicalId: 'c_toner' },
+      { id: 'dk5', supplier: 'GoldCoast Pharma', docketText: 'Paracetamol Tabs 500 mg (1000 pack)', qty: 25, trueCode: 'SKU-105', canonicalId: 'c_para' },
+      { id: 'dk6', supplier: 'Metro Office Mart', docketText: 'Copier Paper A4 80gsm 500 Sheets', qty: 60, trueCode: 'SKU-101', canonicalId: 'c_paper' },
+      { id: 'dk7', supplier: 'WestMed Distributors', docketText: 'Gloves Nitrile Examination Medium Box 100', qty: 30, trueCode: 'SKU-102', canonicalId: 'c_gloves' },
+      { id: 'dk8', supplier: 'SafeHands Ghana', docketText: 'Gel Hand Sanitizer 500ml Alcohol', qty: 20, trueCode: 'SKU-103', canonicalId: 'c_sanitizer' },
+    ],
+  },
+  {
+    id: 'fmcg_warehouse',
+    name: 'FMCG Distribution Hub Receiving Bay',
+    context: 'Fast-moving consumer goods arrive from wholesalers using trade abbreviations. Keep the Item Master clean without stalling the receiving bay.',
+    masterItems: [
+      { code: 'FM-01', name: 'Natural Mineral Water 500ml (Pack of 16)', stock: 320, canonicalId: 'f_water' },
+      { code: 'FM-02', name: 'Evaporated Milk Unsweetened 160g Tin', stock: 210, canonicalId: 'f_milk' },
+      { code: 'FM-03', name: 'Long Grain Perfumed Rice 5kg Bag', stock: 150, canonicalId: 'f_rice' },
+      { code: 'FM-04', name: 'Vegetable Cooking Oil 2L Bottle', stock: 95, canonicalId: 'f_oil' },
+    ],
+    dockets: [
+      { id: 'fdk1', supplier: 'Volta Bottlers', docketText: 'Mineral Water 500 ml 16pk', qty: 100, trueCode: 'FM-01', canonicalId: 'f_water' },
+      { id: 'fdk2', supplier: 'DairyLink Trade', docketText: 'Unsweetened Evap Milk Tin 160gm', qty: 80, trueCode: 'FM-02', canonicalId: 'f_milk' },
+      { id: 'fdk3', supplier: 'Tema Grain Imports', docketText: 'Perfumed Rice Long Grain 5kg', qty: 60, trueCode: 'FM-03', canonicalId: 'f_rice' },
+      { id: 'fdk4', supplier: 'Golden Oil Co', docketText: 'Cooking Oil Vegetable 2 Litres', qty: 45, trueCode: 'FM-04', canonicalId: 'f_oil' },
+      { id: 'fdk5', supplier: 'Accra Beverage Hub', docketText: 'Water Natural Mineral 500ml (16)', qty: 90, trueCode: 'FM-01', canonicalId: 'f_water' },
+    ],
+  },
+];
+
+export const SCAN_IT_PRESETS = [
+  {
+    id: 'west_africa_retail',
+    name: 'West African Retail & Pharmacy Basket (GS1 Prefix Audit)',
+    context: 'Scan real products in the room with your camera or dissect this starter basket of valid GTIN-13 barcodes to compare where products are licensed (e.g., 603 = GS1 Ghana, 615 = GS1 Nigeria) and prove how Mod-10 check digits catch human keying errors.',
+    samples: [
+      { barcode: '6031204001016', product: 'Natural Mineral Water 500ml', category: 'Beverage' },
+      { barcode: '6038810002451', product: 'Artisan Cocoa Chocolate Bar 100g', category: 'Confectionery' },
+      { barcode: '6151100045218', product: 'Instant Noodles Family Pack', category: 'Dry Goods' },
+      { barcode: '6001087341202', product: 'Antiseptic Disinfectant 500ml', category: 'Personal Care' },
+      { barcode: '5010029000016', product: 'Wholegrain Breakfast Cereal 430g', category: 'Grocery' },
+      { barcode: '6901234567892', product: 'LED Rechargeable Torchlight', category: 'Hardware' },
+      { barcode: '8901058851236', product: 'Paracetamol 500mg Blister Pack', category: 'Pharmacy' },
+      { barcode: '036000291452', product: 'Facial Tissue Box (UPC-A / GTIN-12)', category: 'Household' },
+    ],
+  },
+];
+
+export const THE_MATCH_PRESETS = [
+  {
+    id: 'hospital_p2p',
+    name: 'Regional Health Facility Procure-to-Pay Audit',
+    currency: 'GHS',
+    priceTolPct: 2,
+    qtyTolPct: 0,
+    context: 'Review 6 supplier invoice packets against Purchase Orders, Cost-Centre Budgets, and Storekeeper Goods Receipts. Decide whether each payment should RELEASE or BLOCK.',
+    packets: [
+      {
+        id: 'p2p_1',
+        poNo: 'PO-2026-041',
+        grnNo: 'GRN-0812',
+        invoiceNo: 'INV-9011',
+        supplier: 'MediCore Supplies Ltd',
+        item: 'Surgical Gloves Box (100s)',
+        costCentre: 'Clinical Stores',
+        budgetRemaining: 45000,
+        poApproved: true,
+        grnPosted: true,
+        duplicateInvoice: false,
+        poQty: 200,
+        poUnitPrice: 120,
+        grnQty: 200,
+        invQty: 200,
+        invUnitPrice: 120,
+      },
+      {
+        id: 'p2p_2',
+        poNo: 'PO-2026-042',
+        grnNo: 'GRN-0813',
+        invoiceNo: 'INV-9012',
+        supplier: 'Accra Pharma Traders',
+        item: 'IV Drip Giving Sets',
+        costCentre: 'Emergency Ward',
+        budgetRemaining: 30000,
+        poApproved: true,
+        grnPosted: true,
+        duplicateInvoice: false,
+        poQty: 500,
+        poUnitPrice: 35,
+        grnQty: 420,
+        invQty: 500,
+        invUnitPrice: 35,
+      },
+      {
+        id: 'p2p_3',
+        poNo: 'PO-2026-043',
+        grnNo: 'GRN-0814',
+        invoiceNo: 'INV-9013',
+        supplier: 'Apex Paper & Print',
+        item: 'A4 Paper Boxes (5 Reams)',
+        costCentre: 'Administration',
+        budgetRemaining: 28000,
+        poApproved: true,
+        grnPosted: true,
+        duplicateInvoice: false,
+        poQty: 60,
+        poUnitPrice: 310,
+        grnQty: 60,
+        invQty: 60,
+        invUnitPrice: 345,
+      },
+      {
+        id: 'p2p_4',
+        poNo: 'PO-2026-044',
+        grnNo: '(Pending)',
+        invoiceNo: 'INV-9014',
+        supplier: 'FastLine Cold Chain',
+        item: 'Vaccine Carrier Cooler Boxes',
+        costCentre: 'Immunization',
+        budgetRemaining: 40000,
+        poApproved: true,
+        grnPosted: false,
+        duplicateInvoice: false,
+        poQty: 25,
+        poUnitPrice: 680,
+        grnQty: 0,
+        invQty: 25,
+        invUnitPrice: 680,
+      },
+      {
+        id: 'p2p_5',
+        poNo: 'PO-2026-045',
+        grnNo: 'GRN-0815',
+        invoiceNo: 'INV-8840',
+        supplier: 'CleanCare Janitorial',
+        item: 'Hospital Disinfectant 20L',
+        costCentre: 'Facilities',
+        budgetRemaining: 22000,
+        poApproved: true,
+        grnPosted: true,
+        duplicateInvoice: true,
+        poQty: 40,
+        poUnitPrice: 280,
+        grnQty: 40,
+        invQty: 40,
+        invUnitPrice: 280,
+      },
+      {
+        id: 'p2p_6',
+        poNo: 'PO-2026-046',
+        grnNo: 'GRN-0816',
+        invoiceNo: 'INV-9016',
+        supplier: 'PowerGrid Backup Systems',
+        item: 'UPS Battery Bank 12V',
+        costCentre: 'IT Infrastructure',
+        budgetRemaining: 12000,
+        poApproved: true,
+        grnPosted: true,
+        duplicateInvoice: false,
+        poQty: 10,
+        poUnitPrice: 1850,
+        grnQty: 10,
+        invQty: 10,
+        invUnitPrice: 1850,
+      },
+    ],
+    users: [
+      { id: 'u1', name: 'Ama Mensah', department: 'Procurement', roles: ['buyer'] },
+      { id: 'u2', name: 'Kofi Boateng', department: 'Central Stores', roles: ['storekeeper'] },
+      { id: 'u3', name: 'Esi Owusu', department: 'Accounts Payable', roles: ['finance'] },
+      { id: 'u4', name: 'Yaw Appiah', department: 'Operations', roles: ['manager'] },
+      { id: 'u5', name: 'Daniel Tetteh (Relief Clerk)', department: 'Branch Annex', roles: ['buyer', 'storekeeper'] },
+      { id: 'u6', name: 'Super-Admin Test Account', department: 'IT / Uncontrolled', roles: ['buyer', 'storekeeper', 'finance', 'manager'] },
+    ],
+  },
+];
+
 export const LAB_CATALOG = [
   {
     id: 'tqm_spc',
@@ -396,6 +587,63 @@ export const LAB_CATALOG = [
       { id: 'c4', title: 'Executive Recommendation to Management', maxMarks: 25 },
     ],
   },
+  {
+    id: 'psis_seven_names',
+    domain: 'PSIS',
+    code: 'PSIS-LAB 02',
+    title: 'Master Data & Duplicate SKUs (Seven Names)',
+    shortTitle: 'Seven Names (Master Data)',
+    summary: 'Simulate a busy receiving dock under queue pressure: match incoming dockets to existing SKUs or quick-create new codes, then run fuzzy duplicate clustering to reveal stock fragmentation.',
+    duration: '45 min',
+    supportsOwnData: true,
+    presets: SEVEN_NAMES_PRESETS,
+    defaultPresetId: SEVEN_NAMES_PRESETS[0].id,
+    defaultPrompt: 'Analyze how duplicate SKU creation fragments inventory visibility and procurement spend, cite the duplicate clusters and hygiene score from your audit, and propose an item master governance rule for receiving clerks.',
+    rubricCriteria: [
+      { id: 'c1', title: 'Receiving Dock Matching Discipline', maxMarks: 25 },
+      { id: 'c2', title: 'Duplicate Cluster & Stock Fragmentation Diagnosis', maxMarks: 25 },
+      { id: 'c3', title: 'Impact on Reorder Points & Spend Analytics', maxMarks: 25 },
+      { id: 'c4', title: 'Master Data Governance Controls Recommendation', maxMarks: 25 },
+    ],
+  },
+  {
+    id: 'psis_scan_it',
+    domain: 'PSIS',
+    code: 'PSIS-LAB 03',
+    title: 'Barcode & GTIN Capture (Scan It)',
+    shortTitle: 'Scan It (GTIN & AIDC)',
+    summary: 'Scan real product barcodes with your phone or webcam (or enter GTIN-8/12/13/14 digits), inspect GS1 Member Organization licensing (e.g., 603 = GS1 Ghana), verify Mod-10 check-digit math, and trigger the transposition error trap.',
+    duration: '30–45 min',
+    supportsOwnData: true,
+    presets: SCAN_IT_PRESETS,
+    defaultPresetId: SCAN_IT_PRESETS[0].id,
+    defaultPrompt: 'Summarize the GS1 licensing geography of your collected products (distinguishing country of licensing vs. country of manufacture), explain how the Mod-10 check digit caught your transposition error, and argue why barcode capture outperforms manual keying.',
+    rubricCriteria: [
+      { id: 'c1', title: 'GTIN Structure & GS1 Prefix Identification', maxMarks: 25 },
+      { id: 'c2', title: 'Mod-10 Check Digit & Transposition Trap Proof', maxMarks: 25 },
+      { id: 'c3', title: 'Field Product Collection & Licensing Analysis', maxMarks: 25 },
+      { id: 'c4', title: 'AIDC Implementation Judgement for Supply Chains', maxMarks: 25 },
+    ],
+  },
+  {
+    id: 'psis_the_match',
+    domain: 'PSIS',
+    code: 'PSIS-LAB 04',
+    title: 'Procure-to-Pay 3-Way Match & Segregation of Duties (The Match)',
+    shortTitle: 'The Match (P2P & SoD)',
+    summary: 'Audit supplier invoices against Purchase Orders, Cost-Centre Budgets, and Goods Receipts; simulate a Ghost-Vendor fraud when one account holds all four roles; and remediate toxic SoD conflicts.',
+    duration: '60–90 min',
+    supportsOwnData: true,
+    presets: THE_MATCH_PRESETS,
+    defaultPresetId: THE_MATCH_PRESETS[0].id,
+    defaultPrompt: 'Justify every invoice you blocked or released with exact variance reasons, explain why a properly working 3-way match released payment in the Super-User fraud simulation, and specify the minimum Segregation of Duties matrix required to prevent ghost-vendor fraud.',
+    rubricCriteria: [
+      { id: 'c1', title: '3-Way Match Audit Accuracy & Variance Identification', maxMarks: 25 },
+      { id: 'c2', title: 'Ghost-Vendor Fraud Mechanism Explanation', maxMarks: 25 },
+      { id: 'c3', title: 'RBAC & Toxic Role Matrix Remediation', maxMarks: 25 },
+      { id: 'c4', title: 'Internal Control & Governance Judgement', maxMarks: 25 },
+    ],
+  },
 ];
 
 export function getLabDef(labId) {
@@ -450,6 +698,24 @@ export function buildLabCsvTemplate(labId, variant = '') {
     return {
       filename: 'quality-pareto-checksheet-template.csv',
       content: 'DefectCategory,Shift1,Shift2,Shift3\nWeak Seal,14,19,31\nMisaligned Label,12,15,17\nUnderweight Pack,6,8,12\nCrushed Carton,5,4,7\n',
+    };
+  }
+  if (labId === 'psis_seven_names') {
+    return {
+      filename: 'master-data-items-template.csv',
+      content: 'Code,ItemDescription,StockQty\nSKU-101,A4 Photocopy Paper 80gsm (500 Sheets),140\nSKU-102,Paper A4 80g Ream 500sh,50\nSKU-103,Nitrile Examination Gloves Medium (Box of 100),85\nSKU-104,Exam Gloves Nitrile Size M,45\n',
+    };
+  }
+  if (labId === 'psis_scan_it') {
+    return {
+      filename: 'gtin-barcode-log-template.csv',
+      content: 'Barcode,ProductName,Category\n6031204001016,Natural Mineral Water 500ml,Beverage\n6038810002451,Local Cocoa Chocolate Bar 100g,Confectionery\n6151100045218,Instant Noodles Family Pack,Dry Goods\n',
+    };
+  }
+  if (labId === 'psis_the_match') {
+    return {
+      filename: 'p2p-three-way-match-template.csv',
+      content: 'PO_No,GRN_No,Invoice_No,Supplier,Item,PO_Qty,PO_UnitPrice,GRN_Qty,Inv_Qty,Inv_UnitPrice,BudgetRemaining\nPO-101,GRN-501,INV-901,Apex Supplies,A4 Paper Box,60,310,60,60,310,30000\nPO-102,GRN-502,INV-902,MediSafe Ltd,Surgical Gloves,200,120,160,200,120,30000\n',
     };
   }
   // tqm_coq
