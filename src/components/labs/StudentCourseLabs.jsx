@@ -4,7 +4,7 @@ import { Empty, Loading } from '../ui.jsx';
 import { parseCourseMeta } from '../../lib/courseMeta.js';
 import { findStudentSyndicate, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
 import { useAuth } from '../../lib/auth.jsx';
-import { DATA_POLICIES, getLabDef } from '../../lib/labsCatalog.js';
+import { getLabDef } from '../../lib/labsCatalog.js';
 import { LAB_TRACK_META } from '../../lib/labScoringBridge.js';
 import { buildStudentLabPortfolioText } from '../../lib/labMilestone8Engine.js';
 import { buildTypedResponsePdfBlob } from '../../lib/textPdf.js';
@@ -49,10 +49,10 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
     <section className="card-soft between" style={{ padding: '14px 18px', flexWrap: 'wrap', gap: 12 }}>
       <div className="stack-xs" style={{ flex: 1, minWidth: 230 }}>
         <div className="tiny mono" style={{ color: 'var(--teal-700)', fontWeight: 700 }}>
-          ● LIVE MULTI-STUDENT CLASSROOM LAB
+          ● LIVE CLASSROOM LAB
         </div>
-        <div className="small">
-          In class right now? Enter the 6-letter join code displayed on your lecturer’s projector to join the live simulation.
+        <div className="small muted">
+          Enter the join code from your lecturer to join an active classroom session.
         </div>
       </div>
       <form
@@ -169,10 +169,13 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
           const track = LAB_TRACK_META[def.id] || { track: def.domain, accent: 'var(--teal-700)', stage: 'Interactive Lab' };
           const linked = cfg.linkedAssignmentId ? assignById.get(cfg.linkedAssignmentId) : null;
           const sub = linked?.submission || null;
-          const policy = DATA_POLICIES.find((p) => p.id === cfg.dataMode)?.short || 'Course or own data';
           const markedReleased = Boolean(sub?.marked && (linked?.released || linked?.results_released));
           const linkedMeta = linked ? parseAssignmentMeta(linked) : null;
           const mySyn = linkedMeta && !previewOnly ? findStudentSyndicate(linkedMeta, profile?.index_no) : null;
+          const extraTags = [
+            cfg.customDataset?.name ? `Dataset: ${cfg.customDataset.name}` : null,
+            Array.isArray(cfg.mappedClos) && cfg.mappedClos.length > 0 ? cfg.mappedClos.join(' · ') : null,
+          ].filter(Boolean);
 
           return (
             <article
@@ -183,7 +186,7 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
               <div className="stack-xs">
                 <div className="between" style={{ gap: 8, alignItems: 'center' }}>
                   <span className="tiny mono" style={{ fontWeight: 700, color: track.accent }}>
-                    {def.code} · {track.track.toUpperCase()}
+                    {def.code}
                   </span>
                   {linked ? (
                     <span
@@ -200,7 +203,7 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
                           : '▲ NOT SUBMITTED'}
                     </span>
                   ) : (
-                    <span className="tiny mono muted">PRACTICE LAB</span>
+                    <span className="tiny mono muted">PRACTICE</span>
                   )}
                 </div>
 
@@ -208,43 +211,50 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
                   {cfg.title || def.title}
                 </h2>
 
-                <div className="tiny muted">
-                  {track.stage} · {def.duration} · {policy}
-                  {cfg.customDataset?.name ? ` · Dataset: ${cfg.customDataset.name}` : ''}
-                  {cfg.uniqueVariant && !cfg.customDataset ? ' · Unique Data Variant' : ''}
-                  {Array.isArray(cfg.mappedClos) && cfg.mappedClos.length > 0 ? ` · ${cfg.mappedClos.join(', ')}` : ''}
-                </div>
-
-                <p className="small muted" style={{ margin: '6px 0 0', lineHeight: 1.5 }}>
-                  {cfg.instructions || def.summary}
-                </p>
-              </div>
-
-              <div className="stack-xs" style={{ paddingTop: 10, borderTop: '1px solid var(--line)' }}>
-                {linked ? (
-                  <div className="tiny muted">
-                    {mySyn && (
-                      <div className="mono" style={{ color: 'var(--teal-700)', fontWeight: 700, marginBottom: 2 }}>
-                        ● SYNDICATE: {mySyn.name} ({(mySyn.members || []).length} members · Live Sync Ready)
-                      </div>
-                    )}
-                    <strong style={{ color: 'var(--text)' }}>CA Assignment:</strong> {linked.title} ({fmtNumber(linked.max_marks)} marks)
-                    {linked.due_at ? ` · Due ${fmtFull(linked.due_at)} (${relative(linked.due_at)})` : ''}
+                {mySyn && (
+                  <div className="tiny mono" style={{ color: 'var(--teal-700)', fontWeight: 700 }}>
+                    ● {mySyn.name} ({(mySyn.members || []).length} members)
                   </div>
-                ) : (
-                  <div className="tiny muted">Ungraded sandbox · Export PDF reports anytime</div>
                 )}
 
-                <div className="between" style={{ gap: 8, marginTop: 4 }}>
-                  <span className="tiny muted">Auto-saves locally</span>
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-sm"
-                    onClick={() => setActiveLab({ cfg, linked })}
+                {extraTags.length > 0 && (
+                  <div className="tiny muted">{extraTags.join(' · ')}</div>
+                )}
+
+                {cfg.instructions && (
+                  <p
+                    className="small muted"
+                    style={{
+                      margin: '4px 0 0',
+                      lineHeight: 1.45,
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                    }}
                   >
-                    <Icon name="flask" size={14} /> {sub ? 'Open Lab / View Draft' : 'Launch Interactive Lab'}
-                  </button>
-                </div>
+                    {cfg.instructions}
+                  </p>
+                )}
+              </div>
+
+              <div className="between" style={{ paddingTop: 10, borderTop: '1px solid var(--line)', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                {linked ? (
+                  <div className="tiny muted" style={{ flex: 1, minWidth: 160 }}>
+                    <strong style={{ color: 'var(--text)' }}>{fmtNumber(linked.max_marks)} marks</strong>
+                    {linked.due_at ? ` · Due ${fmtFull(linked.due_at)} (${relative(linked.due_at)})` : ` · ${linked.title}`}
+                  </div>
+                ) : (
+                  <div className="tiny muted">Practice lab · Ungraded</div>
+                )}
+
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => setActiveLab({ cfg, linked })}
+                >
+                  <Icon name="flask" size={14} /> {sub ? 'View Lab' : 'Open Lab'}
+                </button>
               </div>
             </article>
           );

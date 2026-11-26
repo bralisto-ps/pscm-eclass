@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../Icon.jsx';
 import { Loading, useToast } from '../ui.jsx';
-import { DATA_POLICIES, getLabDef, getLabPreset, submitLabReportToAssignment } from '../../lib/labsCatalog.js';
+import { getLabDef, getLabPreset, submitLabReportToAssignment } from '../../lib/labsCatalog.js';
 import { buildTypedResponsePdfBlob } from '../../lib/textPdf.js';
 import { useAuth } from '../../lib/auth.jsx';
 import { fmtDateTime } from '../../lib/format.js';
@@ -139,6 +139,7 @@ export default function LabRunnerModal({
   const [judgementReady, setJudgementReady] = useState(false);
   const [hasInteracted, setHasInteracted] = useState(Boolean(draftState));
   const [guideOpen, setGuideOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
 
   // Syndicate Live Teammate Sync (Supabase Realtime Broadcast + Presence — zero SQL)
   const [synSyncOn, setSynSyncOn] = useState(false);
@@ -263,7 +264,6 @@ export default function LabRunnerModal({
   const conceptGuide = LAB_CONCEPT_GUIDES[def.id] || null;
 
   const dataMode = labConfig?.dataMode || 'both';
-  const policyLabel = DATA_POLICIES.find((p) => p.id === dataMode)?.short || 'Course or own data';
   const existingSub = assignment?.submission || null;
   const dueAt = assignment?.due_at || null;
   const overdue = dueAt && new Date(dueAt).getTime() < Date.now();
@@ -499,61 +499,99 @@ export default function LabRunnerModal({
         <div
           className="between"
           style={{
-            padding: '14px 20px',
+            padding: '12px 18px',
             borderBottom: '1px solid var(--line)',
             background: 'var(--surface)',
-            gap: 12,
+            gap: 10,
             flexWrap: 'wrap',
+            position: 'relative',
           }}
         >
-          <div>
-            <div className="tiny muted">
-              <strong className="mono" style={{ color: trackMeta.accent }}>{def.code}</strong> · {trackMeta.track} · {trackMeta.stage}
-              {course ? ` · ${course.code}` : ' · Sandbox Preview'}
-              {' · '}
-              {policyLabel}
+          <div style={{ minWidth: 0, flex: '1 1 220px' }}>
+            <div className="tiny muted" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+              <strong className="mono" style={{ color: trackMeta.accent }}>{def.code}</strong>
+              <span>· {course ? course.code : 'Preview'}</span>
               {uniqueVariantResult && (
-                <span className="mono" style={{ marginLeft: 8, color: 'var(--teal-700)', fontWeight: 700 }}>
-                  ● UNIQUE VARIANT {uniqueVariantResult.variantTag}
+                <span className="mono" style={{ color: 'var(--teal-700)', fontWeight: 700 }}>
+                  · Variant {uniqueVariantResult.variantTag}
                 </span>
               )}
               {Array.isArray(labConfig?.mappedClos) && labConfig.mappedClos.length > 0 && (
-                <span className="mono" style={{ marginLeft: 8, color: '#1d4ed8', fontWeight: 700 }}>
-                  · {labConfig.mappedClos.join(' · ')}
+                <span className="mono" style={{ color: '#1d4ed8', fontWeight: 700 }}>
+                  · {labConfig.mappedClos.join(', ')}
                 </span>
               )}
             </div>
-            <h2 style={{ margin: '2px 0 0', fontSize: 18 }}>
+            <h2 style={{ margin: '2px 0 0', fontSize: 17, lineHeight: 1.25 }}>
               {labConfig?.title || def.title}
             </h2>
           </div>
 
-          <div className="row-wrap" style={{ gap: 8 }}>
+          <div className="row-wrap" style={{ gap: 6, alignItems: 'center', position: 'relative' }}>
             {conceptGuide && (
               <button
                 type="button"
                 className={`btn btn-sm ${guideOpen ? 'btn-primary' : ''}`}
                 onClick={() => setGuideOpen((v) => !v)}
+                title="Open formula & concept quick reference"
               >
-                <Icon name="book" size={14} /> {guideOpen ? 'Hide Guide' : 'Formula & Concept Guide'}
+                <Icon name="book" size={14} /> {guideOpen ? 'Hide Guide' : 'Guide'}
               </button>
             )}
-            {carryTargets.length > 0 && (
+            <button type="button" className="btn btn-sm" onClick={downloadPdfReport} title="Download PDF lab report">
+              <Icon name="download" size={14} /> PDF
+            </button>
+            <div style={{ position: 'relative' }}>
               <button
                 type="button"
-                className="btn btn-sm"
-                onClick={saveCarryForward}
-                title={carryTargets.map((t) => t.label).join(' | ')}
+                className={`btn btn-sm ${toolsOpen ? 'btn-primary' : ''}`}
+                aria-expanded={toolsOpen}
+                onClick={() => setToolsOpen((v) => !v)}
+                title="More lab tools"
               >
-                <Icon name="arrow" size={14} /> Carry Forward → Next Lab
+                More ▾
               </button>
-            )}
-            <button type="button" className="btn btn-sm" onClick={downloadPdfReport}>
-              <Icon name="download" size={14} /> Download PDF Report
-            </button>
-            <button type="button" className="btn btn-sm" onClick={resetDraft} title="Clear locally saved work for this lab">
-              Reset Draft
-            </button>
+              {toolsOpen && (
+                <div
+                  className="card stack-xs"
+                  style={{
+                    position: 'absolute',
+                    right: 0,
+                    top: 'calc(100% + 6px)',
+                    minWidth: 215,
+                    padding: 8,
+                    zIndex: 30,
+                    boxShadow: '0 10px 28px rgba(15, 23, 42, 0.16)',
+                  }}
+                >
+                  {carryTargets.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ justifyContent: 'flex-start', width: '100%' }}
+                      onClick={() => {
+                        setToolsOpen(false);
+                        saveCarryForward();
+                      }}
+                      title={carryTargets.map((t) => t.label).join(' | ')}
+                    >
+                      <Icon name="arrow" size={14} /> Carry Forward → Next Lab
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ justifyContent: 'flex-start', width: '100%' }}
+                    onClick={() => {
+                      setToolsOpen(false);
+                      resetDraft();
+                    }}
+                  >
+                    Reset Local Draft
+                  </button>
+                </div>
+              )}
+            </div>
             <button type="button" className="icon-btn" aria-label="Close lab" onClick={onClose}>
               <Icon name="close" size={18} />
             </button>
@@ -597,6 +635,22 @@ export default function LabRunnerModal({
                 <span key={idx}>• {tip}</span>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Lecturer Task Brief (shown cleanly inside workspace when configured) */}
+        {labConfig?.instructions && (
+          <div
+            className="small"
+            style={{
+              padding: '9px 18px',
+              background: 'var(--surface-2)',
+              borderBottom: '1px solid var(--line)',
+              lineHeight: 1.45,
+            }}
+          >
+            <strong className="tiny mono" style={{ color: trackMeta.accent, marginRight: 8 }}>TASK BRIEF</strong>
+            <span className="muted">{labConfig.instructions}</span>
           </div>
         )}
 
@@ -869,13 +923,12 @@ export default function LabRunnerModal({
                 style={{ fontWeight: 700, color: judgementReady ? 'var(--teal-700)' : 'var(--amber)' }}
               >
                 {judgementReady
-                  ? '● AUTO-SCORED VERIFICATION HEADER READY'
-                  : '▲ COMPLETE WRITTEN MANAGERIAL JUDGEMENT BEFORE SUBMITTING'}
+                  ? '● READY TO SUBMIT'
+                  : '▲ ADD WRITTEN JUDGEMENT TO SUBMIT'}
               </span>
-              <span className="tiny muted">
-                Auto-saved locally · Generates PDF + structured marking summary
-                {mySyndicate ? ` · Credits ${mySyndicate.name}` : ''}
-              </span>
+              {mySyndicate && (
+                <span className="tiny muted">Credits {mySyndicate.name}</span>
+              )}
             </div>
             <button
               type="button"
