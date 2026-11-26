@@ -16,6 +16,11 @@ import {
   extractCarryForwardImport,
   getCarryForwardTargets,
 } from '../../lib/labMilestone7Engine.js';
+import {
+  clearPendingLabSubmission,
+  getPendingLabSubmission,
+  savePendingLabSubmission,
+} from '../../lib/labMilestone8Engine.js';
 
 const SpcLab = lazy(() => import('./SpcLab.jsx'));
 const QualityToolsLab = lazy(() => import('./QualityToolsLab.jsx'));
@@ -28,6 +33,9 @@ const ReqToOrderLab = lazy(() => import('./ReqToOrderLab.jsx'));
 const TheTenderLab = lazy(() => import('./TheTenderLab.jsx'));
 const InventoryWmsLab = lazy(() => import('./InventoryWmsLab.jsx'));
 const SpendAnalyticsLab = lazy(() => import('./SpendAnalyticsLab.jsx'));
+const LandedCostLab = lazy(() => import('./LandedCostLab.jsx'));
+const ContractSlaLab = lazy(() => import('./ContractSlaLab.jsx'));
+const GreenProcurementLab = lazy(() => import('./GreenProcurementLab.jsx'));
 
 export default function LabRunnerModal({
   labConfig,
@@ -121,6 +129,12 @@ export default function LabRunnerModal({
   });
   const [syncVersion, setSyncVersion] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [pendingOfflineSub, setPendingOfflineSub] = useState(() =>
+    assignment?.id && session?.user?.id
+      ? getPendingLabSubmission(typeof localStorage !== 'undefined' ? localStorage : null, assignment.id, session.user.id)
+      : null,
+  );
+  const [isOffline, setIsOffline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine === false : false));
   const [submitDone, setSubmitDone] = useState(false);
   const [judgementReady, setJudgementReady] = useState(false);
   const [hasInteracted, setHasInteracted] = useState(Boolean(draftState));
@@ -326,38 +340,20 @@ export default function LabRunnerModal({
     }
   }
 
-  async function handleSubmitToAssignment() {
-    const built = reportBuilderRef.current?.();
-    if (!built) return;
-    if (!built.hasJudgement) {
-      toast('Please write your managerial judgement (at least a short paragraph) before submitting to your assignment.', 'error');
-      return;
-    }
+  async function flushSubmissionPayload(payload) {
     setSubmitting(true);
     try {
-      const peerRatingsPayload = peerCheckActive
-        ? (mySyndicate?.members || [])
-            .filter((idx) => String(idx).toUpperCase() !== String(profile?.index_no || '').toUpperCase())
-            .map((idx) => ({
-              indexNo: String(idx),
-              score: Number(peerScores[String(idx)]?.score || 5),
-              note: String(peerScores[String(idx)]?.note || '').trim(),
-            }))
-        : [];
       const res = await submitLabReportToAssignment({
         assignment,
         profile,
         session,
-        reportTitle: built.title,
-        reportBody: wrapReportBody(built),
-        note: `Submitted from ${def.shortTitle} Lab${uniqueVariantResult ? ` (${uniqueVariantResult.variantTag})` : ''}`,
-        extraTypingMeta: {
-          labId: def.id,
-          variantTag: uniqueVariantResult?.variantTag || null,
-          syndicateName: mySyndicate?.name || null,
-          ...(peerRatingsPayload.length ? { syndicatePeerRatings: peerRatingsPayload } : {}),
-        },
+        reportTitle: payload.reportTitle,
+        reportBody: payload.reportBody,
+        note: payload.note,
+        extraTypingMeta: payload.extraTypingMeta,
       });
+      clearPendingLabSubmission(typeof localStorage !== 'undefined' ? localStorage : null, assignment?.id, session?.user?.id);
+      setPendingOfflineSub(null);
       setSubmitDone(true);
       toast(
         res.groupName
@@ -366,10 +362,69 @@ export default function LabRunnerModal({
       );
       onSubmitted?.();
     } catch (e) {
-      toast(e.message || 'Could not submit lab report.', 'error');
+      const offlineErr = (typeof navigator !== 'undefined' && navigator.onLine === false) ||
+        /fetch|network|offline|timeout|failed to fetch|connection/i.test(String(e?.message || ''));
+      if (offlineErr && assignment?.id && session?.user?.id) {
+        const queued = { ...payload, lastError: String(e?.message || 'Network unavailable') };
+        savePendingLabSubmission(typeof localStorage !== 'undefined' ? localStorage : null, assignment.id, session.user.id, queued);
+        setPendingOfflineSub({ ...queued, queuedAt: new Date().toISOString() });
+        toast('Connection dropped — your complete lab report is safely saved offline and will auto-retry once internet returns!');
+      } else {
+        toast(e.message || 'Could not submit lab report.', 'error');
+      }
     } finally {
       setSubmitting(false);
     }
+  }
+
+  useEffect(() => {
+    const onOffline = () => setIsOffline(true);
+    const onOnline = () => {
+      setIsOffline(false);
+      if (assignment?.id && session?.user?.id) {
+        const queued = getPendingLabSubmission(typeof localStorage !== 'undefined' ? localStorage : null, assignment.id, session.user.id);
+        if (queued) {
+          toast('Internet restored — automatically retrying your saved offline lab submission…');
+          flushSubmissionPayload(queued);
+        }
+      }
+    };
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('online', onOnline);
+    return () => {
+      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('online', onOnline);
+    };
+  }, [assignment?.id, session?.user?.id]);
+
+  async function handleSubmitToAssignment() {
+    const built = reportBuilderRef.current?.();
+    if (!built) return;
+    if (!built.hasJudgement) {
+      toast('Please write your managerial judgement (at least a short paragraph) before submitting to your assignment.', 'error');
+      return;
+    }
+    const peerRatingsPayload = peerCheckActive
+      ? (mySyndicate?.members || [])
+          .filter((idx) => String(idx).toUpperCase() !== String(profile?.index_no || '').toUpperCase())
+          .map((idx) => ({
+            indexNo: String(idx),
+            score: Number(peerScores[String(idx)]?.score || 5),
+            note: String(peerScores[String(idx)]?.note || '').trim(),
+          }))
+      : [];
+    const payload = {
+      reportTitle: built.title,
+      reportBody: wrapReportBody(built),
+      note: `Submitted from ${def.shortTitle} Lab${uniqueVariantResult ? ` (${uniqueVariantResult.variantTag})` : ''}`,
+      extraTypingMeta: {
+        labId: def.id,
+        variantTag: uniqueVariantResult?.variantTag || null,
+        syndicateName: mySyndicate?.name || null,
+        ...(peerRatingsPayload.length ? { syndicatePeerRatings: peerRatingsPayload } : {}),
+      },
+    };
+    await flushSubmissionPayload(payload);
   }
 
   function saveCarryForward() {
@@ -745,6 +800,37 @@ export default function LabRunnerModal({
           </div>
         )}
 
+        {/* Offline / Low-Bandwidth Resilient Submission Queue Banner */}
+        {(pendingOfflineSub || isOffline) && assignment && !previewOnly && (
+          <div
+            className="between small"
+            style={{
+              padding: '9px 20px',
+              background: '#fffbeb',
+              borderBottom: '1px solid #fde68a',
+              flexWrap: 'wrap',
+              gap: 10,
+            }}
+          >
+            <div style={{ color: '#92400e' }}>
+              <strong>{isOffline ? '▲ Offline Mode Detected:' : '● Offline Lab Report Backup Ready:'}</strong>{' '}
+              {pendingOfflineSub
+                ? 'Your completed lab submission is safely backed up on this device and will auto-send once connection is stable.'
+                : 'Your work auto-saves locally every edit. You can still click Submit to queue an offline backup.'}
+            </div>
+            {pendingOfflineSub && (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={submitting}
+                onClick={() => flushSubmissionPayload(pendingOfflineSub)}
+              >
+                {submitting ? 'Retrying…' : 'Retry Saved Submission Now'}
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Scrollable Lab Workbench */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '18px 20px', background: 'var(--ground)' }}>
           <Suspense fallback={<Loading label={`Loading ${def.shortTitle} laboratory…`} />}>
@@ -759,6 +845,9 @@ export default function LabRunnerModal({
             {def.id === 'psis_the_tender' && <TheTenderLab key={`tender_${syncVersion}`} {...labProps} />}
             {def.id === 'psis_inventory_wms' && <InventoryWmsLab key={`wms_${syncVersion}`} {...labProps} />}
             {def.id === 'psis_spend_analytics' && <SpendAnalyticsLab key={`spend_${syncVersion}`} {...labProps} />}
+            {def.id === 'scm_landed_cost' && <LandedCostLab key={`landed_${syncVersion}`} {...labProps} />}
+            {def.id === 'scm_contract_sla' && <ContractSlaLab key={`sla_${syncVersion}`} {...labProps} />}
+            {def.id === 'scm_green_procurement' && <GreenProcurementLab key={`green_${syncVersion}`} {...labProps} />}
           </Suspense>
         </div>
 

@@ -6,6 +6,8 @@ import { findStudentSyndicate, parseAssignmentMeta } from '../../lib/assignmentM
 import { useAuth } from '../../lib/auth.jsx';
 import { DATA_POLICIES, getLabDef } from '../../lib/labsCatalog.js';
 import { LAB_TRACK_META } from '../../lib/labScoringBridge.js';
+import { buildStudentLabPortfolioText } from '../../lib/labMilestone8Engine.js';
+import { buildTypedResponsePdfBlob } from '../../lib/textPdf.js';
 import { fmtFull, fmtNumber, relative } from '../../lib/format.js';
 
 const LabRunnerModal = lazy(() => import('./LabRunnerModal.jsx'));
@@ -117,9 +119,42 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
               graded lab{progressStats.gradedTotal === 1 ? '' : 's'} submitted
               {progressStats.gradedMarked > 0 ? ` · ${progressStats.gradedMarked} marked & released to CA` : ''}
             </div>
-            <span className="mono tiny" style={{ fontWeight: 700, color: 'var(--teal-700)' }}>
-              {progressStats.pct}% COMPLETE
-            </span>
+            <div className="row-wrap" style={{ gap: 8, alignItems: 'center' }}>
+              <span className="mono tiny" style={{ fontWeight: 700, color: 'var(--teal-700)' }}>
+                {progressStats.pct}% COMPLETE
+              </span>
+              {!previewOnly && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => {
+                    const portfolio = buildStudentLabPortfolioText({
+                      course,
+                      profile,
+                      openLabs,
+                      assignById,
+                      getLabDefFn: getLabDef,
+                    });
+                    const blob = buildTypedResponsePdfBlob({
+                      title: portfolio.title,
+                      studentLine: `${profile?.full_name || 'Student'} (${profile?.index_no || ''})`,
+                      submittedAt: new Date().toLocaleDateString(),
+                      body: portfolio.body,
+                    });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${(course?.code || 'pscm').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-lab-portfolio.pdf`;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                  }}
+                >
+                  <Icon name="download" size={13} /> Export Lab Portfolio PDF
+                </button>
+              )}
+            </div>
           </div>
           <div className="lab-progress-track">
             <div className="lab-progress-fill" style={{ width: `${progressStats.pct}%` }} />
