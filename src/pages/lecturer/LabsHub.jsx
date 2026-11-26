@@ -110,7 +110,7 @@ export default function LabsHub() {
     <>
       <Topbar
         title="Software Laboratories Studio"
-        sub="Open interactive TQM & PSIS labs to classes, map directly to CA gradebook components, or host live multi-student classroom games"
+        sub="Open interactive TQM, PSIS & SCM labs to classes, link to CA assignments, or host live classroom sessions"
       />
 
       <div className="page stack-lg">
@@ -169,20 +169,16 @@ export default function LabsHub() {
                     <div className="stack-xs">
                       <div className="between" style={{ gap: 8, alignItems: 'center' }}>
                         <span className="tiny mono" style={{ fontWeight: 700, color: track.accent }}>
-                          {lab.code} · {track.track.toUpperCase()}
+                          {lab.code}
                         </span>
                         <span className="tiny mono muted">
-                          {lab.supportsLiveClassroom ? '● LIVE CLASS + SOLO' : lab.duration}
+                          {lab.supportsLiveClassroom ? '● LIVE CLASS' : lab.duration}
                         </span>
                       </div>
 
-                      <h2 style={{ margin: '2px 0 0', fontSize: 18, lineHeight: 1.3 }}>{lab.title}</h2>
+                      <h2 style={{ margin: '2px 0 0', fontSize: 17, lineHeight: 1.3 }}>{lab.title}</h2>
 
-                      <div className="tiny muted">
-                        {track.stage} · {lab.duration} · Presets, lecturer CSV &amp; student own data
-                      </div>
-
-                      <p className="small muted" style={{ margin: '6px 0 0', lineHeight: 1.5 }}>
+                      <p className="small muted" style={{ margin: '4px 0 0', lineHeight: 1.45 }}>
                         {lab.summary}
                       </p>
                     </div>
@@ -213,7 +209,7 @@ export default function LabsHub() {
                           onClick={() => downloadFacilitationPdf(lab)}
                           title="Download 1-page printable teaching guide, timing breakdown & debrief prompts"
                         >
-                          <Icon name="book" size={13} /> Facilitation Guide PDF
+                          <Icon name="book" size={13} /> Guide PDF
                         </button>
                         {lab.supportsLiveClassroom && (
                           <button
@@ -222,7 +218,7 @@ export default function LabsHub() {
                             style={{ borderColor: 'var(--teal-700)', color: 'var(--teal-700)' }}
                             onClick={() => setLiveHostLabId(lab.id)}
                           >
-                            ● Host Live Class
+                            ● Live Class
                           </button>
                         )}
                       </div>
