@@ -14,6 +14,7 @@ import Icon from '../../components/Icon.jsx';
 import { Topbar } from '../../components/Layout.jsx';
 import RubricGrader from '../../components/RubricGrader.jsx';
 import { parseLabVerificationSummary, suggestLabRubricMarks } from '../../lib/labScoringBridge.js';
+import { summarizeClassLabSubmissions } from '../../lib/labMilestone6Engine.js';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { AssignmentForm } from './course/AssignmentsTab.jsx';
 import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
@@ -423,6 +424,60 @@ export default function AssignmentMarking() {
             <span className="v">{avg === null ? '—' : `${avg}%`}</span>
           </div>
         </div>
+
+        {(() => {
+          const debrief = summarizeClassLabSubmissions(enrichedRows, assignMeta);
+          if (!debrief.labSubmissionCount) return null;
+          return (
+            <section className="lab-evidence-card">
+              <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                <div>
+                  <div className="tiny mono" style={{ color: 'var(--teal-700)', fontWeight: 700 }}>
+                    ● CLASS-WIDE INTERACTIVE LAB DEBRIEF ANALYTICS
+                  </div>
+                  <strong className="small">{debrief.moduleLine}</strong>
+                </div>
+                <span className="tiny mono muted">
+                  {debrief.labSubmissionCount} lab report{debrief.labSubmissionCount === 1 ? '' : 's'} analyzed
+                </span>
+              </div>
+
+              <div className="lab-evidence-grid">
+                <div className="lab-evidence-metric">
+                  <span className="tiny muted">Class Avg Quantitative Score</span>
+                  <strong className="mono small" style={{ color: debrief.avgQuantPct >= 75 ? 'var(--teal-700)' : 'var(--amber)' }}>
+                    {debrief.avgQuantPct}%
+                  </strong>
+                </div>
+                <div className="lab-evidence-metric">
+                  <span className="tiny muted">Judgement Pass Rate</span>
+                  <strong className="mono small">{debrief.judgementPassPct}%</strong>
+                </div>
+                <div className="lab-evidence-metric">
+                  <span className="tiny muted">Avg Written Judgement</span>
+                  <strong className="mono small">{debrief.avgJudgementWords} words</strong>
+                </div>
+                {debrief.metricSummary.slice(0, 3).map((m) => (
+                  <div key={m.label} className="lab-evidence-metric">
+                    <span className="tiny muted">Class Avg {m.label}</span>
+                    <strong className="mono small">{m.avgPct}%</strong>
+                  </div>
+                ))}
+              </div>
+
+              {debrief.pitfalls.length > 0 && (
+                <div className="stack-xs" style={{ background: 'var(--surface)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--line)' }}>
+                  <span className="tiny mono" style={{ color: 'var(--amber)', fontWeight: 700 }}>
+                    ▲ LECTURE DEBRIEF TALKING POINTS (COMMON STUDENT PITFALLS):
+                  </span>
+                  {debrief.pitfalls.map((tip, i) => (
+                    <div key={i} className="tiny">• {tip}</div>
+                  ))}
+                </div>
+              )}
+            </section>
+          );
+        })()}
 
         {(assignMeta.rubric.length > 0 || assignMeta.syndicate.enabled || hasAudienceFilter(assignMeta) || assignMeta.doc?.path || subRuleLabel || assignMeta.topicRegistration?.enabled) && (
           <div className="notice notice-info row-wrap" style={{ justifyContent: 'space-between', gap: 10 }}>
