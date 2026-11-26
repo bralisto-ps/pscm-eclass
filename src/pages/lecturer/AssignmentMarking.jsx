@@ -17,6 +17,7 @@ import { parseLabVerificationSummary, suggestLabRubricMarks } from '../../lib/la
 import { summarizeClassLabSubmissions } from '../../lib/labMilestone6Engine.js';
 import { generateLabVivaQuestions, suggestPeerAdjustedMarks } from '../../lib/labMilestone7Engine.js';
 import { computeBatchLabAutoScores, detectJudgementSimilarityPairs } from '../../lib/labMilestone8Engine.js';
+import { getLabProfessionalRubric } from '../../lib/labMilestone9Engine.js';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { AssignmentForm } from './course/AssignmentsTab.jsx';
 import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
@@ -485,6 +486,30 @@ export default function AssignmentMarking() {
                   <span className="tiny mono muted">
                     {debrief.labSubmissionCount} lab report{debrief.labSubmissionCount === 1 ? '' : 's'} analyzed
                   </span>
+                  {!restrictedEdit && assignMeta.rubric.length === 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={async () => {
+                        try {
+                          const sampleLabId = enrichedRows.find((r) => r.sub?.typing_meta?.labId)?.sub?.typing_meta?.labId || 'tqm_spc';
+                          const nextRubric = getLabProfessionalRubric(sampleLabId, Number(data?.a?.max_marks) || 20);
+                          const packed = serializeAssignmentMeta(assignMeta.text || '', {
+                            ...assignMeta,
+                            rubric: nextRubric,
+                          });
+                          await run(supabase.from('assignments').update({ instructions: packed }).eq('id', data.a.id));
+                          toast('Attached 4-criterion professional lab marking rubric!');
+                          reload();
+                        } catch (e) {
+                          toast(e?.message || 'Could not attach lab rubric.', 'error');
+                        }
+                      }}
+                      title="Attaches a 4-criterion professional rubric (Quantitative, Diagnosis, Decision, Risk) for clickable marking"
+                    >
+                      <Icon name="clipboard" size={13} /> Attach 4-Criterion Lab Rubric
+                    </button>
+                  )}
                   {!restrictedEdit && batchCandidates.length > 0 && (
                     <button
                       type="button"
