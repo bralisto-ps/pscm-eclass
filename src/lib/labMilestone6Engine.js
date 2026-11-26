@@ -266,6 +266,55 @@ export function generateUniqueLabVariant({ labId, basePreset, seedKey }) {
     };
   }
 
+  if (labId === 'scm_landed_cost' && Array.isArray(basePreset.routes)) {
+    const scale = 0.88 + rng() * 0.24;
+    return {
+      variantTag,
+      customDataset: {
+        ...basePreset,
+        name,
+        routes: basePreset.routes.map((r) => ({
+          ...r,
+          unitExw: Math.max(5, Math.round((Number(r.unitExw) || 40) * scale * 10) / 10),
+          mainFreight: Math.max(200, Math.round((Number(r.mainFreight) || 2000) * (0.85 + rng() * 0.3) / 50) * 50),
+          destPort: Math.max(100, Math.round((Number(r.destPort) || 500) * (0.85 + rng() * 0.3) / 25) * 25),
+        })),
+      },
+    };
+  }
+  if (labId === 'scm_contract_sla' && Array.isArray(basePreset.periods)) {
+    const valScale = 0.85 + rng() * 0.3;
+    const nextVal = Math.round((Number(basePreset.contractValue) || 600000) * valScale / 10000) * 10000;
+    const perInv = Math.round(nextVal / Math.max(1, basePreset.periods.length));
+    return {
+      variantTag,
+      customDataset: {
+        ...basePreset,
+        name,
+        contractValue: nextVal,
+        periods: basePreset.periods.map((p) => ({
+          ...p,
+          invoiceValue: perInv,
+          otifPct: Math.max(68, Math.min(99.5, Number(((Number(p.otifPct) || 92) + (rng() - 0.5) * 4).toFixed(1)))),
+        })),
+      },
+    };
+  }
+  if (labId === 'scm_green_procurement' && Array.isArray(basePreset.suppliers)) {
+    return {
+      variantTag,
+      customDataset: {
+        ...basePreset,
+        name,
+        annualTonnes: Math.round((Number(basePreset.annualTonnes) || 120) * (0.85 + rng() * 0.3) / 5) * 5,
+        suppliers: basePreset.suppliers.map((s) => ({
+          ...s,
+          unitPricePerTonne: Math.round((Number(s.unitPricePerTonne) || 900) * (0.9 + rng() * 0.2) / 5) * 5,
+          mfgKgCo2PerTonne: Math.round((Number(s.mfgKgCo2PerTonne) || 400) * (0.88 + rng() * 0.24) / 10) * 10,
+        })),
+      },
+    };
+  }
   if (labId === 'psis_spend_analytics' && Array.isArray(basePreset.suppliers)) {
     return {
       variantTag,

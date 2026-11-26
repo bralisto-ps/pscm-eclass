@@ -125,6 +125,45 @@ export const LAB_DATASET_SCHEMAS = {
       { key: 'onContract', label: 'On Contract (Yes/No)', required: false, aliases: ['oncontract', 'contract', 'contracted', 'compliant', 'preferred'] },
     ],
   },
+  scm_landed_cost: {
+    label: 'Global Logistics & Landed Cost Routes',
+    fields: [
+      { key: 'name', label: 'Route / Origin Name', required: true, aliases: ['routename', 'route', 'origin', 'supplier', 'name'] },
+      { key: 'mode', label: 'Transport Mode (Ocean/Air/Road)', required: false, aliases: ['mode', 'transport', 'freightmode'] },
+      { key: 'incoterm', label: 'Incoterm (EXW/FOB/CIF/DAP/DDP)', required: false, aliases: ['incoterm', 'incoterms', 'term'] },
+      { key: 'qty', label: 'Shipment Qty', required: true, aliases: ['qty', 'quantity', 'units'] },
+      { key: 'unitExw', label: 'Unit EXW Price', required: true, aliases: ['unitexw', 'exw', 'unitprice', 'price'] },
+      { key: 'mainFreight', label: 'Main Freight Cost', required: true, aliases: ['mainfreight', 'freight', 'shipping'] },
+      { key: 'dutyRatePct', label: 'Import Duty %', required: false, aliases: ['dutypct', 'dutyratepct', 'duty', 'tariff'] },
+      { key: 'vatRatePct', label: 'Import VAT %', required: false, aliases: ['vatpct', 'vatratepct', 'vat', 'tax'] },
+      { key: 'destPort', label: 'Destination Port / Clearance', required: false, aliases: ['destport', 'port', 'clearance', 'demurrage'] },
+      { key: 'transitDays', label: 'Transit Days', required: false, aliases: ['transitdays', 'transit', 'days', 'leadtime'] },
+    ],
+  },
+  scm_contract_sla: {
+    label: 'Contract SLA Performance Periods',
+    fields: [
+      { key: 'period', label: 'Period / Month', required: true, aliases: ['period', 'month', 'quarter', 'date', 'cycle'] },
+      { key: 'invoiceValue', label: 'Period Invoice Value', required: true, aliases: ['invoicevalue', 'invoice', 'spend', 'value', 'amount'] },
+      { key: 'otifPct', label: 'OTIF Delivery %', required: true, aliases: ['otifpct', 'otif', 'ontime', 'delivery'] },
+      { key: 'defectPct', label: 'Defect Rate %', required: false, aliases: ['defectpct', 'defect', 'defects', 'reject'] },
+      { key: 'responseHrs', label: 'Response Time (Hours)', required: false, aliases: ['responsehrs', 'response', 'hours', 'sla'] },
+      { key: 'forceMajeure', label: 'Force Majeure Excused (Yes/No)', required: false, aliases: ['forcemajeure', 'excused', 'fm'] },
+    ],
+  },
+  scm_green_procurement: {
+    label: 'Sustainable Procurement Supplier Options',
+    fields: [
+      { key: 'name', label: 'Supplier Name', required: true, aliases: ['supplier', 'name', 'vendor'] },
+      { key: 'origin', label: 'Origin / Region', required: false, aliases: ['origin', 'region', 'country'] },
+      { key: 'mode', label: 'Transport Mode (Sea/Rail/Road/Air)', required: false, aliases: ['mode', 'transport', 'freightmode'] },
+      { key: 'distanceKm', label: 'Inbound Distance (km)', required: true, aliases: ['distancekm', 'distance', 'km'] },
+      { key: 'unitPricePerTonne', label: 'Price per Tonne', required: true, aliases: ['unitpricepertonne', 'price', 'unitprice', 'cost'] },
+      { key: 'mfgKgCo2PerTonne', label: 'Manufacturing kg CO2e / Tonne', required: true, aliases: ['mfgkgco2pertonne', 'mfgco2', 'co2', 'emissions'] },
+      { key: 'recyclablePct', label: 'Recyclable Packaging %', required: false, aliases: ['recyclablepct', 'recyclable', 'circular'] },
+      { key: 'ethicsScore', label: 'Ethical Audit Score (0–100)', required: false, aliases: ['ethicsscore', 'ethics', 'esg', 'audit'] },
+    ],
+  },
 };
 
 function normalizeHeaderToken(h) {
@@ -476,6 +515,56 @@ export function transformMappedRowsToDataset(labId, dataRows, mapping, options =
       priceVariancePct: parseNum(getCell(r, 'priceVariancePct'), 0),
       responsiveness: Math.max(0, Math.min(100, parseNum(getCell(r, 'responsiveness'), 80))),
       onContract: parseBool(getCell(r, 'onContract'), true),
+    }));
+    return { dataset: { name: datasetName, currency, suppliers }, rowCount: suppliers.length, warnings };
+  }
+
+  if (labId === 'scm_landed_cost') {
+    const routes = rows.map((r, i) => ({
+      id: `route_${i + 1}`,
+      name: String(getCell(r, 'name') || `Route ${i + 1}`).trim(),
+      mode: String(getCell(r, 'mode') || 'Ocean').trim(),
+      incoterm: String(getCell(r, 'incoterm') || 'FOB').trim().toUpperCase(),
+      qty: Math.max(1, parseNum(getCell(r, 'qty'), 100)),
+      unitExw: Math.max(0, parseNum(getCell(r, 'unitExw'), 20)),
+      originInland: 350,
+      exportClearance: 200,
+      mainFreight: Math.max(0, parseNum(getCell(r, 'mainFreight'), 1500)),
+      insuranceRatePct: 0.6,
+      dutyRatePct: Math.max(0, parseNum(getCell(r, 'dutyRatePct'), 10)),
+      vatRatePct: Math.max(0, parseNum(getCell(r, 'vatRatePct'), 15)),
+      destPort: Math.max(0, parseNum(getCell(r, 'destPort'), 600)),
+      destInland: 400,
+      transitDays: Math.max(1, Math.round(parseNum(getCell(r, 'transitDays'), 21))),
+    }));
+    return { dataset: { name: datasetName, currency, routes }, rowCount: routes.length, warnings };
+  }
+
+  if (labId === 'scm_contract_sla') {
+    const periods = rows.map((r, i) => ({
+      id: `p_${i + 1}`,
+      period: String(getCell(r, 'period') || `Month ${i + 1}`).trim(),
+      invoiceValue: Math.max(0, parseNum(getCell(r, 'invoiceValue'), 100000)),
+      otifPct: Math.max(0, Math.min(100, parseNum(getCell(r, 'otifPct'), 95))),
+      defectPct: Math.max(0, parseNum(getCell(r, 'defectPct'), 1.0)),
+      responseHrs: Math.max(0, parseNum(getCell(r, 'responseHrs'), 18)),
+      forceMajeure: parseBool(getCell(r, 'forceMajeure'), false),
+    }));
+    const contractValue = periods.reduce((s, p) => s + p.invoiceValue, 0) || 600000;
+    return { dataset: { name: datasetName, currency, contractValue, periods }, rowCount: periods.length, warnings };
+  }
+
+  if (labId === 'scm_green_procurement') {
+    const suppliers = rows.map((r, i) => ({
+      id: `gs_${i + 1}`,
+      name: String(getCell(r, 'name') || `Supplier ${i + 1}`).trim(),
+      origin: String(getCell(r, 'origin') || 'Regional').trim(),
+      mode: String(getCell(r, 'mode') || 'Road').trim(),
+      distanceKm: Math.max(0, parseNum(getCell(r, 'distanceKm'), 500)),
+      unitPricePerTonne: Math.max(1, parseNum(getCell(r, 'unitPricePerTonne'), 950)),
+      mfgKgCo2PerTonne: Math.max(0, parseNum(getCell(r, 'mfgKgCo2PerTonne'), 400)),
+      recyclablePct: Math.max(0, Math.min(100, parseNum(getCell(r, 'recyclablePct'), 70))),
+      ethicsScore: Math.max(0, Math.min(100, parseNum(getCell(r, 'ethicsScore'), 80))),
     }));
     return { dataset: { name: datasetName, currency, suppliers }, rowCount: suppliers.length, warnings };
   }
@@ -1169,6 +1258,60 @@ export function generateLabVivaQuestions({ labId, labEvidence, variantTag, stude
       {
         q: `What concrete 90-day corrective action plan would you give your lowest-ranked strategic supplier before switching vendors?`,
         cue: 'Time-bound SLA targets, root-cause corrective action (CAPA), dual-sourcing contingency, and quarterly QBR review.',
+      },
+    ],
+    scm_landed_cost: [
+      {
+        q: `In your landed cost run${variantNote} (${topMetrics || 'your route comparison'}), explain why an offshore supplier with the lowest FOB price can still lose on Total Landed Cost.`,
+        cue: 'Ocean freight, customs duty/VAT cascading on CIF value, port demurrage, and transit working capital outweigh FOB savings.',
+      },
+      {
+        q: `Under CIF, who pays ocean freight to the destination port, and where does physical risk of loss transfer to the buyer?`,
+        cue: 'Seller pays freight & minimum insurance to destination port, but risk transfers on board vessel at the ORIGIN port.',
+      },
+      {
+        q: `Why does Import VAT compound on top of (CIF + Import Duty) rather than on Ex-Works invoice value?`,
+        cue: 'Standard customs valuation taxes landed customs value inclusive of freight, insurance, and tariff duty.',
+      },
+      {
+        q: `How does rising financing cost (% p.a. capital rate) shift the trade-off between slow ocean freight and faster air/regional sourcing?`,
+        cue: 'Higher pipeline holding cost and safety stock requirements penalize long transit times.',
+      },
+    ],
+    scm_contract_sla: [
+      {
+        q: `In your SLA audit${variantNote} (${topMetrics || 'your liquidated damages summary'}), explain the difference between raw accrued penalties and capped payable liquidated damages.`,
+        cue: 'Liability caps limit supplier exposure (typically 5–15% of contract value) so remedies remain commercially enforceable rather than punitive.',
+      },
+      {
+        q: `Why did toggling Force Majeure on a disrupted month change both payable penalties and the consecutive breach streak?`,
+        cue: 'Excusable extraordinary events pause penalty accrual and reset material-breach termination streaks when properly notified.',
+      },
+      {
+        q: `If a supplier hits the Material Breach threshold, why shouldn’t a procurement manager immediately terminate the contract without checking Switching Cost?`,
+        cue: 'Re-tendering delays, requalification costs, and supply stockouts may cost more than a structured Cure Notice or dual-source transition.',
+      },
+      {
+        q: `What makes Liquidated Damages legally enforceable compared to an unenforceable "penalty clause"?`,
+        cue: 'Must represent a genuine, pre-agreed estimate of foreseeable operational loss rather than arbitrary punishment.',
+      },
+    ],
+    scm_green_procurement: [
+      {
+        q: `Using your carbon trade-off results${variantNote} (${topMetrics || 'your ESG scores'}), explain why switching from Air freight to Sea freight dramatically cuts Scope 3 emissions.`,
+        cue: 'Air freight emits ~0.602 kg CO2e/t-km vs ~0.016 for ocean (~38× reduction in freight intensity).',
+      },
+      {
+        q: `At what Shadow Carbon Price did the sustainable supplier overtake the cheapest direct-price bidder in your analysis?`,
+        cue: 'Tipping point equals the Carbon Abatement Cost = (Green Premium) / (Tonnes CO2e Saved).',
+      },
+      {
+        q: `Why should procurement measure BOTH Scope 1/2 supplier manufacturing emissions AND Scope 3 inbound logistics emissions?`,
+        cue: 'Focusing on only one can hide carbon leakage (e.g., low-carbon factory air-freighted across continents).',
+      },
+      {
+        q: `How would you defend paying a modest green premium to a budget-constrained CFO?`,
+        cue: 'Cite carbon-cap compliance, CBAM/regulatory tariff exposure, brand risk, and low abatement cost per tonne CO2e.',
       },
     ],
   };

@@ -11,6 +11,7 @@ export const LAB_DOMAINS = [
   { id: 'all', label: 'All Labs' },
   { id: 'TQM', label: 'Total Quality Management' },
   { id: 'PSIS', label: 'Purchasing & Supply IS' },
+  { id: 'SCM', label: 'Logistics, Contracts & Sustainability' },
 ];
 
 export const DATA_POLICIES = [
@@ -746,6 +747,107 @@ export const SPEND_ANALYTICS_PRESETS = [
   },
 ];
 
+export const LANDED_COST_PRESETS = [
+  {
+    id: 'landed_west_africa_import',
+    name: 'West Africa Medical Equipment Import — Offshore Ocean vs. Air vs. Regional',
+    currency: 'USD',
+    routes: [
+      {
+        id: 'r_ocean',
+        name: 'Shanghai Ocean Freight (FOB)',
+        mode: 'Ocean',
+        incoterm: 'FOB',
+        qty: 500,
+        unitExw: 38,
+        originInland: 450,
+        exportClearance: 280,
+        mainFreight: 3400,
+        insuranceRatePct: 0.65,
+        dutyRatePct: 15,
+        vatRatePct: 15,
+        destPort: 1450,
+        destInland: 650,
+        transitDays: 42,
+      },
+      {
+        id: 'r_air',
+        name: 'Frankfurt Express Air Cargo (CIF)',
+        mode: 'Air',
+        incoterm: 'CIF',
+        qty: 500,
+        unitExw: 44,
+        originInland: 350,
+        exportClearance: 250,
+        mainFreight: 7800,
+        insuranceRatePct: 0.55,
+        dutyRatePct: 15,
+        vatRatePct: 15,
+        destPort: 900,
+        destInland: 420,
+        transitDays: 6,
+      },
+      {
+        id: 'r_regional',
+        name: 'ECOWAS Regional Supplier (DAP)',
+        mode: 'Road',
+        incoterm: 'DAP',
+        qty: 500,
+        unitExw: 49,
+        originInland: 300,
+        exportClearance: 180,
+        mainFreight: 1400,
+        insuranceRatePct: 0.4,
+        dutyRatePct: 0,
+        vatRatePct: 15,
+        destPort: 250,
+        destInland: 300,
+        transitDays: 7,
+      },
+    ],
+  },
+];
+
+export const CONTRACT_SLA_PRESETS = [
+  {
+    id: 'sla_cold_chain_hospital',
+    name: 'Hospital Cold-Chain Logistics Annual SLA Contract (6-Month Audit)',
+    currency: 'GHS',
+    contractValue: 600000,
+    targetOtifPct: 95,
+    maxDefectPct: 2.0,
+    maxResponseHrs: 24,
+    ldRatePerOtifPct: 0.6,
+    ldCapPct: 10,
+    switchingCost: 48000,
+    periods: [
+      { id: 'm1', period: 'Month 1 (Jan)', invoiceValue: 100000, otifPct: 97.0, defectPct: 0.9, responseHrs: 14, forceMajeure: false },
+      { id: 'm2', period: 'Month 2 (Feb)', invoiceValue: 100000, otifPct: 91.5, defectPct: 1.6, responseHrs: 22, forceMajeure: false },
+      { id: 'm3', period: 'Month 3 (Mar)', invoiceValue: 100000, otifPct: 86.0, defectPct: 2.8, responseHrs: 31, forceMajeure: false },
+      { id: 'm4', period: 'Month 4 (Apr)', invoiceValue: 100000, otifPct: 82.0, defectPct: 3.1, responseHrs: 36, forceMajeure: false },
+      { id: 'm5', period: 'Month 5 (May — Port Strike)', invoiceValue: 100000, otifPct: 78.0, defectPct: 1.8, responseHrs: 40, forceMajeure: true },
+      { id: 'm6', period: 'Month 6 (Jun)', invoiceValue: 100000, otifPct: 95.5, defectPct: 1.1, responseHrs: 16, forceMajeure: false },
+    ],
+  },
+];
+
+export const GREEN_PROCUREMENT_PRESETS = [
+  {
+    id: 'green_packaging_sourcing',
+    name: 'Industrial Packaging & Corrugated Cartons — Carbon vs. Cost Trade-Off',
+    currency: 'USD',
+    shadowCarbonPrice: 95,
+    annualTonnes: 140,
+    carbonBudgetTonnes: 95,
+    suppliers: [
+      { id: 'g1', name: 'LowCost Offshore Mills', origin: 'East Asia', mode: 'Air', distanceKm: 11200, unitPricePerTonne: 860, mfgKgCo2PerTonne: 680, recyclablePct: 35, ethicsScore: 62 },
+      { id: 'g2', name: 'Maritime Bulk Packaging', origin: 'Mediterranean', mode: 'Sea', distanceKm: 6400, unitPricePerTonne: 920, mfgKgCo2PerTonne: 520, recyclablePct: 68, ethicsScore: 78 },
+      { id: 'g3', name: 'EcoFibre Regional Co-op', origin: 'West Africa', mode: 'Road', distanceKm: 340, unitPricePerTonne: 995, mfgKgCo2PerTonne: 290, recyclablePct: 94, ethicsScore: 91 },
+      { id: 'g4', name: 'EuroGreen Certified Paper', origin: 'Western Europe', mode: 'Sea', distanceKm: 5800, unitPricePerTonne: 1040, mfgKgCo2PerTonne: 240, recyclablePct: 92, ethicsScore: 95 },
+    ],
+  },
+];
+
 export const LAB_CATALOG = [
   {
     id: 'tqm_spc',
@@ -960,6 +1062,63 @@ export const LAB_CATALOG = [
       { id: 'c4', title: 'Category Strategy & Supplier Development Plan', maxMarks: 25 },
     ],
   },
+  {
+    id: 'scm_landed_cost',
+    domain: 'SCM',
+    code: 'SCM-LAB 01',
+    title: 'Global Logistics, Incoterms & Landed Cost Analysis',
+    shortTitle: 'Incoterms & Landed Cost',
+    summary: 'Build complete Incoterms 2020 cost waterfalls (EXW through DDP), calculate CIF customs valuation, import duties, port clearance, and transit working-capital cost to uncover FOB price traps.',
+    duration: '60 min',
+    supportsOwnData: true,
+    presets: LANDED_COST_PRESETS,
+    defaultPresetId: LANDED_COST_PRESETS[0].id,
+    defaultPrompt: 'Compare all sourcing routes on both Total Landed Cost and Economic Cost (including transit capital), explain the exact risk vs. cost transfer point of your chosen Incoterm, and defend your final sourcing decision.',
+    rubricCriteria: [
+      { id: 'c1', title: 'Incoterms 2020 Cost & Risk Transfer Accuracy', maxMarks: 25 },
+      { id: 'c2', title: 'CIF Customs Valuation, Duties & Landed Cost Math', maxMarks: 25 },
+      { id: 'c3', title: 'FOB Price Trap & Pipeline Capital Cost Analysis', maxMarks: 25 },
+      { id: 'c4', title: 'Global Sourcing & Mode Selection Judgement', maxMarks: 25 },
+    ],
+  },
+  {
+    id: 'scm_contract_sla',
+    domain: 'SCM',
+    code: 'SCM-LAB 02',
+    title: 'Contract Governance, SLA Compliance & Liquidated Damages',
+    shortTitle: 'Contract Governance & SLAs',
+    summary: 'Audit multi-period supplier SLA delivery against OTIF, Defect, and Response targets; calculate service credits and liquidated damages under liability caps; test Force Majeure excusal; and weigh termination vs. switching cost.',
+    duration: '60 min',
+    supportsOwnData: true,
+    presets: CONTRACT_SLA_PRESETS,
+    defaultPresetId: CONTRACT_SLA_PRESETS[0].id,
+    defaultPrompt: 'Quantify total raw vs. capped liquidated damages, evaluate whether Force Majeure excusal changes material breach status, and recommend a concrete contract remedy balancing penalties against switching cost.',
+    rubricCriteria: [
+      { id: 'c1', title: 'SLA KPI Compliance & Breach Detection Accuracy', maxMarks: 25 },
+      { id: 'c2', title: 'Liquidated Damages & Contractual Cap Application', maxMarks: 25 },
+      { id: 'c3', title: 'Force Majeure & Material Breach Assessment', maxMarks: 25 },
+      { id: 'c4', title: 'Contract Remedy & Supplier Continuity Judgement', maxMarks: 25 },
+    ],
+  },
+  {
+    id: 'scm_green_procurement',
+    domain: 'SCM',
+    code: 'SCM-LAB 03',
+    title: 'Sustainable Procurement & Carbon Footprint Trade-Offs',
+    shortTitle: 'Sustainable & Green Sourcing',
+    summary: 'Measure Scope 1/2 manufacturing and Scope 3 inbound freight emissions across Sea, Rail, Road, and Air; test Shadow Carbon Pricing sensitivity; check corporate carbon caps; and calculate implied Carbon Abatement Cost.',
+    duration: '60 min',
+    supportsOwnData: true,
+    presets: GREEN_PROCUREMENT_PRESETS,
+    defaultPresetId: GREEN_PROCUREMENT_PRESETS[0].id,
+    defaultPrompt: 'Analyze how Scope 3 freight mode and shadow carbon pricing reshape supplier rankings, evaluate the green premium and carbon abatement cost per tonne CO2e, and propose a net-zero aligned sourcing award.',
+    rubricCriteria: [
+      { id: 'c1', title: 'Scope 1/2 & Scope 3 Freight Emissions Quantification', maxMarks: 25 },
+      { id: 'c2', title: 'Shadow Carbon Price Tipping-Point Sensitivity', maxMarks: 25 },
+      { id: 'c3', title: 'Green Premium & Carbon Abatement Cost Analysis', maxMarks: 25 },
+      { id: 'c4', title: 'Sustainable Sourcing & ESG Governance Judgement', maxMarks: 25 },
+    ],
+  },
 ];
 
 export function getLabDef(labId) {
@@ -1056,6 +1215,24 @@ export function buildLabCsvTemplate(labId, variant = '') {
     return {
       filename: 'inventory-abc-xyz-template.csv',
       content: 'Code,ItemName,AnnualQty,UnitCost,DemandCV,SystemQty,PhysicalQty,Bin\nSKU-501,Corrugated Carton 24-Pack,18000,36,0.14,1240,1228,A-01-01\nSKU-502,Cold-Chain Compressor,140,2450,0.62,24,23,A-02-03\nSKU-503,Thermal Labels Roll,3100,24,0.12,450,446,C-01-04\n',
+    };
+  }
+  if (labId === 'scm_landed_cost') {
+    return {
+      filename: 'landed-cost-routes-template.csv',
+      content: 'RouteName,Mode,Incoterm,Qty,UnitExw,MainFreight,DutyPct,VatPct,DestPort,TransitDays\nShanghai Ocean,Ocean,FOB,500,38,3400,15,15,1450,42\nECOWAS Regional,Road,DAP,500,49,1400,0,15,250,7\n',
+    };
+  }
+  if (labId === 'scm_contract_sla') {
+    return {
+      filename: 'contract-sla-ledger-template.csv',
+      content: 'Period,InvoiceValue,OTIF_Pct,Defect_Pct,ResponseHrs,ForceMajeure\nMonth 1,100000,97,0.9,14,No\nMonth 2,100000,88,2.4,28,No\nMonth 3,100000,82,3.1,35,No\n',
+    };
+  }
+  if (labId === 'scm_green_procurement') {
+    return {
+      filename: 'green-procurement-suppliers-template.csv',
+      content: 'Supplier,Origin,Mode,DistanceKm,UnitPricePerTonne,MfgKgCo2PerTonne,RecyclablePct,EthicsScore\nMaritime Bulk,Mediterranean,Sea,6400,920,520,68,78\nEcoFibre Regional,West Africa,Road,340,995,290,94,91\n',
     };
   }
   if (labId === 'psis_spend_analytics') {

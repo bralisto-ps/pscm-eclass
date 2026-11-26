@@ -13,6 +13,9 @@ export const LAB_TRACK_META = {
   psis_the_tender: { track: 'Strategic Sourcing', accent: '#7c3aed', stage: 'e-Sourcing & Auctions' },
   psis_inventory_wms: { track: 'Inventory & WMS', accent: '#0f766e', stage: 'EOQ, ABC-XYZ & Audit' },
   psis_spend_analytics: { track: 'Spend Intelligence', accent: '#7c3aed', stage: 'Scorecards & Pareto' },
+  scm_landed_cost: { track: 'Global Logistics', accent: '#0369a1', stage: 'Incoterms & Landed Cost' },
+  scm_contract_sla: { track: 'Contract Management', accent: '#b45309', stage: 'SLAs & Remedies' },
+  scm_green_procurement: { track: 'Sustainable Supply Chains', accent: '#15803d', stage: 'Scope 3 & ESG' },
 };
 
 export const LAB_CONCEPT_GUIDES = {
@@ -142,6 +145,43 @@ export const LAB_CONCEPT_GUIDES = {
     checklist: [
       'Test weight sensitivity between OTIF, Quality PPM, Price Variance, and Responsiveness.',
       'Import CSV exports from P2P Controls or Requisition Workflow to demonstrate end-to-end data continuity.',
+    ],
+  },
+  scm_landed_cost: {
+    title: 'Incoterms 2020 & Total Landed Cost Quick Reference',
+    formulas: [
+      'FOB = EXW Goods + Origin Inland Haulage + Export Clearance',
+      'CIF = FOB + Main Freight + Marine Insurance (on 110% of CFR)',
+      'Total Landed Cost = CIF + Import Duty + Import VAT (on CIF + Duty) + Port Clearance + Dest Inland',
+      'Pipeline Holding Cost = CIF × Annual Capital Rate × (Transit Days / 365)',
+    ],
+    checklist: [
+      'Under CIF/CIP, risk transfers at origin shipment even though the seller pays freight to destination.',
+      'Always test whether a low FOB offshore quote loses to a regional DAP supplier on true Landed Cost.',
+    ],
+  },
+  scm_contract_sla: {
+    title: 'Contract SLA Governance & Liquidated Damages Quick Reference',
+    formulas: [
+      'Period OTIF Penalty = Period Invoice × (Target OTIF − Actual OTIF) × LD Rate %',
+      'Payable Liquidated Damages = min(Cumulative Raw LD, Contract Value × LD Cap %)',
+      'Material Breach = Consecutive Breach Streak ≥ Threshold OR Liability Cap Exhausted',
+    ],
+    checklist: [
+      'Verify Force Majeure validity before excusing SLA breaches.',
+      'Weigh capped penalty recovery against total Supplier Switching Cost before recommending termination.',
+    ],
+  },
+  scm_green_procurement: {
+    title: 'Sustainable Procurement & Carbon Pricing Quick Reference',
+    formulas: [
+      'Scope 3 Freight CO₂e (tonnes) = (Distance km × Mode Factor kg/t·km × Annual Tonnes) / 1000',
+      'Carbon-Adjusted Cost = Direct Annual Spend + (Total tCO₂e × Shadow Carbon Price)',
+      'Carbon Abatement Cost = (Green Supplier Spend − Cheapest Spend) / (Cheapest CO₂e − Green CO₂e)',
+    ],
+    checklist: [
+      'Air freight emits ~38× more CO₂e per tonne-km than ocean freight (0.602 vs 0.016).',
+      'Identify the exact Shadow Carbon Price where the sustainable supplier overtakes the lowest-price bid.',
     ],
   },
 };
