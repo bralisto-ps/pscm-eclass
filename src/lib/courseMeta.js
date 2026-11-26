@@ -16,6 +16,8 @@ export function normalizeLabsConfig(list) {
       instructions: String(item.instructions || '').trim(),
       linkedAssignmentId: item.linkedAssignmentId ? String(item.linkedAssignmentId) : null,
       uniqueVariant: Boolean(item.uniqueVariant),
+      guidedMode: Boolean(item.guidedMode),
+      shockSimRequired: Boolean(item.shockSimRequired),
       mappedClos: Array.isArray(item.mappedClos) ? item.mappedClos.map((c) => String(c || '').trim().toUpperCase()).filter(Boolean) : [],
       updatedAt: item.updatedAt || null,
     }));

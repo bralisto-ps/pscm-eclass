@@ -1271,6 +1271,7 @@ export async function submitLabReportToAssignment({
   reportBody,
   note = '',
   extraTypingMeta = null,
+  images = [],
 }) {
   if (!assignment?.id) throw new Error('No linked assignment found for this lab.');
   if (!session?.user?.id) throw new Error('You must be signed in to submit a lab report.');
@@ -1291,6 +1292,7 @@ export async function submitLabReportToAssignment({
     studentLine,
     submittedAt,
     body: reportBody,
+    images,
   });
 
   const safeSlug = String(reportTitle || 'lab-report')
