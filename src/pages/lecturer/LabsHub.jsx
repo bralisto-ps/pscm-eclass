@@ -76,7 +76,7 @@ export default function LabsHub() {
       const fresh = await run(supabase.from('courses').select('id, description').eq('id', course.id).single());
       const meta = parseCourseMeta(fresh);
       const nextLabs = (meta.labs_config || []).filter((l) => l.labId !== labId);
-      const serialized = serializeCourseMeta(meta.about, meta.ca_config, meta.exam_config, meta.course_info, nextLabs);
+      const serialized = serializeCourseMeta(meta.about, meta.ca_config, meta.exam_config, meta.course_info, nextLabs, meta.lab_datasets);
       await run(supabase.from('courses').update({ description: serialized }).eq('id', course.id));
       toast(`Removed lab from ${course.code}.`);
       reload();

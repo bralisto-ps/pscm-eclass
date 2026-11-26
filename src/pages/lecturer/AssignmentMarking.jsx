@@ -15,6 +15,7 @@ import { Topbar } from '../../components/Layout.jsx';
 import RubricGrader from '../../components/RubricGrader.jsx';
 import { parseLabVerificationSummary, suggestLabRubricMarks } from '../../lib/labScoringBridge.js';
 import { summarizeClassLabSubmissions } from '../../lib/labMilestone6Engine.js';
+import { generateLabVivaQuestions, suggestPeerAdjustedMarks } from '../../lib/labMilestone7Engine.js';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { AssignmentForm } from './course/AssignmentsTab.jsx';
 import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
@@ -159,6 +160,28 @@ export default function AssignmentMarking() {
         }
       }
     }
+    for (const r of data?.rows || []) {
+      const labRatings = r?.sub?.typing_meta?.syndicatePeerRatings;
+      if (!Array.isArray(labRatings) || !labRatings.length) continue;
+      const fromIdx = normalizeIndexNo(r?.sub?.typing_meta?.submittedByIndex || r.index_no);
+      const fromName = r.full_name || fromIdx || 'Teammate';
+      for (const item of labRatings) {
+        const target = normalizeIndexNo(item.indexNo || item.index_no);
+        const score = Number(item.score);
+        if (!target || Number.isNaN(score) || score <= 0) continue;
+        if (!map.has(target)) map.set(target, { scores: [], notes: [] });
+        const entry = map.get(target);
+        entry.scores.push(score);
+        if (item.note || score <= 3) {
+          entry.notes.push({
+            fromIndex: fromIdx,
+            fromName,
+            score,
+            note: String(item.note || '').trim(),
+          });
+        }
+      }
+    }
     const out = new Map();
     for (const [k, v] of map.entries()) {
       const avgScore = Number((v.scores.reduce((s, n) => s + n, 0) / v.scores.length).toFixed(1));
@@ -172,7 +195,7 @@ export default function AssignmentMarking() {
       });
     }
     return out;
-  }, [data?.peerReviews]);
+  }, [data?.peerReviews, data?.rows]);
 
   // Filter by target programme/stream/class & attach syndicate group, peer check stats & fallback teammate upload
   const enrichedRows = useMemo(() => {
@@ -1181,14 +1204,39 @@ function MarkModal({ a, assignMeta, allRows, row, blindMode = false, blindMap = 
               {blindMode ? (blindMap?.syndicates?.get(syndicate.id) || 'Syndicate') : syndicate.name} ({syndicatePeers.length} members)
             </strong>
             {assignMeta.syndicate.peerCheck !== false && syndicatePeers.length > 1 && (
-              <label className="check" style={{ gap: 6 }}>
-                <input
-                  type="checkbox"
-                  checked={customSplit}
-                  onChange={(e) => setCustomSplit(e.target.checked)}
-                />
-                <span className="tiny strong">Adjust individual marks{hasFlaggedPeer ? ' (low peer score detected)' : ''}</span>
-              </label>
+              <div className="row-wrap" style={{ gap: 8 }}>
+                <label className="check" style={{ gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    checked={customSplit}
+                    onChange={(e) => setCustomSplit(e.target.checked)}
+                  />
+                  <span className="tiny strong">Adjust individual marks{hasFlaggedPeer ? ' (low peer score detected)' : ''}</span>
+                </label>
+                {syndicatePeers.some((p) => p._peer) && marks !== '' && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ minHeight: 28, fontSize: 11.5 }}
+                    onClick={() => {
+                      const suggested = suggestPeerAdjustedMarks(
+                        Number(marks),
+                        Number(a.max_marks),
+                        syndicatePeers.map((p) => ({ id: p.index_no, _peer: p._peer })),
+                      );
+                      setCustomSplit(true);
+                      setMemberMarks((prev) => {
+                        const next = { ...prev };
+                        Object.entries(suggested).forEach(([k, val]) => { next[k] = String(val); });
+                        return next;
+                      });
+                      toast('Suggested peer-weighted individual marks applied. Review before saving.');
+                    }}
+                  >
+                    Auto-Weight by Peer Ratings
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
@@ -1320,6 +1368,48 @@ function MarkModal({ a, assignMeta, allRows, row, blindMode = false, blindMap = 
               {labEvidence.judgementExcerpt}{labEvidence.judgementExcerpt.length >= 420 ? '…' : ''}
             </div>
           )}
+          {(() => {
+            const variantMatch = String(effectiveSub.response_text || '').match(/Dataset Variant ID:\s*([A-Za-z0-9_-]+)/i);
+            const variantTag = tMeta.variantTag || variantMatch?.[1] || null;
+            const detectedLabId = tMeta.labId || labEvidence.labId || null;
+            const viva = generateLabVivaQuestions({
+              labId: detectedLabId,
+              labEvidence,
+              variantTag,
+              studentOrGroupLabel: syndicate?.name || (blindMode ? 'Candidate' : (row.full_name || row.index_no)),
+            });
+            const copyViva = () => {
+              const txt = [
+                viva.header,
+                `Metrics Context: ${viva.metricsContext}`,
+                '',
+                ...viva.questions.map((item, idx) => `Q${idx + 1}: ${item.q}\nExpected Cue: ${item.cue}`),
+              ].join('\n');
+              navigator.clipboard?.writeText(txt).then(
+                () => toast('Copied variant-specific Viva questions to clipboard!'),
+                () => toast('Could not access clipboard.', 'error'),
+              );
+            };
+            return (
+              <details style={{ marginTop: 6, background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 8, padding: '8px 10px' }}>
+                <summary className="tiny strong" style={{ cursor: 'pointer', color: '#1d4ed8' }}>
+                  Oral Defense / Post-Lab Viva Questions ({viva.questions.length} tailored to {variantTag ? `Variant ${variantTag}` : 'this submission'})
+                </summary>
+                <div className="stack-xs" style={{ marginTop: 8 }}>
+                  <div className="between" style={{ gap: 8, flexWrap: 'wrap' }}>
+                    <span className="tiny muted">{viva.header}</span>
+                    <button type="button" className="btn btn-sm" onClick={copyViva}>Copy Viva Questions</button>
+                  </div>
+                  {viva.questions.map((item, idx) => (
+                    <div key={idx} className="tiny" style={{ padding: '6px 8px', background: 'var(--surface-2)', borderRadius: 6 }}>
+                      <div><strong>Q{idx + 1}.</strong> {item.q}</div>
+                      <div className="muted" style={{ marginTop: 2 }}><em>Expected answer cue:</em> {item.cue}</div>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            );
+          })()}
         </div>
       )}
 
