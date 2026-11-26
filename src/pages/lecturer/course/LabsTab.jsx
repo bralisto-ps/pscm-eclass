@@ -5,6 +5,14 @@ import { Empty, Loading, useLoad, useToast } from '../../../components/ui.jsx';
 import { run, supabase } from '../../../lib/supabase.js';
 import { parseCourseMeta, serializeCourseMeta } from '../../../lib/courseMeta.js';
 import { DATA_POLICIES, getLabDef, LAB_CATALOG } from '../../../lib/labsCatalog.js';
+import { downloadWorkbook } from '../../../lib/sheets.js';
+import { buildTypedResponsePdfBlob } from '../../../lib/textPdf.js';
+import { LAB_CLOUD_SYNC_SQL } from '../../../lib/allFeaturesSql.js';
+import {
+  buildAccreditationEvidenceText,
+  buildAccreditationWorkbookSheets,
+  buildCourseCloMasteryMatrix,
+} from '../../../lib/labMilestone9Engine.js';
 import AssignLabModal from '../../../components/labs/AssignLabModal.jsx';
 
 const LabRunnerModal = lazy(() => import('../../../components/labs/LabRunnerModal.jsx'));
@@ -15,13 +23,29 @@ export default function LabsTab({ course, readOnly = false, onCourseChanged }) {
   const [configuring, setConfiguring] = useState(null); // { labId, existingConfig }
   const [previewLab, setPreviewLab] = useState(null);
   const [liveHostOpen, setLiveHostOpen] = useState(false);
+  const [matrixOpen, setMatrixOpen] = useState(false);
 
   const { data: loaded, reload } = useLoad(async () => {
-    const [freshCourse, assignments] = await Promise.all([
+    const [freshCourse, assignments, enrolledRes] = await Promise.all([
       run(supabase.from('courses').select('*').eq('id', course.id).single()),
       run(supabase.from('assignments').select('id, title, max_marks, due_at, published, submissions(count)').eq('course_id', course.id)),
+      supabase.from('enrollments').select('index_no', { count: 'exact', head: true }).eq('course_id', course.id).catch(() => ({ count: 0 })),
     ]);
-    return { freshCourse, assignments: assignments || [] };
+    const assignList = assignments || [];
+    const labIdsInMeta = new Set((parseCourseMeta(freshCourse).labs_config || []).map((l) => l.linkedAssignmentId).filter(Boolean));
+    const linkedIds = assignList.map((a) => a.id).filter((id) => labIdsInMeta.has(id));
+    let labSubmissions = [];
+    if (linkedIds.length) {
+      labSubmissions = await run(
+        supabase.from('submissions').select('assignment_id, marks, marked').in('assignment_id', linkedIds),
+      ).catch(() => []);
+    }
+    return {
+      freshCourse,
+      assignments: assignList,
+      labSubmissions: labSubmissions || [],
+      enrolledCount: enrolledRes?.count || 0,
+    };
   }, [course.id]);
 
   const activeCourse = loaded?.freshCourse || course;
@@ -34,6 +58,60 @@ export default function LabsTab({ course, readOnly = false, onCourseChanged }) {
 
   const openIds = new Set(courseLabs.map((l) => l.labId));
   const unopenedLabs = LAB_CATALOG.filter((l) => !openIds.has(l.id));
+
+  const masteryMatrix = useMemo(
+    () =>
+      buildCourseCloMasteryMatrix({
+        course: activeCourse,
+        courseLabs,
+        assignments: loaded?.assignments || [],
+        submissions: loaded?.labSubmissions || [],
+        enrolledCount: loaded?.enrolledCount || 0,
+        getLabDefFn: getLabDef,
+      }),
+    [activeCourse, courseLabs, loaded?.assignments, loaded?.labSubmissions, loaded?.enrolledCount],
+  );
+
+  function exportAccreditationPdf() {
+    const doc = buildAccreditationEvidenceText(masteryMatrix);
+    const blob = buildTypedResponsePdfBlob({
+      title: doc.title,
+      studentLine: `${activeCourse?.code || 'Course'} · Accreditation & CLO Assurance Evidence`,
+      submittedAt: new Date().toLocaleDateString(),
+      body: doc.body,
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(activeCourse?.code || 'course').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-clo-mastery-evidence.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('Downloaded CLO Mastery & Accreditation Evidence PDF.');
+  }
+
+  async function exportAccreditationExcel() {
+    try {
+      const sheets = buildAccreditationWorkbookSheets(masteryMatrix);
+      await downloadWorkbook(
+        `${(activeCourse?.code || 'course').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-clo-mastery-matrix.xlsx`,
+        sheets,
+      );
+      toast('Downloaded CLO Mastery Accreditation Workbook (.xlsx).');
+    } catch (e) {
+      toast(e?.message || 'Could not export Excel matrix.', 'error');
+    }
+  }
+
+  async function copyCloudSyncSql() {
+    try {
+      await navigator.clipboard.writeText(LAB_CLOUD_SYNC_SQL);
+      toast('Copied Cloud Draft & Crash-Proof Live Session SQL! Paste and Run once in Supabase SQL Editor.');
+    } catch {
+      toast('Could not copy SQL automatically.', 'error');
+    }
+  }
 
   async function toggleEnabled(labCfg) {
     if (readOnly) return;
@@ -87,6 +165,79 @@ export default function LabsTab({ course, readOnly = false, onCourseChanged }) {
           </div>
         )}
       </div>
+
+      {/* Semester-Wide CLO Mastery & Accreditation Evidence Matrix */}
+      {courseLabs.length > 0 && (
+        <section className="card-soft stack-sm" style={{ padding: '12px 16px' }}>
+          <div className="between" style={{ flexWrap: 'wrap', gap: 10 }}>
+            <div className="stack-xs" style={{ gap: 2 }}>
+              <strong className="small">Course Lab Competency &amp; CLO Mastery Matrix</strong>
+              <div className="tiny muted">
+                {masteryMatrix.totalLabs} labs ({masteryMatrix.gradedLabs} graded)
+                {masteryMatrix.overallAvgPct !== null ? ` · Cohort Mean ${masteryMatrix.overallAvgPct}%` : ' · Awaiting marked lab submissions'}
+              </div>
+            </div>
+            <div className="row-wrap" style={{ gap: 6 }}>
+              <button type="button" className="btn btn-sm" onClick={() => setMatrixOpen((v) => !v)}>
+                {matrixOpen ? 'Hide Matrix' : 'View CLO Matrix'}
+              </button>
+              <button type="button" className="btn btn-sm" onClick={exportAccreditationPdf}>
+                <Icon name="download" size={13} /> Evidence PDF
+              </button>
+              <button type="button" className="btn btn-sm" onClick={exportAccreditationExcel}>
+                <Icon name="download" size={13} /> Excel (.xlsx)
+              </button>
+              {!readOnly && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={copyCloudSyncSql}
+                  title="Optional 1-time Supabase SQL to enable cross-device student cloud drafts and crash-proof live sessions"
+                >
+                  Cloud Sync SQL
+                </button>
+              )}
+            </div>
+          </div>
+
+          {matrixOpen && (
+            <div className="stack-sm" style={{ paddingTop: 10, borderTop: '1px solid var(--line)' }}>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table" style={{ fontSize: 12.5 }}>
+                  <thead>
+                    <tr>
+                      <th>CLO / Outcome</th>
+                      <th>Labs</th>
+                      <th>Marked</th>
+                      <th>Mean Score</th>
+                      <th>Mastery (≥70%)</th>
+                      <th>Needs Support (&lt;50%)</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {masteryMatrix.cloSummary.map((row) => (
+                      <tr key={row.key}>
+                        <td><strong className="mono">{row.key}</strong></td>
+                        <td className="mono">{row.labs}</td>
+                        <td className="mono">{row.markedSubs}</td>
+                        <td className="mono">{row.avgPct !== null ? `${row.avgPct}%` : '—'}</td>
+                        <td className="mono" style={{ color: 'var(--teal-700)', fontWeight: 700 }}>
+                          {row.masteryPct !== null ? `${row.masteryPct}%` : '—'}
+                        </td>
+                        <td className="mono" style={{ color: (row.supportPct || 0) > 25 ? 'var(--red)' : 'var(--muted)' }}>
+                          {row.supportPct !== null ? `${row.supportPct}%` : '—'}
+                        </td>
+                        <td>{row.band}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Currently Assigned Labs */}
       {courseLabs.length === 0 ? (
