@@ -41,7 +41,7 @@ export const LAB_CONCEPT_GUIDES = {
     ],
   },
   tqm_coq: {
-    title: 'Cost of Quality (PAF Model) Quick Reference',
+    title: 'Cost of Quality & PAF Economics Quick Reference',
     formulas: [
       'Total COQ = Prevention + Appraisal + Internal Failure + External Failure',
       'Conformance Cost = Prevention + Appraisal  |  Non-Conformance = Internal + External Failure',
@@ -141,7 +141,7 @@ export const LAB_CONCEPT_GUIDES = {
     ],
     checklist: [
       'Test weight sensitivity between OTIF, Quality PPM, Price Variance, and Responsiveness.',
-      'Import CSV exports from The Match or Requisition to Order to demonstrate end-to-end data continuity.',
+      'Import CSV exports from P2P Controls or Requisition Workflow to demonstrate end-to-end data continuity.',
     ],
   },
 };
