@@ -6,6 +6,12 @@ import { rpc, supabase } from '../../lib/supabase.js';
 import { downloadText } from '../../lib/sheets.js';
 import { buildTypedResponsePdfBlob } from '../../lib/textPdf.js';
 import { buildLiveSessionDebriefReport } from '../../lib/labMilestone6Engine.js';
+import { LAB_CLOUD_SYNC_SQL } from '../../lib/allFeaturesSql.js';
+import {
+  listLocalLiveHostBackups,
+  loadLocalLiveHostBackup,
+  saveLocalLiveHostBackup,
+} from '../../lib/labMilestone9Engine.js';
 import { findMasterDataDuplicates } from '../../lib/psisLabEngine.js';
 import {
   assignStudentsToChains,
@@ -267,6 +273,9 @@ export default function LiveLabSessionModal({
   const [attCourseId, setAttCourseId] = useState(courseId || courses?.[0]?.id || '');
   const [recordingAtt, setRecordingAtt] = useState(false);
   const [attRecordedCount, setAttRecordedCount] = useState(null);
+  const [cloudPersistState, setCloudPersistState] = useState('checking'); // checking | active | local_only
+  const [resumableSessions, setResumableSessions] = useState([]);
+  const persistTimerRef = useRef(null);
 
   // Student-side UI controls
   const [studentDeliveryIdx, setStudentDeliveryIdx] = useState(0);
@@ -314,7 +323,45 @@ export default function LiveLabSessionModal({
     ]);
   }
 
+  function persistHostSession(nextLabId, nextState, nextAssignments, nextParticipants, status = 'active') {
+    if (!isHost || !sessionCode) return;
+    const snap = {
+      code: sessionCode,
+      labId: nextLabId,
+      courseId: courseId || attCourseId || null,
+      state: nextState,
+      assignments: nextAssignments,
+      participants: nextParticipants || participants,
+      updatedAt: new Date().toISOString(),
+    };
+    saveLocalLiveHostBackup(typeof localStorage !== 'undefined' ? localStorage : null, snap);
+    if (cloudPersistState === 'local_only') return;
+    if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = setTimeout(() => {
+      supabase.rpc('upsert_live_lab_session', {
+        p_code: sessionCode,
+        p_lab_id: nextLabId,
+        p_course_id: snap.courseId,
+        p_state: nextState,
+        p_assignments: nextAssignments,
+        p_participants: snap.participants,
+        p_status: status,
+      }).then(({ error }) => {
+        if (error) {
+          if (/Could not find|does not exist|schema cache/i.test(String(error.message || ''))) {
+            setCloudPersistState('local_only');
+          }
+        } else {
+          setCloudPersistState('active');
+        }
+      }).catch(() => {});
+    }, 700);
+  }
+
   function broadcastState(nextLabId, nextState, nextAssignments, extra = {}) {
+    if (isHost) {
+      persistHostSession(nextLabId, nextState, nextAssignments, participants, 'active');
+    }
     const ch = channelRef.current;
     if (!ch || !isHost) return;
     ch.send({
@@ -328,6 +375,107 @@ export default function LiveLabSessionModal({
         ...extra,
       },
     }).catch(() => {});
+  }
+
+  // On host open: fetch resumable recent sessions (cloud + local backup)
+  useEffect(() => {
+    if (!isHost) return undefined;
+    let alive = true;
+    async function loadResumable() {
+      const localList = listLocalLiveHostBackups(typeof localStorage !== 'undefined' ? localStorage : null)
+        .filter((s) => s.code !== sessionCode)
+        .map((s) => ({
+          code: s.code,
+          lab_id: s.labId,
+          participants_count: (s.participants || []).length,
+          updated_at: s.updatedAt,
+          source: 'local',
+        }));
+      try {
+        const { data, error } = await supabase.rpc('list_my_live_lab_sessions');
+        if (!alive) return;
+        if (error) {
+          if (/Could not find|does not exist|schema cache/i.test(String(error.message || ''))) {
+            setCloudPersistState('local_only');
+          }
+          setResumableSessions(localList.slice(0, 4));
+          return;
+        }
+        setCloudPersistState('active');
+        const cloudList = (Array.isArray(data) ? data : [])
+          .filter((s) => s?.code && s.code !== sessionCode)
+          .map((s) => ({ ...s, source: 'cloud' }));
+        const seen = new Set(cloudList.map((s) => s.code));
+        const merged = [...cloudList, ...localList.filter((s) => !seen.has(s.code))];
+        setResumableSessions(merged.slice(0, 4));
+      } catch {
+        if (alive) setResumableSessions(localList.slice(0, 4));
+      }
+    }
+    loadResumable();
+    return () => {
+      alive = false;
+      if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+    };
+  }, [isHost, sessionCode]);
+
+  // On student join: hydrate latest server snapshot immediately so reconnects recover exact round/role
+  useEffect(() => {
+    if (isHost || !sessionCode) return undefined;
+    let alive = true;
+    supabase.rpc('get_live_lab_session', { p_code: sessionCode }).then(({ data, error }) => {
+      if (!alive || error || !data) return;
+      if (data.lab_id) setLabId(data.lab_id);
+      if (data.state && typeof data.state === 'object') setLabState(data.state);
+      if (data.assignments && typeof data.assignments === 'object') setAssignments(data.assignments);
+      if (Array.isArray(data.participants) && data.participants.length) setParticipants(data.participants);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [isHost, sessionCode]);
+
+  async function resumeSavedSession(item) {
+    if (!item?.code) return;
+    try {
+      let snap = null;
+      if (item.source === 'cloud') {
+        const { data } = await supabase.rpc('get_live_lab_session', { p_code: item.code });
+        if (data) {
+          snap = {
+            code: data.code,
+            labId: data.lab_id,
+            state: data.state,
+            assignments: data.assignments,
+            participants: data.participants,
+          };
+        }
+      }
+      if (!snap) {
+        snap = loadLocalLiveHostBackup(typeof localStorage !== 'undefined' ? localStorage : null, item.code);
+      }
+      if (!snap) {
+        toast('Saved session snapshot was not found.', 'error');
+        return;
+      }
+      setSessionCode(snap.code);
+      if (snap.labId) setLabId(snap.labId);
+      if (snap.state) setLabState(snap.state);
+      if (snap.assignments) setAssignments(snap.assignments);
+      if (Array.isArray(snap.participants)) setParticipants(snap.participants);
+      setResumableSessions((prev) => prev.filter((x) => x.code !== snap.code));
+      pushLog('Lecturer', 'SESSION_RESUMED', `Resumed live session ${snap.code} with crash-recovery state`);
+      toast(`Resumed live session ${snap.code}! Students can rejoin using the same code.`);
+    } catch (e) {
+      toast(e?.message || 'Could not resume saved session.', 'error');
+    }
+  }
+
+  async function copyCloudSyncSql() {
+    try {
+      await navigator.clipboard.writeText(LAB_CLOUD_SYNC_SQL);
+      toast('Copied Cloud Draft & Live Session SQL! Paste and Run once in Supabase SQL Editor.');
+    } catch {
+      toast('Could not copy SQL automatically.', 'error');
+    }
   }
 
   // Host handler for incoming student actions
@@ -544,7 +692,7 @@ export default function LiveLabSessionModal({
       alive = false;
       if (ch) {
         if (isHost) {
-          ch.send({ type: 'broadcast', event: 'session_state', payload: { ended: true } }).catch(() => {});
+          persistHostSession(labIdRef.current, stateRef.current, assignmentsRef.current, participants, 'active');
         }
         supabase.removeChannel(ch).catch(() => {});
       }
@@ -830,6 +978,20 @@ export default function LiveLabSessionModal({
               </span>
             </div>
             <h2 style={{ margin: '2px 0 0', fontSize: 18 }}>{activeLabMeta.title}</h2>
+            {isHost && (
+              <div className="row-wrap" style={{ gap: 8, marginTop: 4, alignItems: 'center' }}>
+                <span className="tiny mono muted">
+                  {cloudPersistState === 'active'
+                    ? '● SERVER RECOVERY ACTIVE (SAFE TO REFRESH)'
+                    : 'Local crash recovery active'}
+                </span>
+                {cloudPersistState === 'local_only' && (
+                  <button type="button" className="btn btn-sm" style={{ padding: '2px 8px', fontSize: 11 }} onClick={copyCloudSyncSql}>
+                    Copy Cloud Sync SQL
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="row-wrap" style={{ gap: 10 }}>
@@ -889,6 +1051,35 @@ export default function LiveLabSessionModal({
             </button>
           </div>
         </div>
+
+        {isHost && resumableSessions.length > 0 && (
+          <div
+            className="between small"
+            style={{
+              padding: '8px 20px',
+              background: '#eff6ff',
+              borderBottom: '1px solid #bfdbfe',
+              flexWrap: 'wrap',
+              gap: 8,
+            }}
+          >
+            <div className="tiny" style={{ color: '#1e3a8a' }}>
+              <strong>Resume Previous Live Session:</strong> Pick up where you left off after a browser refresh or Wi-Fi drop.
+            </div>
+            <div className="row-wrap" style={{ gap: 6 }}>
+              {resumableSessions.map((s) => (
+                <button
+                  key={s.code}
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => resumeSavedSession(s)}
+                >
+                  Resume {s.code} ({s.participants_count || 0} students)
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Body */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', background: 'var(--ground)' }} className="stack">

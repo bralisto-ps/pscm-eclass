@@ -7,7 +7,7 @@ import { useAuth } from '../../lib/auth.jsx';
 import { fmtDateTime } from '../../lib/format.js';
 import { findStudentSyndicate, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
 import { supabase } from '../../lib/supabase.js';
-import { downloadText } from '../../lib/sheets.js';
+import { downloadText, downloadWorkbook } from '../../lib/sheets.js';
 import { formatAutoScoredSubmissionHeader } from '../../lib/psisMilestone4Engine.js';
 import { LAB_CONCEPT_GUIDES, LAB_TRACK_META } from '../../lib/labScoringBridge.js';
 import { generateUniqueLabVariant } from '../../lib/labMilestone6Engine.js';
@@ -21,6 +21,18 @@ import {
   getPendingLabSubmission,
   savePendingLabSubmission,
 } from '../../lib/labMilestone8Engine.js';
+import {
+  buildLabExcelWorkbookSheets,
+  captureLabVisualCharts,
+  evaluateScenarioShockRun,
+  generateIndustryScaleDataset,
+  getLabGuidedHints,
+  getLabScenarioShocks,
+  isSafeCloudDraftPayload,
+  readLocalDraftTimestamp,
+  shouldAdoptCloudDraft,
+  writeLocalDraftTimestamp,
+} from '../../lib/labMilestone9Engine.js';
 
 const SpcLab = lazy(() => import('./SpcLab.jsx'));
 const QualityToolsLab = lazy(() => import('./QualityToolsLab.jsx'));
@@ -50,6 +62,9 @@ export default function LabRunnerModal({
   const def = getLabDef(labConfig?.labId);
   const reportBuilderRef = useRef(null);
   const importDraftRef = useRef(null);
+  const workbenchRef = useRef(null);
+  const cloudSaveTimerRef = useRef(null);
+  const cloudSyncDisabledRef = useRef(false);
 
   const assignMeta = useMemo(
     () => (assignment ? parseAssignmentMeta(assignment) : null),
@@ -103,7 +118,15 @@ export default function LabRunnerModal({
     return init;
   });
 
+  const [industryDataset, setIndustryDataset] = useState(null);
+
   const effectiveLabConfig = useMemo(() => {
+    if (industryDataset?.dataset) {
+      return {
+        ...labConfig,
+        customDataset: industryDataset.dataset,
+      };
+    }
     if (carriedImport?.dataset) {
       return {
         ...labConfig,
@@ -115,7 +138,7 @@ export default function LabRunnerModal({
       ...labConfig,
       customDataset: uniqueVariantResult.customDataset,
     };
-  }, [labConfig, uniqueVariantResult, carriedImport]);
+  }, [labConfig, uniqueVariantResult, carriedImport, industryDataset]);
 
   const storageKey = `pscm_lab_draft:${course?.id || 'sandbox'}:${labConfig?.id || labConfig?.labId}:${mySyndicate ? `syn_${mySyndicate.id || mySyndicate.name}` : (session?.user?.id || 'guest')}${uniqueVariantResult ? `:${uniqueVariantResult.variantTag}` : ''}`;
 
@@ -140,6 +163,18 @@ export default function LabRunnerModal({
   const [hasInteracted, setHasInteracted] = useState(Boolean(draftState));
   const [guideOpen, setGuideOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState('idle'); // idle | synced | local
+  const [shockOpen, setShockOpen] = useState(Boolean(labConfig?.shockSimRequired));
+  const [shockChoices, setShockChoices] = useState(() => {
+    try {
+      const raw = localStorage.getItem(`${storageKey}:shocks`);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [guidedOpen, setGuidedOpen] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   // Syndicate Live Teammate Sync (Supabase Realtime Broadcast + Presence — zero SQL)
   const [synSyncOn, setSynSyncOn] = useState(false);
@@ -221,13 +256,77 @@ export default function LabRunnerModal({
     };
   }, [synSyncOn, mySyndicate, assignment?.id, storageKey, profile?.full_name, profile?.index_no]);
 
+  // Cross-Device Cloud Draft Sync (graceful fallback if optional SQL not installed yet)
+  useEffect(() => {
+    if (!session?.user?.id || !def?.id || previewOnly) return undefined;
+    let alive = true;
+    async function loadCloudDraft() {
+      try {
+        const { data, error } = await supabase.rpc('load_lab_draft', { p_draft_key: storageKey });
+        if (!alive) return;
+        if (error) {
+          if (/Could not find|does not exist|schema cache/i.test(String(error.message || ''))) {
+            cloudSyncDisabledRef.current = true;
+            setCloudStatus('local');
+          }
+          return;
+        }
+        setCloudStatus('synced');
+        const localTs = readLocalDraftTimestamp(typeof localStorage !== 'undefined' ? localStorage : null, storageKey);
+        if (data && shouldAdoptCloudDraft(latestDraftRef.current, localTs, data)) {
+          suppressNextBroadcastRef.current = true;
+          latestDraftRef.current = data.draft;
+          try {
+            localStorage.setItem(storageKey, JSON.stringify(data.draft));
+            writeLocalDraftTimestamp(localStorage, storageKey, data.updated_at || new Date().toISOString());
+          } catch {
+            // ignore
+          }
+          setDraftState(data.draft);
+          setSyncVersion((v) => v + 1);
+          toast('Restored your newer lab draft synced from another device.');
+        }
+      } catch {
+        cloudSyncDisabledRef.current = true;
+        if (alive) setCloudStatus('local');
+      }
+    }
+    loadCloudDraft();
+    return () => {
+      alive = false;
+      if (cloudSaveTimerRef.current) clearTimeout(cloudSaveTimerRef.current);
+    };
+  }, [session?.user?.id, def?.id, previewOnly, storageKey]);
+
   const handleDraftChange = useCallback((next) => {
     setHasInteracted(true);
     latestDraftRef.current = next;
+    const nowIso = new Date().toISOString();
     try {
       localStorage.setItem(storageKey, JSON.stringify(next));
+      writeLocalDraftTimestamp(localStorage, storageKey, nowIso);
     } catch {
       // ignore quota errors
+    }
+    if (session?.user?.id && !previewOnly && !cloudSyncDisabledRef.current && isSafeCloudDraftPayload(next)) {
+      if (cloudSaveTimerRef.current) clearTimeout(cloudSaveTimerRef.current);
+      cloudSaveTimerRef.current = setTimeout(() => {
+        supabase.rpc('save_lab_draft', {
+          p_draft_key: storageKey,
+          p_lab_id: def?.id || '',
+          p_course_id: course?.id || null,
+          p_draft: next,
+        }).then(({ error }) => {
+          if (error) {
+            if (/Could not find|does not exist|schema cache/i.test(String(error.message || ''))) {
+              cloudSyncDisabledRef.current = true;
+              setCloudStatus('local');
+            }
+          } else {
+            setCloudStatus('synced');
+          }
+        }).catch(() => {});
+      }, 1800);
     }
     if (suppressNextBroadcastRef.current) {
       suppressNextBroadcastRef.current = false;
@@ -247,7 +346,7 @@ export default function LabRunnerModal({
         }).catch(() => {});
       }, 650);
     }
-  }, [storageKey, synSyncOn, profile?.full_name, profile?.index_no]);
+  }, [storageKey, synSyncOn, profile?.full_name, profile?.index_no, session?.user?.id, previewOnly, def?.id, course?.id]);
 
   const registerBuilder = useCallback((fn) => {
     reportBuilderRef.current = fn;
@@ -269,40 +368,98 @@ export default function LabRunnerModal({
   const overdue = dueAt && new Date(dueAt).getTime() < Date.now();
   const canSubmit = Boolean(assignment && !previewOnly && (!overdue || assignment.allow_late) && !(existingSub && existingSub.marked));
 
+  const shockQuarters = useMemo(() => getLabScenarioShocks(def.id), [def.id]);
+  const shockEval = useMemo(() => evaluateScenarioShockRun(def.id, shockChoices), [def.id, shockChoices]);
+  const isPracticeOrGuided = Boolean(!assignment || previewOnly || labConfig?.guidedMode);
+  const guidedPack = useMemo(
+    () => (isPracticeOrGuided ? getLabGuidedHints(def.id, latestDraftRef.current || draftState, judgementReady) : null),
+    [isPracticeOrGuided, def.id, draftState, judgementReady],
+  );
+
+  function chooseShockOption(quarter, optionId) {
+    setShockChoices((prev) => {
+      const next = { ...prev, [quarter]: optionId };
+      try {
+        localStorage.setItem(`${storageKey}:shocks`, JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }
+
   function wrapReportBody(built) {
     const variantPrefix = uniqueVariantResult
       ? `Dataset Variant ID: ${uniqueVariantResult.variantTag}${mySyndicate ? ` (${mySyndicate.name})` : ''}\n`
       : '';
+    const shockSuffix = shockEval.reportSection ? `\n\n${shockEval.reportSection}` : '';
     return formatAutoScoredSubmissionHeader({
       labCode: def.code,
       labTitle: labConfig?.title || def.title,
-      body: variantPrefix + built.body,
+      body: variantPrefix + built.body + shockSuffix,
       hasJudgement: built.hasJudgement,
     });
   }
 
-  function downloadPdfReport() {
+  async function downloadPdfReport() {
     const built = reportBuilderRef.current?.();
     if (!built) return;
-    const studentLine = [
-      profile?.full_name,
-      profile?.index_no ? `(${profile.index_no})` : '',
-      mySyndicate ? `· ${mySyndicate.name}` : '',
-    ].filter(Boolean).join(' ');
-    const blob = buildTypedResponsePdfBlob({
-      title: built.title,
-      studentLine: studentLine || 'Interactive Lab Report',
-      submittedAt: new Date().toLocaleString(),
-      body: wrapReportBody(built),
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${def.id}-report.pdf`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setExportingPdf(true);
+    try {
+      const images = await captureLabVisualCharts(workbenchRef.current, 4);
+      const studentLine = [
+        profile?.full_name,
+        profile?.index_no ? `(${profile.index_no})` : '',
+        mySyndicate ? `· ${mySyndicate.name}` : '',
+      ].filter(Boolean).join(' ');
+      const blob = buildTypedResponsePdfBlob({
+        title: built.title,
+        studentLine: studentLine || 'Interactive Lab Report',
+        submittedAt: new Date().toLocaleString(),
+        body: wrapReportBody(built),
+        images,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${def.id}-report.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast(images.length ? `Downloaded PDF report with ${images.length} embedded visual chart${images.length === 1 ? '' : 's'}.` : 'Downloaded PDF lab report.');
+    } finally {
+      setExportingPdf(false);
+    }
+  }
+
+  async function downloadExcelWorkbook() {
+    const built = reportBuilderRef.current?.();
+    if (!built) return;
+    try {
+      const activeDs = effectiveLabConfig?.customDataset || getLabPreset(def.id, effectiveLabConfig?.presetId) || null;
+      const sheets = buildLabExcelWorkbookSheets({
+        labDef: def,
+        reportTitle: built.title,
+        reportBody: wrapReportBody(built),
+        dataset: activeDs,
+        shockSummary: shockEval.completedCount ? shockEval : null,
+      });
+      await downloadWorkbook(`${def.id}-analysis-workbook.xlsx`, sheets);
+      toast('Downloaded multi-sheet Analysis Workbook (.xlsx).');
+    } catch (e) {
+      toast(e?.message || 'Could not export Excel workbook.', 'error');
+    }
+  }
+
+  function loadIndustryScaleData() {
+    const generated = generateIndustryScaleDataset(def.id);
+    if (!generated?.dataset) return;
+    setIndustryDataset(generated);
+    setDraftState(null);
+    latestDraftRef.current = null;
+    setSyncVersion((v) => v + 1);
+    toast(`Loaded industry-scale dataset: ${generated.dataset.name} (${generated.rowCount} rows).`);
   }
 
   function exportDraftJson() {
@@ -343,6 +500,7 @@ export default function LabRunnerModal({
   async function flushSubmissionPayload(payload) {
     setSubmitting(true);
     try {
+      const images = await captureLabVisualCharts(workbenchRef.current, 4);
       const res = await submitLabReportToAssignment({
         assignment,
         profile,
@@ -351,6 +509,7 @@ export default function LabRunnerModal({
         reportBody: payload.reportBody,
         note: payload.note,
         extraTypingMeta: payload.extraTypingMeta,
+        images,
       });
       clearPendingLabSubmission(typeof localStorage !== 'undefined' ? localStorage : null, assignment?.id, session?.user?.id);
       setPendingOfflineSub(null);
@@ -404,6 +563,11 @@ export default function LabRunnerModal({
       toast('Please write your managerial judgement (at least a short paragraph) before submitting to your assignment.', 'error');
       return;
     }
+    if (labConfig?.shockSimRequired && !shockEval.isComplete) {
+      setShockOpen(true);
+      toast('Complete all 3 quarters in the Scenario Shock Simulation before submitting.', 'error');
+      return;
+    }
     const peerRatingsPayload = peerCheckActive
       ? (mySyndicate?.members || [])
           .filter((idx) => String(idx).toUpperCase() !== String(profile?.index_no || '').toUpperCase())
@@ -421,6 +585,7 @@ export default function LabRunnerModal({
         labId: def.id,
         variantTag: uniqueVariantResult?.variantTag || null,
         syndicateName: mySyndicate?.name || null,
+        ...(shockEval.completedCount ? { shockResilienceScore: shockEval.resilienceScore, shockRating: shockEval.riskRating } : {}),
         ...(peerRatingsPayload.length ? { syndicatePeerRatings: peerRatingsPayload } : {}),
       },
     };
@@ -538,8 +703,8 @@ export default function LabRunnerModal({
                 <Icon name="book" size={14} /> {guideOpen ? 'Hide Guide' : 'Guide'}
               </button>
             )}
-            <button type="button" className="btn btn-sm" onClick={downloadPdfReport} title="Download PDF lab report">
-              <Icon name="download" size={14} /> PDF
+            <button type="button" className="btn btn-sm" disabled={exportingPdf} onClick={downloadPdfReport} title="Download PDF lab report with embedded charts">
+              <Icon name="download" size={14} /> {exportingPdf ? 'Building PDF…' : 'PDF'}
             </button>
             <div style={{ position: 'relative' }}>
               <button
@@ -558,12 +723,60 @@ export default function LabRunnerModal({
                     position: 'absolute',
                     right: 0,
                     top: 'calc(100% + 6px)',
-                    minWidth: 215,
+                    minWidth: 245,
                     padding: 8,
                     zIndex: 30,
                     boxShadow: '0 10px 28px rgba(15, 23, 42, 0.16)',
                   }}
                 >
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ justifyContent: 'flex-start', width: '100%' }}
+                    onClick={() => {
+                      setToolsOpen(false);
+                      downloadExcelWorkbook();
+                    }}
+                  >
+                    <Icon name="download" size={14} /> Export Excel (.xlsx)
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${shockOpen ? 'btn-primary' : ''}`}
+                    style={{ justifyContent: 'flex-start', width: '100%' }}
+                    onClick={() => {
+                      setToolsOpen(false);
+                      setShockOpen((v) => !v);
+                    }}
+                  >
+                    <Icon name="flask" size={14} /> Scenario Shocks (3 Quarters){shockEval.completedCount ? ` · ${shockEval.resilienceScore}/100` : ''}
+                  </button>
+                  {isPracticeOrGuided && (
+                    <button
+                      type="button"
+                      className={`btn btn-sm ${guidedOpen ? 'btn-primary' : ''}`}
+                      style={{ justifyContent: 'flex-start', width: '100%' }}
+                      onClick={() => {
+                        setToolsOpen(false);
+                        setGuidedOpen((v) => !v);
+                      }}
+                    >
+                      <Icon name="book" size={14} /> {guidedOpen ? 'Hide Guided Hints' : 'Guided Walkthrough & Hints'}
+                    </button>
+                  )}
+                  {dataMode !== 'lecturer_only' && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ justifyContent: 'flex-start', width: '100%' }}
+                      onClick={() => {
+                        setToolsOpen(false);
+                        loadIndustryScaleData();
+                      }}
+                    >
+                      <Icon name="upload" size={14} /> Load Industry-Scale Dataset
+                    </button>
+                  )}
                   {carryTargets.length > 0 && (
                     <button
                       type="button"
@@ -589,6 +802,11 @@ export default function LabRunnerModal({
                   >
                     Reset Local Draft
                   </button>
+                  {!previewOnly && (
+                    <div className="tiny muted" style={{ padding: '4px 6px 2px', borderTop: '1px solid var(--line)' }}>
+                      {cloudStatus === 'synced' ? '● Cross-device cloud sync active' : 'Draft saved on this device'}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -885,8 +1103,136 @@ export default function LabRunnerModal({
           </div>
         )}
 
+        {/* Industry-Scale Messy Dataset Active Strip */}
+        {industryDataset && (
+          <div
+            className="between small"
+            style={{
+              padding: '8px 18px',
+              background: '#f5f3ff',
+              borderBottom: '1px solid #ddd6fe',
+              flexWrap: 'wrap',
+              gap: 10,
+            }}
+          >
+            <div className="tiny">
+              <strong style={{ color: '#5b21b6' }}>● INDUSTRY-SCALE DATASET ACTIVE:</strong> {industryDataset.dataset?.name} ({industryDataset.rowCount} records)
+            </div>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => {
+                setIndustryDataset(null);
+                setSyncVersion((v) => v + 1);
+                toast('Reverted to standard course dataset.');
+              }}
+            >
+              Revert Dataset
+            </button>
+          </div>
+        )}
+
+        {/* Practice-Mode Guided Walkthrough & Diagnostic Hints Drawer */}
+        {guidedOpen && guidedPack && (
+          <div
+            className="stack-xs"
+            style={{
+              padding: '12px 18px',
+              background: '#f0fdf4',
+              borderBottom: '1px solid #bbf7d0',
+            }}
+          >
+            <div className="between" style={{ gap: 8 }}>
+              <strong className="small" style={{ color: '#166534' }}>Guided Walkthrough &amp; Practice Hints</strong>
+              <button type="button" className="btn btn-sm" onClick={() => setGuidedOpen(false)}>Hide</button>
+            </div>
+            <ol className="tiny" style={{ margin: '2px 0 0', paddingLeft: 18, color: '#14532d', lineHeight: 1.5 }}>
+              {guidedPack.steps.map((s, idx) => <li key={idx}>{s}</li>)}
+            </ol>
+            <div className="stack-xs" style={{ marginTop: 4 }}>
+              {guidedPack.hints.map((h, idx) => (
+                <div key={idx} className="tiny" style={{ color: '#15803d' }}>→ {h}</div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Multi-Quarter Dynamic Scenario Shock Simulator Drawer */}
+        {shockOpen && (
+          <div
+            className="stack-sm"
+            style={{
+              padding: '14px 18px',
+              background: '#fffbeb',
+              borderBottom: '1px solid #fde68a',
+              maxHeight: 330,
+              overflowY: 'auto',
+            }}
+          >
+            <div className="between" style={{ gap: 10, flexWrap: 'wrap' }}>
+              <div>
+                <strong className="small" style={{ color: '#92400e' }}>
+                  Multi-Quarter Scenario Shock Simulation ({shockEval.completedCount}/{shockEval.totalQuarters} Quarters)
+                  {labConfig?.shockSimRequired ? ' · Required' : ''}
+                </strong>
+                <div className="tiny muted">
+                  Test your managerial decisions against sequential operational disruptions. Results append directly to your submitted report.
+                </div>
+              </div>
+              <div className="row-wrap" style={{ gap: 8, alignItems: 'center' }}>
+                <span className="mono tiny" style={{ fontWeight: 700, color: shockEval.resilienceScore >= 70 ? 'var(--teal-700)' : '#b45309' }}>
+                  RESILIENCE: {shockEval.resilienceScore}/100 ({shockEval.riskRating})
+                </span>
+                <button type="button" className="btn btn-sm" onClick={() => setShockOpen(false)}>Close</button>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
+              {shockQuarters.map((q) => {
+                const selectedId = shockChoices[q.quarter] || '';
+                const selectedOpt = q.options.find((o) => o.id === selectedId) || null;
+                return (
+                  <div key={q.quarter} className="card stack-xs" style={{ padding: 12, background: 'var(--surface)' }}>
+                    <div className="between" style={{ gap: 6 }}>
+                      <span className="tiny mono" style={{ fontWeight: 700, color: '#b45309' }}>{q.quarter} SHOCK</span>
+                      {selectedOpt && (
+                        <span className="tiny mono" style={{ color: selectedOpt.resilienceDelta > 0 ? 'var(--teal-700)' : 'var(--red)', fontWeight: 700 }}>
+                          Cost {selectedOpt.costDeltaPct >= 0 ? '+' : ''}{selectedOpt.costDeltaPct}% · Svc {selectedOpt.serviceDeltaPct >= 0 ? '+' : ''}{selectedOpt.serviceDeltaPct}%
+                        </span>
+                      )}
+                    </div>
+                    <strong className="small">{q.title}</strong>
+                    <div className="tiny muted" style={{ lineHeight: 1.4 }}>{q.event}</div>
+                    <div className="stack-xs" style={{ marginTop: 4 }}>
+                      {q.options.map((opt) => {
+                        const active = selectedId === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            className={`btn btn-sm ${active ? 'btn-primary' : ''}`}
+                            style={{ textAlign: 'left', justifyContent: 'flex-start', whiteSpace: 'normal', height: 'auto', padding: '6px 9px', lineHeight: 1.35 }}
+                            onClick={() => chooseShockOption(q.quarter, opt.id)}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {selectedOpt && (
+                      <div className="tiny" style={{ marginTop: 4, color: selectedOpt.resilienceDelta > 0 ? 'var(--teal-700)' : '#991b1b', lineHeight: 1.4 }}>
+                        {selectedOpt.note}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Scrollable Lab Workbench */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '18px 20px', background: 'var(--ground)' }}>
+        <div ref={workbenchRef} style={{ flex: 1, overflowY: 'auto', padding: '18px 20px', background: 'var(--ground)' }}>
           <Suspense fallback={<Loading label={`Loading ${def.shortTitle} laboratory…`} />}>
             {def.id === 'tqm_spc' && <SpcLab key={`spc_${syncVersion}`} {...labProps} />}
             {def.id === 'tqm_tools' && <QualityToolsLab key={`qtools_${syncVersion}`} {...labProps} />}

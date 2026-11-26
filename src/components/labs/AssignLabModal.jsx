@@ -6,6 +6,7 @@ import { parseCourseMeta, serializeCourseMeta } from '../../lib/courseMeta.js';
 import { autoBuildSyndicateGroups, serializeAssignmentMeta } from '../../lib/assignmentMeta.js';
 import { DatasetMapperPanel } from './DatasetMapperPanel.jsx';
 import { normalizeLabDatasetsLibrary, normalizeMappedClos } from '../../lib/labMilestone7Engine.js';
+import { generateIndustryScaleDataset, getLabProfessionalRubric } from '../../lib/labMilestone9Engine.js';
 import {
   buildLabCsvTemplate,
   DATA_POLICIES,
@@ -73,6 +74,8 @@ export default function AssignLabModal({
   const [caTarget, setCaTarget] = useState('keep');
   const [newCaWeight, setNewCaWeight] = useState('15');
   const [uniqueVariant, setUniqueVariant] = useState(Boolean(existingConfig?.uniqueVariant));
+  const [guidedMode, setGuidedMode] = useState(Boolean(existingConfig?.guidedMode));
+  const [shockSimRequired, setShockSimRequired] = useState(Boolean(existingConfig?.shockSimRequired));
   const [syndicateEnabled, setSyndicateEnabled] = useState(false);
   const [syndicateSize, setSyndicateSize] = useState('4');
   const [syndicateOrder, setSyndicateOrder] = useState('random');
@@ -99,6 +102,8 @@ export default function AssignLabModal({
       setLinkedAssignmentId(found.linkedAssignmentId || '');
       setGradeMode(found.linkedAssignmentId ? 'existing' : 'practice');
       setUniqueVariant(Boolean(found.uniqueVariant));
+      setGuidedMode(Boolean(found.guidedMode));
+      setShockSimRequired(Boolean(found.shockSimRequired));
       setMappedClos(normalizeMappedClos(found.mappedClos));
     } else if (!existingConfig) {
       setTitle(def?.title || '');
@@ -427,7 +432,7 @@ export default function AssignLabModal({
       } else if (gradeMode === 'create') {
         const aTitle = newAssignTitle.trim() || `${def.shortTitle} Lab Assignment`;
         const maxMarks = Math.max(1, Number(newAssignMarks) || 20);
-        const rubric = scaleRubric(def.rubricCriteria || [], maxMarks);
+        const rubric = getLabProfessionalRubric(labId, maxMarks);
         let finalSynGroups = syndicateGroups;
         if (syndicateEnabled && finalSynGroups.length === 0) {
           try {
@@ -512,6 +517,8 @@ export default function AssignLabModal({
         instructions: instructions.trim(),
         linkedAssignmentId: finalAssignmentId,
         uniqueVariant: Boolean(uniqueVariant),
+        guidedMode: Boolean(guidedMode),
+        shockSimRequired: Boolean(shockSimRequired),
         mappedClos: normalizeMappedClos(mappedClos),
         updatedAt: new Date().toISOString(),
       };
@@ -713,6 +720,22 @@ export default function AssignLabModal({
                   </select>
                 </Field>
               )}
+              <div className="row-wrap" style={{ gap: 8, marginTop: 4 }}>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => {
+                    const gen = generateIndustryScaleDataset(labId);
+                    if (gen?.dataset) {
+                      setCustomDataset(gen.dataset);
+                      setUploadNote(`Loaded industry-scale messy dataset (${gen.rowCount} records).`);
+                      toast(`Loaded industry-scale dataset (${gen.rowCount} rows) for ${def.code}.`);
+                    }
+                  }}
+                >
+                  <Icon name="flask" size={13} /> Load Industry-Scale Messy Dataset
+                </button>
+              </div>
               {!customDataset && labId !== 'psis_scan_it' && (
                 <label className="check" style={{ marginTop: 4 }}>
                   <input
@@ -725,6 +748,26 @@ export default function AssignLabModal({
                   </span>
                 </label>
               )}
+              <label className="check" style={{ marginTop: 4 }}>
+                <input
+                  type="checkbox"
+                  checked={shockSimRequired}
+                  onChange={(e) => setShockSimRequired(e.target.checked)}
+                />
+                <span>
+                  <strong>Require 3-Quarter Scenario Shock Simulation</strong> — students must resolve 3 sequential operational disruptions before submitting
+                </span>
+              </label>
+              <label className="check" style={{ marginTop: 4 }}>
+                <input
+                  type="checkbox"
+                  checked={guidedMode}
+                  onChange={(e) => setGuidedMode(e.target.checked)}
+                />
+                <span>
+                  <strong>Allow Guided Walkthrough &amp; Hints in Graded Mode</strong> — off by default (Exam Mode locks diagnostic hints automatically)
+                </span>
+              </label>
             </div>
           )}
         </div>
