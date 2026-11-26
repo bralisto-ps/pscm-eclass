@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import Icon from '../Icon.jsx';
 import { Field, Modal, useToast } from '../ui.jsx';
-import { run, supabase } from '../../lib/supabase.js';
+import { rpcAll, run, supabase } from '../../lib/supabase.js';
 import { parseCourseMeta, serializeCourseMeta } from '../../lib/courseMeta.js';
-import { serializeAssignmentMeta } from '../../lib/assignmentMeta.js';
+import { autoBuildSyndicateGroups, serializeAssignmentMeta } from '../../lib/assignmentMeta.js';
 import {
   buildLabCsvTemplate,
   DATA_POLICIES,
@@ -70,6 +70,13 @@ export default function AssignLabModal({
   const [caComponents, setCaComponents] = useState([]);
   const [caTarget, setCaTarget] = useState('keep');
   const [newCaWeight, setNewCaWeight] = useState('15');
+  const [uniqueVariant, setUniqueVariant] = useState(Boolean(existingConfig?.uniqueVariant));
+  const [syndicateEnabled, setSyndicateEnabled] = useState(false);
+  const [syndicateSize, setSyndicateSize] = useState('4');
+  const [syndicateOrder, setSyndicateOrder] = useState('random');
+  const [syndicatePeerCheck, setSyndicatePeerCheck] = useState(true);
+  const [syndicateGroups, setSyndicateGroups] = useState([]);
+  const [buildingGroups, setBuildingGroups] = useState(false);
 
   // Sync existing config when switching course in LabsHub
   useEffect(() => {
@@ -86,6 +93,7 @@ export default function AssignLabModal({
       setCustomDataset(found.customDataset || null);
       setLinkedAssignmentId(found.linkedAssignmentId || '');
       setGradeMode(found.linkedAssignmentId ? 'existing' : 'practice');
+      setUniqueVariant(Boolean(found.uniqueVariant));
     } else if (!existingConfig) {
       setTitle(def?.title || '');
       setEnabled(true);
@@ -95,6 +103,7 @@ export default function AssignLabModal({
       setCustomDataset(null);
       setLinkedAssignmentId('');
       setGradeMode('practice');
+      setUniqueVariant(false);
     }
     Promise.all([
       supabase
@@ -371,6 +380,26 @@ export default function AssignLabModal({
     }
   }
 
+  async function handleAutoBuildSyndicates() {
+    if (!selectedCourse) return;
+    setBuildingGroups(true);
+    try {
+      const students = await rpcAll('course_students', { p_course: selectedCourse.id });
+      if (!students?.length) {
+        toast('No enrolled students found in this course yet.', 'error');
+        return;
+      }
+      const size = Math.max(2, Math.min(12, Number(syndicateSize) || 4));
+      const built = autoBuildSyndicateGroups(students, size, 'mix', null, syndicateOrder);
+      setSyndicateGroups(built);
+      toast(`Auto-grouped ${students.length} students into ${built.length} syndicate group${built.length === 1 ? '' : 's'} (size ${size}).`);
+    } catch (err) {
+      toast(err?.message || 'Could not load course roster for syndicate grouping.', 'error');
+    } finally {
+      setBuildingGroups(false);
+    }
+  }
+
   async function save() {
     if (!selectedCourse) {
       toast('Select a class to assign this lab to.', 'error');
@@ -385,9 +414,38 @@ export default function AssignLabModal({
         const aTitle = newAssignTitle.trim() || `${def.shortTitle} Lab Assignment`;
         const maxMarks = Math.max(1, Number(newAssignMarks) || 20);
         const rubric = scaleRubric(def.rubricCriteria || [], maxMarks);
+        let finalSynGroups = syndicateGroups;
+        if (syndicateEnabled && finalSynGroups.length === 0) {
+          try {
+            const roster = await rpcAll('course_students', { p_course: selectedCourse.id });
+            if (roster?.length) {
+              finalSynGroups = autoBuildSyndicateGroups(
+                roster,
+                Math.max(2, Math.min(12, Number(syndicateSize) || 4)),
+                'mix',
+                null,
+                syndicateOrder,
+              );
+            }
+          } catch {
+            // allow empty groups if lecturer plans to add manually later
+          }
+        }
         const packedInstructions = serializeAssignmentMeta(
           instructions.trim() || def.defaultPrompt,
-          { rubric, submission: { mode: 'file', fileFormat: 'pdf', allowPaste: true } },
+          {
+            rubric,
+            submission: { mode: 'file', fileFormat: 'pdf', allowPaste: true },
+            ...(syndicateEnabled
+              ? {
+                  syndicate: {
+                    enabled: true,
+                    peerCheck: syndicatePeerCheck,
+                    groups: finalSynGroups,
+                  },
+                }
+              : {}),
+          },
         );
         const created = await run(
           supabase
@@ -439,6 +497,7 @@ export default function AssignLabModal({
         customDataset: dataMode === 'student_only' ? null : finalCustom,
         instructions: instructions.trim(),
         linkedAssignmentId: finalAssignmentId,
+        uniqueVariant: Boolean(uniqueVariant),
         updatedAt: new Date().toISOString(),
       };
       const others = (meta.labs_config || []).filter((l) => l.labId !== labId);
@@ -638,6 +697,18 @@ export default function AssignLabModal({
                   </select>
                 </Field>
               )}
+              {!customDataset && labId !== 'psis_scan_it' && (
+                <label className="check" style={{ marginTop: 4 }}>
+                  <input
+                    type="checkbox"
+                    checked={uniqueVariant}
+                    onChange={(e) => setUniqueVariant(e.target.checked)}
+                  />
+                  <span>
+                    <strong>Anti-Copying Unique Variant per Student / Syndicate</strong> — automatically gives each student (or each syndicate group) deterministic unique numbers so answers cannot be copied
+                  </span>
+                </label>
+              )}
             </div>
           )}
         </div>
@@ -675,6 +746,69 @@ export default function AssignLabModal({
                 <input type="checkbox" checked={newAssignPublish} onChange={(e) => setNewAssignPublish(e.target.checked)} />
                 Publish assignment immediately (students can submit straight into Gradebook &amp; CA)
               </label>
+              <div style={{ gridColumn: '1 / -1', paddingTop: 8, borderTop: '1px solid var(--line)' }} className="stack-xs">
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={syndicateEnabled}
+                    onChange={(e) => setSyndicateEnabled(e.target.checked)}
+                  />
+                  <span>
+                    <strong>Syndicate Group Lab Assignment</strong> — teammates collaborate live on the same lab &amp; one submission credits the entire syndicate
+                  </span>
+                </label>
+                {syndicateEnabled && (
+                  <div className="row-wrap" style={{ gap: 8, alignItems: 'flex-end', paddingTop: 4 }}>
+                    <label className="stack-xs tiny muted">
+                      Group Size
+                      <input
+                        className="input mono"
+                        type="number"
+                        min="2"
+                        max="12"
+                        style={{ width: 76 }}
+                        value={syndicateSize}
+                        onChange={(e) => setSyndicateSize(e.target.value)}
+                      />
+                    </label>
+                    <label className="stack-xs tiny muted">
+                      Grouping Order
+                      <select
+                        className="input"
+                        style={{ width: 'auto' }}
+                        value={syndicateOrder}
+                        onChange={(e) => setSyndicateOrder(e.target.value)}
+                      >
+                        <option value="random">Random shuffle</option>
+                        <option value="index">By index number</option>
+                        <option value="name">Alphabetical by name</option>
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={buildingGroups}
+                      onClick={handleAutoBuildSyndicates}
+                    >
+                      <Icon name="users" size={13} />{' '}
+                      {buildingGroups ? 'Grouping…' : syndicateGroups.length ? `Rebuild (${syndicateGroups.length} groups)` : 'Auto-Group Class'}
+                    </button>
+                    <label className="check tiny">
+                      <input
+                        type="checkbox"
+                        checked={syndicatePeerCheck}
+                        onChange={(e) => setSyndicatePeerCheck(e.target.checked)}
+                      />
+                      Enable peer ratings
+                    </label>
+                    {syndicateGroups.length > 0 && (
+                      <span className="tiny mono" style={{ color: 'var(--teal-700)', fontWeight: 700 }}>
+                        ● {syndicateGroups.length} syndicate group{syndicateGroups.length === 1 ? '' : 's'} ready
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

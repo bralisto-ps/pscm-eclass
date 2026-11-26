@@ -4,6 +4,8 @@ import { useToast } from '../ui.jsx';
 import { useAuth } from '../../lib/auth.jsx';
 import { rpc, supabase } from '../../lib/supabase.js';
 import { downloadText } from '../../lib/sheets.js';
+import { buildTypedResponsePdfBlob } from '../../lib/textPdf.js';
+import { buildLiveSessionDebriefReport } from '../../lib/labMilestone6Engine.js';
 import { findMasterDataDuplicates } from '../../lib/psisLabEngine.js';
 import {
   assignStudentsToChains,
@@ -589,6 +591,34 @@ export default function LiveLabSessionModal({
     }
   }
 
+  function exportDebriefPdf() {
+    const body = buildLiveSessionDebriefReport({
+      labId,
+      labTitle: activeLabMeta.title,
+      sessionCode,
+      courseCode,
+      participants,
+      labState,
+      dupAudit,
+      eventLog,
+    });
+    const blob = buildTypedResponsePdfBlob({
+      title: `Live Lab Debrief — ${activeLabMeta.code} (${sessionCode})`,
+      studentLine: `Lecturer: ${profile?.full_name || 'Faculty'}${courseCode ? ` · ${courseCode}` : ''} · ${participants.length} participants`,
+      submittedAt: new Date().toLocaleString(),
+      body,
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `live-lab-debrief-${sessionCode}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('Exported Post-Class Live Debrief PDF (ready to upload to Course Materials).');
+  }
+
   function exportEventLogCsv() {
     const header = 'Timestamp,Actor,EventType,Detail';
     const rows = [...eventLog].reverse().map((e) => [
@@ -707,8 +737,11 @@ export default function LiveLabSessionModal({
                         : 'Credit Attendance'}
                   </button>
                 )}
+                <button type="button" className="btn btn-sm" onClick={exportDebriefPdf}>
+                  <Icon name="file" size={13} /> Debrief PDF
+                </button>
                 <button type="button" className="btn btn-sm" onClick={exportEventLogCsv}>
-                  <Icon name="download" size={13} /> Export Log CSV
+                  <Icon name="download" size={13} /> Log CSV
                 </button>
               </>
             )}

@@ -2,6 +2,8 @@ import { lazy, Suspense, useMemo, useState } from 'react';
 import Icon from '../Icon.jsx';
 import { Empty, Loading } from '../ui.jsx';
 import { parseCourseMeta } from '../../lib/courseMeta.js';
+import { findStudentSyndicate, parseAssignmentMeta } from '../../lib/assignmentMeta.js';
+import { useAuth } from '../../lib/auth.jsx';
 import { DATA_POLICIES, getLabDef } from '../../lib/labsCatalog.js';
 import { LAB_TRACK_META } from '../../lib/labScoringBridge.js';
 import { fmtFull, fmtNumber, relative } from '../../lib/format.js';
@@ -10,6 +12,7 @@ const LabRunnerModal = lazy(() => import('./LabRunnerModal.jsx'));
 const LiveLabSessionModal = lazy(() => import('./LiveLabSessionModal.jsx'));
 
 export default function StudentCourseLabs({ course, assignments = [], previewOnly = false, reload }) {
+  const { profile } = useAuth();
   const [activeLab, setActiveLab] = useState(null);
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [liveJoinCode, setLiveJoinCode] = useState('');
@@ -133,6 +136,8 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
           const sub = linked?.submission || null;
           const policy = DATA_POLICIES.find((p) => p.id === cfg.dataMode)?.short || 'Course or own data';
           const markedReleased = Boolean(sub?.marked && (linked?.released || linked?.results_released));
+          const linkedMeta = linked ? parseAssignmentMeta(linked) : null;
+          const mySyn = linkedMeta && !previewOnly ? findStudentSyndicate(linkedMeta, profile?.index_no) : null;
 
           return (
             <article
@@ -171,6 +176,7 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
                 <div className="tiny muted">
                   {track.stage} · {def.duration} · {policy}
                   {cfg.customDataset?.name ? ` · Dataset: ${cfg.customDataset.name}` : ''}
+                  {cfg.uniqueVariant && !cfg.customDataset ? ' · Unique Data Variant' : ''}
                 </div>
 
                 <p className="small muted" style={{ margin: '6px 0 0', lineHeight: 1.5 }}>
@@ -181,6 +187,11 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
               <div className="stack-xs" style={{ paddingTop: 10, borderTop: '1px solid var(--line)' }}>
                 {linked ? (
                   <div className="tiny muted">
+                    {mySyn && (
+                      <div className="mono" style={{ color: 'var(--teal-700)', fontWeight: 700, marginBottom: 2 }}>
+                        ● SYNDICATE: {mySyn.name} ({(mySyn.members || []).length} members · Live Sync Ready)
+                      </div>
+                    )}
                     <strong style={{ color: 'var(--text)' }}>CA Assignment:</strong> {linked.title} ({fmtNumber(linked.max_marks)} marks)
                     {linked.due_at ? ` · Due ${fmtFull(linked.due_at)} (${relative(linked.due_at)})` : ''}
                   </div>
