@@ -904,6 +904,7 @@ export const LAB_CATALOG = [
   },
   {
     id: 'psis_the_tender',
+    supportsLiveClassroom: true,
     domain: 'PSIS',
     code: 'PSIS-LAB 06',
     title: 'Electronic Tendering & Reverse Auction Evaluation',
@@ -1092,6 +1093,7 @@ export async function submitLabReportToAssignment({
   reportTitle,
   reportBody,
   note = '',
+  extraTypingMeta = null,
 }) {
   if (!assignment?.id) throw new Error('No linked assignment found for this lab.');
   if (!session?.user?.id) throw new Error('You must be signed in to submit a lab report.');
@@ -1134,7 +1136,12 @@ export async function submitLabReportToAssignment({
   const extendedArgs = {
     ...baseArgs,
     p_response_text: reportBody,
-    p_typing_meta: { source: 'interactive_lab', labReport: true },
+    p_typing_meta: {
+      source: 'interactive_lab',
+      labReport: true,
+      submittedByIndex: profile?.index_no || '',
+      ...(extraTypingMeta && typeof extraTypingMeta === 'object' ? extraTypingMeta : {}),
+    },
   };
 
   try {

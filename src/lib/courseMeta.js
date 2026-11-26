@@ -15,6 +15,8 @@ export function normalizeLabsConfig(list) {
       customDataset: item.customDataset && typeof item.customDataset === 'object' ? item.customDataset : null,
       instructions: String(item.instructions || '').trim(),
       linkedAssignmentId: item.linkedAssignmentId ? String(item.linkedAssignmentId) : null,
+      uniqueVariant: Boolean(item.uniqueVariant),
+      mappedClos: Array.isArray(item.mappedClos) ? item.mappedClos.map((c) => String(c || '').trim().toUpperCase()).filter(Boolean) : [],
       updatedAt: item.updatedAt || null,
     }));
 }
@@ -43,6 +45,7 @@ export function parseCourseMeta(course) {
       syllabusNote: '',
     },
     labs_config: [],
+    lab_datasets: [],
   };
 
   if (!raw || typeof raw !== 'string') return fallback;
@@ -72,13 +75,14 @@ export function parseCourseMeta(course) {
         syllabusNote: String(parsed.course_info?.syllabusNote || ''),
       },
       labs_config: normalizeLabsConfig(parsed.labs_config),
+      lab_datasets: Array.isArray(parsed.lab_datasets) ? parsed.lab_datasets.filter((d) => d && d.id && d.labId && d.dataset) : [],
     };
   } catch {
     return fallback;
   }
 }
 
-export function serializeCourseMeta(about, ca_config, exam_config, course_info, labs_config) {
+export function serializeCourseMeta(about, ca_config, exam_config, course_info, labs_config, lab_datasets) {
   const info = course_info || {};
   return JSON.stringify({
     about: String(about || '').trim(),
@@ -102,6 +106,7 @@ export function serializeCourseMeta(about, ca_config, exam_config, course_info, 
       syllabusNote: String(info.syllabusNote || '').trim(),
     },
     ...(Array.isArray(labs_config) && labs_config.length > 0 ? { labs_config: normalizeLabsConfig(labs_config) } : {}),
+    ...(Array.isArray(lab_datasets) && lab_datasets.length > 0 ? { lab_datasets: lab_datasets.slice(0, 24) } : {}),
   });
 }
 
