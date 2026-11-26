@@ -165,9 +165,9 @@ export default function LabsTab({ course, readOnly = false, onCourseChanged }) {
             {unopenedLabs.map((lab) => (
               <div key={lab.id} className="card-soft stack-sm" style={{ padding: 14, justifyContent: 'space-between' }}>
                 <div className="stack-xs">
-                  <div className="tiny muted">{lab.code} · {lab.domain} · {lab.duration}</div>
-                  <strong style={{ fontSize: 15 }}>{lab.title}</strong>
-                  <p className="tiny muted" style={{ margin: 0 }}>{lab.summary}</p>
+                  <div className="tiny mono muted">{lab.code} · {lab.domain}</div>
+                  <strong style={{ fontSize: 15, lineHeight: 1.3 }}>{lab.title}</strong>
+                  <p className="tiny muted" style={{ margin: 0, lineHeight: 1.4 }}>{lab.summary}</p>
                 </div>
                 <div className="row" style={{ gap: 8, marginTop: 8 }}>
                   <button
