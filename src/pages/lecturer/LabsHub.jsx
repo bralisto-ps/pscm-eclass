@@ -6,7 +6,9 @@ import { Empty, ErrorNote, Loading, useLoad, useToast } from '../../components/u
 import { run, supabase } from '../../lib/supabase.js';
 import { parseCourseMeta, serializeCourseMeta } from '../../lib/courseMeta.js';
 import { DATA_POLICIES, LAB_CATALOG, LAB_DOMAINS } from '../../lib/labsCatalog.js';
-import { LAB_TRACK_META } from '../../lib/labScoringBridge.js';
+import { LAB_CONCEPT_GUIDES, LAB_TRACK_META } from '../../lib/labScoringBridge.js';
+import { buildLecturerFacilitationGuide } from '../../lib/labMilestone8Engine.js';
+import { buildTypedResponsePdfBlob } from '../../lib/textPdf.js';
 import AssignLabModal from '../../components/labs/AssignLabModal.jsx';
 
 const LabRunnerModal = lazy(() => import('../../components/labs/LabRunnerModal.jsx'));
@@ -70,6 +72,25 @@ export default function LabsHub() {
     () => LAB_CATALOG.filter((l) => l.supportsLiveClassroom).length,
     [],
   );
+
+  function downloadFacilitationPdf(lab) {
+    const guide = buildLecturerFacilitationGuide(lab, LAB_CONCEPT_GUIDES[lab.id] || null);
+    const blob = buildTypedResponsePdfBlob({
+      title: guide.title,
+      studentLine: 'PSCM E-Class · Lecturer Facilitation & Debrief Sheet',
+      submittedAt: new Date().toLocaleDateString(),
+      body: guide.body,
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${lab.code.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-facilitation-guide.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast(`Downloaded 1-page Facilitation Guide PDF for ${lab.code}.`);
+  }
 
   async function removeLabFromCourse(course, labId) {
     try {
@@ -185,6 +206,14 @@ export default function LabsHub() {
                           onClick={() => setPreviewLab({ labId: lab.id, title: lab.title, dataMode: 'both', presetId: lab.defaultPresetId })}
                         >
                           <Icon name="eye" size={13} /> Preview
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={() => downloadFacilitationPdf(lab)}
+                          title="Download 1-page printable teaching guide, timing breakdown & debrief prompts"
+                        >
+                          <Icon name="book" size={13} /> Facilitation Guide PDF
                         </button>
                         {lab.supportsLiveClassroom && (
                           <button

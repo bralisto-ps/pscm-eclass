@@ -16,6 +16,7 @@ import RubricGrader from '../../components/RubricGrader.jsx';
 import { parseLabVerificationSummary, suggestLabRubricMarks } from '../../lib/labScoringBridge.js';
 import { summarizeClassLabSubmissions } from '../../lib/labMilestone6Engine.js';
 import { generateLabVivaQuestions, suggestPeerAdjustedMarks } from '../../lib/labMilestone7Engine.js';
+import { computeBatchLabAutoScores, detectJudgementSimilarityPairs } from '../../lib/labMilestone8Engine.js';
 import { Empty, ErrorNote, Field, Loading, Modal, useAction, useLoad, useToast } from '../../components/ui.jsx';
 import { AssignmentForm } from './course/AssignmentsTab.jsx';
 import BulkNudgeModal from '../../components/BulkNudgeModal.jsx';
@@ -451,6 +452,26 @@ export default function AssignmentMarking() {
         {(() => {
           const debrief = summarizeClassLabSubmissions(enrichedRows, assignMeta);
           if (!debrief.labSubmissionCount) return null;
+          const batchCandidates = computeBatchLabAutoScores(enrichedRows, assignMeta, Number(data?.a?.max_marks) || 100);
+          const simPairs = detectJudgementSimilarityPairs(enrichedRows, 0.55);
+          const runBatchAutoScore = async () => {
+            if (!batchCandidates.length) return;
+            let saved = 0;
+            for (const item of batchCandidates) {
+              try {
+                await rpc('mark_submission', {
+                  p_submission: item.submissionId,
+                  p_marks: item.suggestedTotal,
+                  p_feedback: item.feedbackNote,
+                });
+                saved += 1;
+              } catch {
+                // continue remaining submissions
+              }
+            }
+            toast(`Batch auto-scored ${saved} of ${batchCandidates.length} ungraded lab submission${batchCandidates.length === 1 ? '' : 's'}. Review written judgements before releasing marks.`);
+            reload();
+          };
           return (
             <section className="lab-evidence-card">
               <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
@@ -460,9 +481,21 @@ export default function AssignmentMarking() {
                   </div>
                   <strong className="small">{debrief.moduleLine}</strong>
                 </div>
-                <span className="tiny mono muted">
-                  {debrief.labSubmissionCount} lab report{debrief.labSubmissionCount === 1 ? '' : 's'} analyzed
-                </span>
+                <div className="row-wrap" style={{ gap: 8, alignItems: 'center' }}>
+                  <span className="tiny mono muted">
+                    {debrief.labSubmissionCount} lab report{debrief.labSubmissionCount === 1 ? '' : 's'} analyzed
+                  </span>
+                  {!restrictedEdit && batchCandidates.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={runBatchAutoScore}
+                      title="Applies auto-suggested quantitative rubric marks across all ungraded lab reports (does not release marks yet)"
+                    >
+                      <Icon name="check" size={13} /> Batch Auto-Score Quantitative ({batchCandidates.length})
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="lab-evidence-grid">
@@ -488,6 +521,18 @@ export default function AssignmentMarking() {
                 ))}
               </div>
 
+              {simPairs.length > 0 && (
+                <div className="notice-err stack-xs" style={{ marginTop: 8, padding: 10 }}>
+                  <strong className="tiny">
+                    ▲ Written Managerial Judgement Similarity Alert ({simPairs.length} high-overlap pair{simPairs.length === 1 ? '' : 's'} detected)
+                  </strong>
+                  {simPairs.slice(0, 5).map((p, idx) => (
+                    <div key={idx} className="tiny">
+                      <strong className="mono">{p.similarityPct}% overlap:</strong> {p.aLabel} ↔ {p.bLabel}
+                    </div>
+                  ))}
+                </div>
+              )}
               {debrief.pitfalls.length > 0 && (
                 <div className="stack-xs" style={{ background: 'var(--surface)', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--line)' }}>
                   <span className="tiny mono" style={{ color: 'var(--amber)', fontWeight: 700 }}>
