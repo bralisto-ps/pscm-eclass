@@ -22,7 +22,7 @@ import {
 import { parseCourseMeta, serializeCourseMeta } from '../src/lib/courseMeta.js';
 
 test('Universal Dataset Mapper covers all 11 labs and parses CSV + Excel TSV paste', () => {
-  assert.equal(Object.keys(LAB_DATASET_SCHEMAS).length, 11);
+  assert.equal(Object.keys(LAB_DATASET_SCHEMAS).length, 14);
 
   const tsv = 'Material No\tItem Name\tQty On Hand\tUOM\nMAT-01\tSurgical Gloves Medium\t120\tBox\nMAT-02\tGloves Surgical Med\t45\tBox';
   const rows = parsePastedTableText(tsv);
