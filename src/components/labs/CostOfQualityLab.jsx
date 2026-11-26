@@ -210,7 +210,7 @@ export default function CostOfQualityLab({
     if (!onRegisterReportBuilder) return;
     onRegisterReportBuilder(() => {
       const lines = [
-        `LABORATORY: Cost of Quality (COQ / PAF & Economics) Models`,
+        `LABORATORY: TQM-LAB 03 — Cost of Quality & PAF Economics`,
         `Organization / Case: ${caseName}`,
         `Revenue: ${fmtMoney(revNum, currency)} | Output: ${unitsNum.toLocaleString()} units`,
         '',

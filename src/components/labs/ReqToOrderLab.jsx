@@ -131,7 +131,7 @@ export default function ReqToOrderLab({
   useEffect(() => {
     onRegisterReportBuilder?.(() => {
       const lines = [
-        `LABORATORY: PSIS Lab 5 — Requisition to Order, DoA & Commitment Accounting`,
+        `LABORATORY: PSIS-LAB 05 — Requisition Workflow, Delegation of Authority & Commitment Accounting`,
         `DATASET: ${datasetName} (${requisitions.length} requisitions · Currency: ${currency})`,
         ``,
         `1. BUDGET ACCOUNTING COMPARISON (SPENT-ONLY VS. COMMITMENT ACCOUNTING)`,

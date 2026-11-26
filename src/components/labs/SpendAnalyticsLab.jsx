@@ -82,7 +82,7 @@ function parseCrossLabOrSpendRows(rows) {
       responsivenessScore: s.fullDeliveries === s.totalLines ? 88 : 68,
       onContract: s.priceVarSum <= 2,
     }));
-    return { suppliers, sourceLabel: 'Imported from The Match (P2P 3-Way Match CSV)' };
+    return { suppliers, sourceLabel: 'Imported from P2P Controls & Three-Way Matching CSV' };
   }
 
   // 2. Detect "Requisition to Order" export: ReqNo, Item, Supplier, CostCentre, Qty, UnitPrice
@@ -120,7 +120,7 @@ function parseCrossLabOrSpendRows(rows) {
       responsivenessScore: 82,
       onContract: s.reqCount <= 2,
     }));
-    return { suppliers, sourceLabel: 'Imported from Requisition to Order (DoA CSV)' };
+    return { suppliers, sourceLabel: 'Imported from Requisition Workflow & DoA CSV' };
   }
 
   // 3. Standard Supplier Scorecard / Spend Cube CSV: Supplier, Category, AnnualSpend, OTIF_Pct, Defect_PPM, PriceVariance_Pct, Responsiveness_0_100, OnContract
@@ -235,7 +235,7 @@ export default function SpendAnalyticsLab({
       const rows = await readLabSpreadsheetRows(file);
       const { suppliers: parsed, sourceLabel } = parseCrossLabOrSpendRows(rows);
       if (!parsed.length) {
-        throw new Error('Could not parse rows. Upload a Supplier Scorecard CSV, or a CSV exported from The Match / Requisition to Order.');
+        throw new Error('Could not parse rows. Upload a Supplier Scorecard CSV, or a CSV exported from P2P Controls / Requisition Workflow.');
       }
       setSuppliers(parsed);
       setImportBanner(`${sourceLabel} — ${parsed.length} suppliers consolidated from "${file.name}".`);
@@ -278,7 +278,7 @@ export default function SpendAnalyticsLab({
       );
 
       const body = [
-        `PSIS-LAB 08 — SUPPLIER KPI SCORECARD & SPEND CUBE ANALYTICS REPORT`,
+        `LABORATORY: PSIS-LAB 08 — Supplier Performance Scorecards & Spend Cube Analytics`,
         `====================================================================`,
         ``,
         `1. WEIGHTED SUPPLIER PERFORMANCE SCORECARD`,
@@ -301,7 +301,7 @@ export default function SpendAnalyticsLab({
       ].join('\n');
 
       return {
-        title: config?.title || 'Supplier Scorecard & Spend Cube Analytics Lab Report',
+        title: config?.title || 'Supplier Performance Scorecards & Spend Cube Analytics Lab Report',
         body,
         hasJudgement: judgement.trim().length >= 30,
       };
@@ -361,7 +361,7 @@ export default function SpendAnalyticsLab({
                   type="button"
                   className="btn btn-sm btn-primary"
                   onClick={() => fileRef.current?.click()}
-                  title="Import your own Spend CSV or directly import CSV exports from The Match (P2P) or Requisition to Order"
+                  title="Import your own Spend CSV or directly import CSV exports from P2P Controls or Requisition Workflow"
                 >
                   <Icon name="upload" size={13} /> Import Spend / Cross-Lab CSV
                 </button>
@@ -625,7 +625,7 @@ export default function SpendAnalyticsLab({
               </div>
             </div>
             <div className="small muted">
-              <strong>Cross-Lab Tip:</strong> Export your P2P audit CSV from <em>The Match</em> or your requisition queue from <em>Requisition to Order</em>, then click <strong>Import Spend / Cross-Lab CSV</strong> above to watch upstream transactional records roll straight into executive Spend Analytics.
+              <strong>Cross-Lab Tip:</strong> Export your P2P audit CSV from <em>P2P Controls &amp; Three-Way Matching</em> or your requisition queue from <em>Requisition Workflow</em>, then click <strong>Import Spend / Cross-Lab CSV</strong> above to watch upstream transactional records roll straight into executive Spend Analytics.
             </div>
           </div>
         </div>

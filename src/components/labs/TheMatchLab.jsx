@@ -283,7 +283,7 @@ export default function TheMatchLab({
   useEffect(() => {
     onRegisterReportBuilder?.(() => {
       const lines = [
-        `LABORATORY: PSIS Lab 4 — Procure-to-Pay 3-Way Match & Segregation of Duties (The Match)`,
+        `LABORATORY: PSIS-LAB 04 — Procure-to-Pay Controls, Three-Way Matching & Segregation of Duties`,
         `DATASET: ${datasetName} (${packets.length} P2P invoice packets · Currency: ${currency})`,
         `TOLERANCE SETTINGS: Price Tolerance +/-${priceTolPct}% | Quantity Tolerance +${qtyTolPct}%`,
         ``,

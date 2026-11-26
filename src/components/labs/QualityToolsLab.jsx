@@ -317,7 +317,7 @@ export default function QualityToolsLab({
     if (!onRegisterReportBuilder) return;
     onRegisterReportBuilder(() => {
       const lines = [
-        `LABORATORY: Seven Basic Tools of Quality (7 QC Tools)`,
+        `LABORATORY: TQM-LAB 02 — Seven Basic Tools of Quality`,
         `Case / Dataset: ${caseName}`,
         '',
         `1. CHECK SHEET & PARETO (80/20) ANALYSIS`,

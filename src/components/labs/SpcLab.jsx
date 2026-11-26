@@ -367,7 +367,7 @@ export default function SpcLab({
     if (!onRegisterReportBuilder) return;
     onRegisterReportBuilder(() => {
       const lines = [
-        `LABORATORY: Statistical Process Control (SPC) & Process Capability`,
+        `LABORATORY: TQM-LAB 01 — Statistical Process Control & Process Capability`,
         `Dataset: ${datasetName} (${sourceMode === 'student' ? 'Student-Supplied Data' : sourceMode === 'lecturer' ? 'Course-Assigned Data' : 'Starter Preset'})`,
         `Chart Type: ${CHART_TYPES.find((c) => c.id === chartType)?.label || chartType}`,
         '',

@@ -237,7 +237,7 @@ export default function TheWhipLab({
   useEffect(() => {
     onRegisterReportBuilder?.(() => {
       const lines = [
-        `LABORATORY: PSIS Lab 1 — The Bullwhip Effect Simulator (The Whip)`,
+        `LABORATORY: PSIS-LAB 01 — Demand Amplification & Supply Chain Visibility`,
         `DATASET: ${datasetName} (${demandSeries.length} weeks)`,
         `PARAMETERS: Shipment Lead Time = ${leadTimeWeeks} wk(s) | Paper-Mode Info Delay = ${infoDelayWeeks} wk(s) | Holding = ${holdingCost}/u | Shortage = ${backlogCost}/u`,
         `STUDENT MANUAL RETAILER ORDERS ENTERED: ${retailerManualOrders.filter((x) => x !== '' && x != null).length} week(s)`,

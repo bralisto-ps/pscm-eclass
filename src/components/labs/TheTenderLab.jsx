@@ -185,7 +185,7 @@ export default function TheTenderLab({
   useEffect(() => {
     onRegisterReportBuilder?.(() => {
       const lines = [
-        `LABORATORY: PSIS Lab 6 — Sealed Tender Evaluation & Live Reverse Auction (The Tender)`,
+        `LABORATORY: PSIS-LAB 06 — Electronic Tendering & Reverse Auction Evaluation`,
         `PROCUREMENT LOT: ${lotName} (Budget Ceiling: ${fmtMoney(budgetCeiling, currency)})`,
         `WEIGHTED SCORING MODEL: Price ${sealedEval.normalizedWeights.price}% | Technical ${sealedEval.normalizedWeights.technical}% | Delivery ${sealedEval.normalizedWeights.delivery}% | Local Content ${sealedEval.normalizedWeights.localContent}%`,
         ``,

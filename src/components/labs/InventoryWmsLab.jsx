@@ -260,7 +260,7 @@ export default function InventoryWmsLab({
         );
 
       const body = [
-        `PSIS-LAB 07 — INVENTORY CONTROL, ABC-XYZ & CYCLE COUNT AUDIT REPORT`,
+        `LABORATORY: PSIS-LAB 07 — Inventory Replenishment, ABC-XYZ Segmentation & Cycle Counting`,
         `====================================================================`,
         ``,
         `1. EOQ, SAFETY STOCK & REORDER POINT POLICY (${eoqParams.skuName || 'Selected SKU'})`,
@@ -289,7 +289,7 @@ export default function InventoryWmsLab({
       ].join('\n');
 
       return {
-        title: config?.title || 'Inventory Control, ABC-XYZ & Cycle Count Lab Report',
+        title: config?.title || 'Inventory Replenishment, ABC-XYZ Segmentation & Cycle Counting Lab Report',
         body,
         hasJudgement: judgement.trim().length >= 30,
       };

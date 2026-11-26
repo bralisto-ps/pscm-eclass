@@ -108,7 +108,7 @@ export default function SevenNamesLab({
   useEffect(() => {
     onRegisterReportBuilder?.(() => {
       const lines = [
-        `LABORATORY: PSIS Lab 2 — Master Data & Duplicate SKUs (Seven Names)`,
+        `LABORATORY: PSIS-LAB 02 — Item Master Data Governance & SKU Deduplication`,
         `DATASET: ${caseName}`,
         `DOCK SIMULATION TIME: ${fmtTime(elapsedSec)}`,
         ``,

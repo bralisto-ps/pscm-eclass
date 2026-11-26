@@ -15,21 +15,21 @@ import {
 
 const LIVE_LAB_OPTIONS = [
   {
-    id: 'psis_seven_names',
-    code: 'PSIS-LAB 02',
-    title: 'Seven Names — Shared Live Item Master',
-    desc: 'Students receive deliveries on their phones and either match existing SKUs or create duplicates. Reveal the live duplicate chaos on the projector.',
-  },
-  {
     id: 'psis_the_whip',
     code: 'PSIS-LAB 01',
-    title: 'The Whip — Live 4-Tier Bullwhip Chains',
+    title: 'Demand Amplification — Live 4-Tier Bullwhip Chains',
     desc: 'Deal students into blind Retailer → Wholesaler → Distributor → Factory chains, inject a +40% rumour spike, then switch on Shared POS visibility.',
+  },
+  {
+    id: 'psis_seven_names',
+    code: 'PSIS-LAB 02',
+    title: 'Item Master Data Governance — Shared Live Catalogue',
+    desc: 'Students receive deliveries on their phones and either match existing SKUs or create duplicates. Reveal the live duplicate fragmentation on the projector.',
   },
   {
     id: 'psis_the_match',
     code: 'PSIS-LAB 04',
-    title: 'The Match — Live 4-Role P2P & Super-User Fraud Demo',
+    title: 'P2P Controls & Segregation of Duties — Live 4-Role Audit',
     desc: 'Deal students into Buyer / Storekeeper / Finance / Manager roles with real 403 SoD blocks, then grant Group 1 Super-User to prove Ghost-Vendor fraud live.',
   },
 ];
@@ -766,7 +766,7 @@ export default function LiveLabSessionModal({
                       className={`btn btn-sm ${labId === opt.id ? 'btn-primary' : ''}`}
                       onClick={() => switchHostLab(opt.id)}
                     >
-                      {opt.code}: {opt.id === 'psis_seven_names' ? 'Seven Names' : opt.id === 'psis_the_whip' ? 'The Whip' : 'The Match'}
+                      {opt.code}: {opt.id === 'psis_seven_names' ? 'Master Data' : opt.id === 'psis_the_whip' ? 'Bullwhip Chains' : 'P2P Controls'}
                     </button>
                   ))}
                 </div>

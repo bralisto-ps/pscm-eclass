@@ -90,7 +90,7 @@ export default function ScanItLab({
   useEffect(() => {
     onRegisterReportBuilder?.(() => {
       const lines = [
-        `LABORATORY: PSIS Lab 3 — Barcode & GTIN Capture (Scan It)`,
+        `LABORATORY: PSIS-LAB 03 — Automatic Identification, Barcodes & GS1 Standards`,
         `COLLECTION SIZE: ${collection.length} product barcode(s)`,
         `TRANSPOSITION ERROR TRAP TESTED: ${transpositionTested ? 'YES — Verified Mod-10 check digit rejection' : 'Not yet tested'}`,
         ...(transpositionDemo
