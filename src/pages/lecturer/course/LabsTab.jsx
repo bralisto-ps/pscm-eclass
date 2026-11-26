@@ -39,7 +39,7 @@ export default function LabsTab({ course, readOnly = false, onCourseChanged }) {
     if (readOnly) return;
     try {
       const nextLabs = courseLabs.map((l) => (l.labId === labCfg.labId ? { ...l, enabled: !l.enabled } : l));
-      const serialized = serializeCourseMeta(meta.about, meta.ca_config, meta.exam_config, meta.course_info, nextLabs);
+      const serialized = serializeCourseMeta(meta.about, meta.ca_config, meta.exam_config, meta.course_info, nextLabs, meta.lab_datasets);
       await run(supabase.from('courses').update({ description: serialized }).eq('id', course.id));
       toast(labCfg.enabled ? 'Lab hidden from students.' : 'Lab opened to students.');
       reload();
@@ -53,7 +53,7 @@ export default function LabsTab({ course, readOnly = false, onCourseChanged }) {
     if (readOnly) return;
     try {
       const nextLabs = courseLabs.filter((l) => l.labId !== labId);
-      const serialized = serializeCourseMeta(meta.about, meta.ca_config, meta.exam_config, meta.course_info, nextLabs);
+      const serialized = serializeCourseMeta(meta.about, meta.ca_config, meta.exam_config, meta.course_info, nextLabs, meta.lab_datasets);
       await run(supabase.from('courses').update({ description: serialized }).eq('id', course.id));
       toast('Lab removed from this course.');
       reload();
