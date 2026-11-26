@@ -4,6 +4,8 @@ import { Field, Modal, useToast } from '../ui.jsx';
 import { rpcAll, run, supabase } from '../../lib/supabase.js';
 import { parseCourseMeta, serializeCourseMeta } from '../../lib/courseMeta.js';
 import { autoBuildSyndicateGroups, serializeAssignmentMeta } from '../../lib/assignmentMeta.js';
+import { DatasetMapperPanel } from './DatasetMapperPanel.jsx';
+import { normalizeLabDatasetsLibrary, normalizeMappedClos } from '../../lib/labMilestone7Engine.js';
 import {
   buildLabCsvTemplate,
   DATA_POLICIES,
@@ -76,6 +78,9 @@ export default function AssignLabModal({
   const [syndicateOrder, setSyndicateOrder] = useState('random');
   const [syndicatePeerCheck, setSyndicatePeerCheck] = useState(true);
   const [syndicateGroups, setSyndicateGroups] = useState([]);
+  const [savedDatasets, setSavedDatasets] = useState(() => parseCourseMeta(lockedCourse || courses[0]).lab_datasets || []);
+  const [courseClos, setCourseClos] = useState([]);
+  const [mappedClos, setMappedClos] = useState(() => normalizeMappedClos(existingConfig?.mappedClos));
   const [buildingGroups, setBuildingGroups] = useState(false);
 
   // Sync existing config when switching course in LabsHub
@@ -94,6 +99,7 @@ export default function AssignLabModal({
       setLinkedAssignmentId(found.linkedAssignmentId || '');
       setGradeMode(found.linkedAssignmentId ? 'existing' : 'practice');
       setUniqueVariant(Boolean(found.uniqueVariant));
+      setMappedClos(normalizeMappedClos(found.mappedClos));
     } else if (!existingConfig) {
       setTitle(def?.title || '');
       setEnabled(true);
@@ -104,7 +110,9 @@ export default function AssignLabModal({
       setLinkedAssignmentId('');
       setGradeMode('practice');
       setUniqueVariant(false);
+      setMappedClos([]);
     }
+    setSavedDatasets(normalizeLabDatasetsLibrary(meta.lab_datasets));
     Promise.all([
       supabase
         .from('assignments')
@@ -117,11 +125,17 @@ export default function AssignLabModal({
         .eq('course_id', selectedCourse.id)
         .eq('kind', 'assignments')
         .order('position'),
-    ]).then(([aRes, caRes]) => {
+      supabase
+        .from('course_outcomes')
+        .select('id, code, title')
+        .eq('course_id', selectedCourse.id)
+        .order('code'),
+    ]).then(([aRes, caRes, cloRes]) => {
       if (!alive) return;
       setAssignments(aRes.data || []);
       setCaComponents(caRes.data || []);
-    });
+      setCourseClos(Array.isArray(cloRes?.data) ? cloRes.data : []);
+    }).catch(() => {});
     return () => { alive = false; };
   }, [selectedCourse?.id, labId]);
 
@@ -498,16 +512,19 @@ export default function AssignLabModal({
         instructions: instructions.trim(),
         linkedAssignmentId: finalAssignmentId,
         uniqueVariant: Boolean(uniqueVariant),
+        mappedClos: normalizeMappedClos(mappedClos),
         updatedAt: new Date().toISOString(),
       };
       const others = (meta.labs_config || []).filter((l) => l.labId !== labId);
       const nextLabs = [...others, nextEntry];
+      const mergedLibrary = normalizeLabDatasetsLibrary(savedDatasets.length ? savedDatasets : meta.lab_datasets);
       const serialized = serializeCourseMeta(
         meta.about,
         meta.ca_config,
         meta.exam_config,
         meta.course_info,
         nextLabs,
+        mergedLibrary,
       );
       await run(supabase.from('courses').update({ description: serialized }).eq('id', selectedCourse.id));
 
@@ -620,30 +637,29 @@ export default function AssignLabModal({
 
           {dataMode !== 'student_only' && (
             <div className="stack-sm" style={{ paddingTop: 10, borderTop: '1px solid var(--line-2)' }}>
-              <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
-                <strong className="small">Course Dataset (Starter Preset or Your Own CSV / Excel)</strong>
-                <div className="row-wrap" style={{ gap: 6 }}>
-                  <input ref={fileRef} type="file" accept=".csv,.xlsx" style={{ display: 'none' }} onChange={handleCustomFile} />
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={() => {
-                      const tpl = buildLabCsvTemplate(labId, labId === 'tqm_spc' ? customSpcType : '');
-                      downloadText(tpl.filename, tpl.content);
-                    }}
-                  >
-                    <Icon name="download" size={13} /> Download CSV Template
-                  </button>
-                  <button type="button" className="btn btn-sm" onClick={() => fileRef.current?.click()}>
-                    <Icon name="upload" size={13} /> Upload My Dataset
-                  </button>
-                  {customDataset && (
-                    <button type="button" className="btn btn-sm" onClick={() => { setCustomDataset(null); setUploadNote(''); }}>
-                      Use Preset Instead
-                    </button>
-                  )}
-                </div>
-              </div>
+              <DatasetMapperPanel
+                labId={labId}
+                customDataset={customDataset}
+                onApplyDataset={(ds, note) => { setCustomDataset(ds); setUploadNote(note || ''); }}
+                onClearDataset={() => { setCustomDataset(null); setUploadNote(''); }}
+                savedDatasets={savedDatasets}
+                onSaveToLibrary={(entry) => {
+                  setSavedDatasets((prev) => [entry, ...prev.filter((d) => !(d.labId === entry.labId && d.name === entry.name))].slice(0, 24));
+                }}
+                onDeleteFromLibrary={(id) => {
+                  setSavedDatasets((prev) => prev.filter((d) => d.id !== id));
+                  toast('Removed dataset from Course Library (click Save Class Lab Settings to commit).');
+                }}
+                options={{
+                  chartType: customSpcType,
+                  lsl: customLsl,
+                  usl: customUsl,
+                  currency: customCurrency,
+                  revenue: customRevenue,
+                  unitsProduced: customUnits,
+                }}
+                toast={toast}
+              />
 
               {labId === 'tqm_spc' && (
                 <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 1fr', gap: 8 }}>
@@ -852,6 +868,33 @@ export default function AssignLabModal({
             </div>
           )}
         </div>
+
+        {/* Course Learning Outcome (CLO) Alignment */}
+        {courseClos.length > 0 && (
+          <div className="card-soft stack-xs" style={{ padding: 12 }}>
+            <div className="between">
+              <strong className="small">Course Learning Outcome (CLO) Alignment</strong>
+              <span className="tiny muted">{mappedClos.length} mapped</span>
+            </div>
+            <div className="row-wrap" style={{ gap: 6 }}>
+              {courseClos.map((clo) => {
+                const code = String(clo.code || '').toUpperCase();
+                const active = mappedClos.includes(code);
+                return (
+                  <button
+                    key={clo.id || code}
+                    type="button"
+                    className={active ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
+                    title={clo.title || code}
+                    onClick={() => setMappedClos((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]))}
+                  >
+                    {active ? '✓ ' : ''}{code}{clo.title ? ` — ${clo.title.slice(0, 32)}${clo.title.length > 32 ? '…' : ''}` : ''}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <Field label="Task Brief & Written Judgement Prompt for Students">
           <textarea

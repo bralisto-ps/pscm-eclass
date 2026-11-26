@@ -11,6 +11,11 @@ import { downloadText } from '../../lib/sheets.js';
 import { formatAutoScoredSubmissionHeader } from '../../lib/psisMilestone4Engine.js';
 import { LAB_CONCEPT_GUIDES, LAB_TRACK_META } from '../../lib/labScoringBridge.js';
 import { generateUniqueLabVariant } from '../../lib/labMilestone6Engine.js';
+import {
+  buildCarryForwardPayload,
+  extractCarryForwardImport,
+  getCarryForwardTargets,
+} from '../../lib/labMilestone7Engine.js';
 
 const SpcLab = lazy(() => import('./SpcLab.jsx'));
 const QualityToolsLab = lazy(() => import('./QualityToolsLab.jsx'));
@@ -58,13 +63,51 @@ export default function LabRunnerModal({
     return generateUniqueLabVariant({ labId: def.id, basePreset, seedKey });
   }, [def, labConfig, mySyndicate, assignment?.id, course?.id, profile?.index_no, session?.user?.id]);
 
+  // End-to-end Supply Chain "Carry Forward" handoff state (scoped per course)
+  const handoffKey = `pscm_lab_handoff:${course?.id || 'sandbox'}`;
+  const [carriedImport, setCarriedImport] = useState(null);
+  const availableUpstream = useMemo(() => {
+    if (!def?.id) return null;
+    try {
+      const raw = localStorage.getItem(handoffKey);
+      if (!raw) return null;
+      const store = JSON.parse(raw);
+      const list = Array.isArray(store) ? store : [store];
+      for (const item of list) {
+        const extracted = extractCarryForwardImport(def.id, item);
+        if (extracted) return extracted;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }, [def?.id, handoffKey]);
+  const carryTargets = useMemo(() => getCarryForwardTargets(def?.id), [def?.id]);
+
+  // Confidential Syndicate Peer Contribution Rating state (1–5 per teammate)
+  const peerCheckActive = Boolean(mySyndicate && !previewOnly && assignMeta?.syndicate?.peerCheck !== false && (mySyndicate.members || []).length > 1);
+  const [peerPanelOpen, setPeerPanelOpen] = useState(false);
+  const [peerScores, setPeerScores] = useState(() => {
+    const init = {};
+    (mySyndicate?.members || []).forEach((idx) => {
+      init[String(idx)] = { score: 5, note: '' };
+    });
+    return init;
+  });
+
   const effectiveLabConfig = useMemo(() => {
+    if (carriedImport?.dataset) {
+      return {
+        ...labConfig,
+        customDataset: carriedImport.dataset,
+      };
+    }
     if (!uniqueVariantResult?.customDataset) return labConfig;
     return {
       ...labConfig,
       customDataset: uniqueVariantResult.customDataset,
     };
-  }, [labConfig, uniqueVariantResult]);
+  }, [labConfig, uniqueVariantResult, carriedImport]);
 
   const storageKey = `pscm_lab_draft:${course?.id || 'sandbox'}:${labConfig?.id || labConfig?.labId}:${mySyndicate ? `syn_${mySyndicate.id || mySyndicate.name}` : (session?.user?.id || 'guest')}${uniqueVariantResult ? `:${uniqueVariantResult.variantTag}` : ''}`;
 
@@ -292,6 +335,15 @@ export default function LabRunnerModal({
     }
     setSubmitting(true);
     try {
+      const peerRatingsPayload = peerCheckActive
+        ? (mySyndicate?.members || [])
+            .filter((idx) => String(idx).toUpperCase() !== String(profile?.index_no || '').toUpperCase())
+            .map((idx) => ({
+              indexNo: String(idx),
+              score: Number(peerScores[String(idx)]?.score || 5),
+              note: String(peerScores[String(idx)]?.note || '').trim(),
+            }))
+        : [];
       const res = await submitLabReportToAssignment({
         assignment,
         profile,
@@ -299,6 +351,12 @@ export default function LabRunnerModal({
         reportTitle: built.title,
         reportBody: wrapReportBody(built),
         note: `Submitted from ${def.shortTitle} Lab${uniqueVariantResult ? ` (${uniqueVariantResult.variantTag})` : ''}`,
+        extraTypingMeta: {
+          labId: def.id,
+          variantTag: uniqueVariantResult?.variantTag || null,
+          syndicateName: mySyndicate?.name || null,
+          ...(peerRatingsPayload.length ? { syndicatePeerRatings: peerRatingsPayload } : {}),
+        },
       });
       setSubmitDone(true);
       toast(
@@ -312,6 +370,35 @@ export default function LabRunnerModal({
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function saveCarryForward() {
+    const activeDs = effectiveLabConfig?.customDataset || getLabPreset(def.id, effectiveLabConfig?.presetId) || {};
+    const payload = buildCarryForwardPayload(def.id, latestDraftRef.current || draftState || {}, activeDs);
+    if (!payload) {
+      toast('Complete or load records in this lab first before carrying forward.', 'error');
+      return;
+    }
+    try {
+      const prevRaw = localStorage.getItem(handoffKey);
+      const prevList = prevRaw ? JSON.parse(prevRaw) : [];
+      const arr = Array.isArray(prevList) ? prevList.filter((x) => x?.sourceLabId !== def.id) : [];
+      arr.unshift(payload);
+      localStorage.setItem(handoffKey, JSON.stringify(arr.slice(0, 6)));
+      const targetsText = carryTargets.map((t) => t.label.split('→')[1]?.trim() || t.targetLabId).join(' or ');
+      toast(`Saved ${payload.itemCount} records for Carry Forward! Open ${targetsText} to import them.`);
+    } catch {
+      toast('Could not save carry-forward handoff locally.', 'error');
+    }
+  }
+
+  function applyUpstreamCarryForward() {
+    if (!availableUpstream) return;
+    setCarriedImport(availableUpstream);
+    setDraftState(null);
+    latestDraftRef.current = null;
+    setSyncVersion((v) => v + 1);
+    toast(`Loaded carried-forward data from ${availableUpstream.sourceLabel}!`);
   }
 
   function resetDraft() {
@@ -375,6 +462,11 @@ export default function LabRunnerModal({
                   ● UNIQUE VARIANT {uniqueVariantResult.variantTag}
                 </span>
               )}
+              {Array.isArray(labConfig?.mappedClos) && labConfig.mappedClos.length > 0 && (
+                <span className="mono" style={{ marginLeft: 8, color: '#1d4ed8', fontWeight: 700 }}>
+                  · {labConfig.mappedClos.join(' · ')}
+                </span>
+              )}
             </div>
             <h2 style={{ margin: '2px 0 0', fontSize: 18 }}>
               {labConfig?.title || def.title}
@@ -389,6 +481,16 @@ export default function LabRunnerModal({
                 onClick={() => setGuideOpen((v) => !v)}
               >
                 <Icon name="book" size={14} /> {guideOpen ? 'Hide Guide' : 'Formula & Concept Guide'}
+              </button>
+            )}
+            {carryTargets.length > 0 && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={saveCarryForward}
+                title={carryTargets.map((t) => t.label).join(' | ')}
+              >
+                <Icon name="arrow" size={14} /> Carry Forward → Next Lab
               </button>
             )}
             <button type="button" className="btn btn-sm" onClick={downloadPdfReport}>
@@ -525,6 +627,121 @@ export default function LabRunnerModal({
                 <Icon name="upload" size={13} /> Load Draft
               </button>
             </div>
+          </div>
+        )}
+
+        {/* End-to-End Supply Chain Carry-Forward Banner (Upstream -> Downstream) */}
+        {availableUpstream && !carriedImport && (
+          <div
+            className="between small"
+            style={{
+              padding: '8px 20px',
+              background: '#eff6ff',
+              borderBottom: '1px solid #bfdbfe',
+              flexWrap: 'wrap',
+              gap: 10,
+            }}
+          >
+            <div>
+              <strong style={{ color: '#1e3a8a' }}>Supply Chain Carry-Forward Ready:</strong>{' '}
+              <span className="muted">Import your output directly from {availableUpstream.sourceLabel} ({availableUpstream.dataset?.name}).</span>
+            </div>
+            <button type="button" className="btn btn-primary btn-sm" onClick={applyUpstreamCarryForward}>
+              Load Upstream Lab Data
+            </button>
+          </div>
+        )}
+        {carriedImport && (
+          <div
+            className="between small"
+            style={{
+              padding: '8px 20px',
+              background: 'var(--teal-50)',
+              borderBottom: '1px solid var(--line)',
+              flexWrap: 'wrap',
+              gap: 10,
+            }}
+          >
+            <div className="tiny">
+              <strong style={{ color: 'var(--teal-700)' }}>● USING CARRIED-FORWARD DATA:</strong> {carriedImport.dataset?.name} (from {carriedImport.sourceLabel})
+            </div>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => {
+                setCarriedImport(null);
+                setSyncVersion((v) => v + 1);
+                toast('Switched back to default lab dataset.');
+              }}
+            >
+              Revert to Default Dataset
+            </button>
+          </div>
+        )}
+
+        {/* Confidential Syndicate Peer Contribution Check Drawer */}
+        {peerCheckActive && (
+          <div style={{ padding: '8px 20px', background: 'var(--surface)', borderBottom: '1px solid var(--line)' }}>
+            <div className="between" style={{ gap: 10, flexWrap: 'wrap' }}>
+              <span className="tiny">
+                <strong>Confidential Syndicate Peer Contribution Check:</strong> Rate your teammates’ contribution (1–5) before submitting so marks stay fair.
+              </span>
+              <button
+                type="button"
+                className={peerPanelOpen ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
+                onClick={() => setPeerPanelOpen((v) => !v)}
+              >
+                {peerPanelOpen ? 'Hide Peer Ratings' : 'Rate Teammates (Confidential)'}
+              </button>
+            </div>
+            {peerPanelOpen && (
+              <div className="stack-xs" style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--line-2)' }}>
+                {(mySyndicate.members || [])
+                  .filter((idx) => String(idx).toUpperCase() !== String(profile?.index_no || '').toUpperCase())
+                  .map((idx) => {
+                    const key = String(idx);
+                    const cur = peerScores[key] || { score: 5, note: '' };
+                    return (
+                      <div
+                        key={key}
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'minmax(110px, 0.8fr) auto 1.5fr',
+                          gap: 8,
+                          alignItems: 'center',
+                        }}
+                      >
+                        <strong className="mono tiny">{key}</strong>
+                        <select
+                          className="input"
+                          style={{ width: 'auto', minHeight: 34 }}
+                          value={cur.score}
+                          onChange={(e) => setPeerScores((prev) => ({
+                            ...prev,
+                            [key]: { ...cur, score: Number(e.target.value) },
+                          }))}
+                        >
+                          <option value={5}>5 / 5 — Exceptional</option>
+                          <option value={4}>4 / 5 — Fair &amp; Reliable</option>
+                          <option value={3}>3 / 5 — Partial Effort</option>
+                          <option value={2}>2 / 5 — Minimal Contribution</option>
+                          <option value={1}>1 / 5 — Did Not Participate</option>
+                        </select>
+                        <input
+                          className="input"
+                          style={{ minHeight: 34 }}
+                          placeholder="Optional confidential note for lecturer…"
+                          value={cur.note}
+                          onChange={(e) => setPeerScores((prev) => ({
+                            ...prev,
+                            [key]: { ...cur, note: e.target.value },
+                          }))}
+                        />
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
           </div>
         )}
 

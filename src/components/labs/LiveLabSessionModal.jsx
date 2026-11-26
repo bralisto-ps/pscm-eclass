@@ -12,6 +12,13 @@ import {
   assignStudentsToP2pGroups,
   generateSessionCode,
 } from '../../lib/psisMilestone4Engine.js';
+import {
+  advanceLiveAuctionRound,
+  assignAuctionBidders,
+  computeLiveAuctionMetrics,
+  createInitialReverseAuctionState,
+  processLiveAuctionBid,
+} from '../../lib/labMilestone7Engine.js';
 
 const LIVE_LAB_OPTIONS = [
   {
@@ -31,6 +38,12 @@ const LIVE_LAB_OPTIONS = [
     code: 'PSIS-LAB 04',
     title: 'P2P Controls & Segregation of Duties — Live 4-Role Audit',
     desc: 'Deal students into Buyer / Storekeeper / Finance / Manager roles with real 403 SoD blocks, then grant Group 1 Super-User to prove Ghost-Vendor fraud live.',
+  },
+  {
+    id: 'psis_the_tender',
+    code: 'PSIS-LAB 06',
+    title: 'Electronic Tendering — Live Multi-Student Reverse Auction',
+    desc: 'Students compete as rival suppliers on their phones in real-time bidding rounds while the projector tracks live price savings and Winner’s Curse risk.',
   },
 ];
 
@@ -79,6 +92,9 @@ function createInitialLabState(labId) {
       pendingOrders: {}, // { [participantId]: number }
       history: [], // [{ week, demand, avgByTier: { retailer, wholesaler, distributor, factory } }]
     };
+  }
+  if (labId === 'psis_the_tender') {
+    return createInitialReverseAuctionState();
   }
   // psis_the_match
   return {
@@ -165,6 +181,68 @@ function LiveBullwhipChart({ history }) {
   );
 }
 
+function LiveReverseAuctionChart({ state }) {
+  const bids = state?.bids || [];
+  const ceiling = Number(state?.reserveCeiling) || 120000;
+  const floor = Number(state?.costFloor) || Math.round(ceiling * 0.78);
+  const width = 560;
+  const height = 185;
+  const pad = { l: 58, r: 16, t: 16, b: 26 };
+  const plotW = width - pad.l - pad.r;
+  const plotH = height - pad.t - pad.b;
+
+  if (!bids.length) {
+    return (
+      <div className="card-soft small muted" style={{ padding: 18, textAlign: 'center' }}>
+        Waiting for student bidders to submit opening bids below the {state?.currency || 'GHS'} {ceiling.toLocaleString()} ceiling…
+      </div>
+    );
+  }
+
+  const pts = [{ label: 'Ceiling', amount: ceiling }, ...bids.map((b, i) => ({ label: `B${i + 1}`, amount: b.amount, belowFloor: b.belowFloor }))];
+  const minY = Math.min(floor * 0.92, ...pts.map((p) => p.amount)) * 0.96;
+  const maxY = ceiling * 1.04;
+  const span = Math.max(1, maxY - minY);
+  const xOf = (idx) => (pts.length === 1 ? pad.l + plotW / 2 : pad.l + (idx / (pts.length - 1)) * plotW);
+  const yOf = (v) => pad.t + plotH - ((v - minY) / span) * plotH;
+  const linePath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(i).toFixed(1)} ${yOf(p.amount).toFixed(1)}`).join(' ');
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+      {[0, 0.5, 1].map((f) => {
+        const val = minY + span * f;
+        const y = yOf(val);
+        return (
+          <g key={f}>
+            <line x1={pad.l} x2={width - pad.r} y1={y} y2={y} stroke="var(--line)" strokeDasharray="3 3" />
+            <text x={pad.l - 6} y={y + 3} textAnchor="end" fontSize="9.5" fill="var(--muted)" fontFamily="monospace">
+              {Math.round(val).toLocaleString()}
+            </text>
+          </g>
+        );
+      })}
+      {(state?.revealCostFloor || bids.some((b) => b.belowFloor)) && (
+        <g>
+          <line x1={pad.l} x2={width - pad.r} y1={yOf(floor)} y2={yOf(floor)} stroke="#dc2626" strokeWidth="1.6" strokeDasharray="5 4" />
+          <text x={width - pad.r - 4} y={yOf(floor) - 5} textAnchor="end" fontSize="9.5" fill="#dc2626" fontFamily="monospace">
+            Sustainable Cost Floor: {floor.toLocaleString()}
+          </text>
+        </g>
+      )}
+      <path d={linePath} fill="none" stroke="#1d4ed8" strokeWidth="2.4" />
+      {pts.map((p, i) => (
+        <circle
+          key={i}
+          cx={xOf(i)}
+          cy={yOf(p.amount)}
+          r={i === pts.length - 1 ? 4.5 : 3}
+          fill={p.belowFloor ? '#dc2626' : '#0f766e'}
+        />
+      ))}
+    </svg>
+  );
+}
+
 export default function LiveLabSessionModal({
   isHost = false,
   initialLabId = 'psis_seven_names',
@@ -195,6 +273,7 @@ export default function LiveLabSessionModal({
   const [studentNewSkuName, setStudentNewSkuName] = useState('');
   const [studentOrderInput, setStudentOrderInput] = useState('40');
   const [studentVendorInput, setStudentVendorInput] = useState('Ghost Shell Traders Ltd');
+  const [studentBidInput, setStudentBidInput] = useState('');
   const [lastStudentFeedback, setLastStudentFeedback] = useState(null);
 
   const clientIdRef = useRef(
@@ -356,6 +435,28 @@ export default function LiveLabSessionModal({
         );
         broadcastState(curLab, nextState, curAssign);
       }
+    } else if (curLab === 'psis_the_tender' && action === 'submit_bid') {
+      const bidderMeta = curAssign[fromId];
+      const bidderLabel = bidderMeta ? `${bidderMeta.bidderCode} (${fromName})` : fromName;
+      const res = processLiveAuctionBid(curState, {
+        bidId: data.bidId,
+        bidderId: fromId,
+        bidderName: bidderLabel,
+        amount: Number(data.amount),
+      });
+      if (!res.ok) {
+        if (!res.duplicate) {
+          pushLog(fromName, 'BID_REJECTED', res.reason);
+        }
+        return;
+      }
+      setLabState(res.nextState);
+      pushLog(
+        bidderLabel,
+        res.belowFloor ? 'WINNERS_CURSE_BID' : 'REVERSE_BID',
+        `Bid ${res.nextState.currency} ${res.entry.amount.toLocaleString()} (Round ${res.entry.round})${res.belowFloor ? ' — BELOW SUSTAINABLE COST FLOOR!' : ''}`,
+      );
+      broadcastState(curLab, res.nextState, curAssign);
     }
   }
 
@@ -478,7 +579,45 @@ export default function LiveLabSessionModal({
       pushLog('Lecturer', 'DEAL_P2P_ROLES', `Dealt ${participants.length} student(s) into 4-role P2P groups.`);
       broadcastState(labId, labState, nextA);
       toast(`Dealt ${participants.length} students into 4-role P2P control groups.`);
+    } else if (labId === 'psis_the_tender') {
+      const nextA = assignAuctionBidders(participants);
+      setAssignments(nextA);
+      pushLog('Lecturer', 'DEAL_BIDDERS', `Assigned bidder codes & private cost guidance to ${participants.length} participant(s).`);
+      broadcastState(labId, labState, nextA);
+      toast(`Assigned bidder IDs to ${participants.length} student(s).`);
     }
+  }
+
+  function nextAuctionRound() {
+    const nextState = advanceLiveAuctionRound(labState);
+    setLabState(nextState);
+    pushLog('Lecturer', 'AUCTION_ROUND', `Opened Reverse Auction Round ${nextState.round}`);
+    broadcastState(labId, nextState, assignments);
+  }
+
+  function toggleAuctionFloorReveal() {
+    const nextState = { ...labState, revealCostFloor: !labState.revealCostFloor };
+    setLabState(nextState);
+    pushLog('Lecturer', 'COST_FLOOR', nextState.revealCostFloor ? 'Revealed Sustainable Cost Floor on projector' : 'Hid Sustainable Cost Floor');
+    broadcastState(labId, nextState, assignments);
+  }
+
+  function awardLiveAuction() {
+    const nextState = {
+      ...labState,
+      status: 'awarded',
+      revealCostFloor: true,
+      winner: labState.leaderName ? { name: labState.leaderName, amount: labState.currentLowestBid } : null,
+    };
+    setLabState(nextState);
+    pushLog(
+      'Lecturer',
+      'AUCTION_AWARDED',
+      nextState.winner
+        ? `Awarded contract to ${nextState.winner.name} at ${nextState.currency} ${nextState.winner.amount.toLocaleString()}`
+        : 'Closed Reverse Auction with no bids',
+    );
+    broadcastState(labId, nextState, assignments);
   }
 
   function toggleSuperUserDemo() {
@@ -766,7 +905,7 @@ export default function LiveLabSessionModal({
                       className={`btn btn-sm ${labId === opt.id ? 'btn-primary' : ''}`}
                       onClick={() => switchHostLab(opt.id)}
                     >
-                      {opt.code}: {opt.id === 'psis_seven_names' ? 'Master Data' : opt.id === 'psis_the_whip' ? 'Bullwhip Chains' : 'P2P Controls'}
+                      {opt.code}: {opt.id === 'psis_seven_names' ? 'Master Data' : opt.id === 'psis_the_whip' ? 'Bullwhip Chains' : opt.id === 'psis_the_tender' ? 'Reverse Auction' : 'P2P Controls'}
                     </button>
                   ))}
                 </div>
@@ -945,6 +1084,65 @@ export default function LiveLabSessionModal({
                       )}
                     </>
                   )}
+
+                  {labId === 'psis_the_tender' && (() => {
+                    const metrics = computeLiveAuctionMetrics(labState);
+                    return (
+                      <>
+                        <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                          <div>
+                            <div className="tiny muted">LIVE MULTI-STUDENT REVERSE AUCTION · ROUND {labState.round || 1} ({labState.status === 'awarded' ? 'AWARDED' : 'BIDDING OPEN'})</div>
+                            <div className="small"><strong>{labState.lotTitle}</strong></div>
+                          </div>
+                          <div className="row-wrap" style={{ gap: 6 }}>
+                            <button type="button" className="btn btn-sm" onClick={dealParticipants}>Assign Bidders</button>
+                            <button type="button" className="btn btn-sm" disabled={labState.status === 'awarded'} onClick={nextAuctionRound}>Next Round</button>
+                            <button type="button" className="btn btn-sm" onClick={toggleAuctionFloorReveal}>
+                              {labState.revealCostFloor ? 'Hide Cost Floor' : 'Reveal Cost Floor'}
+                            </button>
+                            <button type="button" className="btn btn-primary btn-sm" disabled={labState.status === 'awarded'} onClick={awardLiveAuction}>
+                              Award Contract
+                            </button>
+                          </div>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: 8 }}>
+                          <div className="card-soft" style={{ padding: 10 }}>
+                            <div className="tiny muted">Reserve Ceiling</div>
+                            <strong className="mono">{labState.currency} {(labState.reserveCeiling || 0).toLocaleString()}</strong>
+                          </div>
+                          <div className="card-soft" style={{ padding: 10 }}>
+                            <div className="tiny muted">Current Leading Bid</div>
+                            <strong className="mono" style={{ color: metrics.winnersCurseTriggered ? 'var(--red)' : 'var(--teal-700)' }}>
+                              {labState.currency} {(labState.currentLowestBid || 0).toLocaleString()}
+                            </strong>
+                            <div className="tiny muted">{labState.leaderName || 'No bids yet'}</div>
+                          </div>
+                          <div className="card-soft" style={{ padding: 10 }}>
+                            <div className="tiny muted">Savings vs Ceiling</div>
+                            <strong className="mono" style={{ color: 'var(--teal-700)' }}>{metrics.savingsPct}%</strong>
+                            <div className="tiny muted">{labState.currency} {metrics.savingsAmount.toLocaleString()}</div>
+                          </div>
+                          <div className="card-soft" style={{ padding: 10 }}>
+                            <div className="tiny muted">Winner’s Curse Risk</div>
+                            <strong className="mono" style={{ color: metrics.winnersCurseTriggered ? 'var(--red)' : 'var(--teal-700)' }}>
+                              {metrics.winnersCurseTriggered ? '▲ TRIGGERED' : '● SUSTAINABLE'}
+                            </strong>
+                            <div className="tiny muted">{metrics.totalBids} total bid{metrics.totalBids === 1 ? '' : 's'}</div>
+                          </div>
+                        </div>
+                        <LiveReverseAuctionChart state={labState} />
+                        {labState.status === 'awarded' && labState.winner && (
+                          <div className={metrics.winnersCurseTriggered ? 'notice-err small' : 'notice small'}>
+                            <strong>Contract Awarded to {labState.winner.name}</strong> at{' '}
+                            <strong className="mono">{labState.currency} {labState.winner.amount.toLocaleString()}</strong> ({metrics.savingsPct}% savings).{' '}
+                            {metrics.winnersCurseTriggered
+                              ? `WARNING: Winning bid is below the ${labState.currency} ${(labState.costFloor || 0).toLocaleString()} sustainable cost floor — debrief quality/default risk!`
+                              : 'Winning bid remains above the sustainable delivery cost floor.'}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
 
                 {/* Right: Live Student Roster & Append-Only Event Log */}
@@ -958,6 +1156,8 @@ export default function LiveLabSessionModal({
                         const a = assignments[p.id];
                         const tag = a?.tier
                           ? `C${a.chainNo}·${a.tier}`
+                          : a?.bidderCode
+                            ? a.bidderCode
                           : a?.groupNo
                             ? `G${a.groupNo}·${a.isSuperUserDemo ? 'SUPER-USER' : a.roles?.[0]}`
                             : 'ready';
@@ -1190,6 +1390,83 @@ export default function LiveLabSessionModal({
                   )}
                 </>
               )}
+
+              {labId === 'psis_the_tender' && (() => {
+                const curLow = Number(labState.currentLowestBid) || Number(labState.reserveCeiling) || 120000;
+                const minDec = Number(labState.minDecrementPct) || 1;
+                const maxNextBid = (labState.bids || []).length === 0
+                  ? curLow
+                  : Math.floor(curLow * (1 - minDec / 100));
+                const privateCostEst = Math.round((Number(labState.costFloor) || 93600) * (myAssignment?.costMultiplier || 1));
+                const isLeading = labState.leaderId === clientIdRef.current;
+                const submitQuickBid = (amt) => {
+                  const val = Math.round(Number(amt));
+                  if (!val || val <= 0) return;
+                  if (val > maxNextBid) {
+                    toast(`Bid must be ≤ ${labState.currency} ${maxNextBid.toLocaleString()} (min ${minDec}% below current low).`, 'error');
+                    return;
+                  }
+                  sendStudentAction('submit_bid', {
+                    bidId: `${clientIdRef.current}:${Date.now()}:${val}`,
+                    amount: val,
+                  });
+                  setStudentBidInput('');
+                  toast(`Submitted bid of ${labState.currency} ${val.toLocaleString()}!`);
+                };
+                return (
+                  <>
+                    <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                      <div className="tiny muted">LIVE REVERSE AUCTION · ROUND {labState.round || 1}</div>
+                      <strong className="mono tiny" style={{ color: isLeading ? 'var(--teal-700)' : '#1d4ed8' }}>
+                        {myAssignment?.bidderCode || 'BIDDER READY'}{isLeading ? ' · ★ CURRENT LEADER' : ''}
+                      </strong>
+                    </div>
+                    <div className="small"><strong>{labState.lotTitle}</strong></div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      <div className="card-soft" style={{ padding: 10 }}>
+                        <div className="tiny muted">Current Lowest Bid</div>
+                        <strong className="mono" style={{ fontSize: 17 }}>{labState.currency} {curLow.toLocaleString()}</strong>
+                        <div className="tiny muted">{labState.leaderName || 'Opening ceiling'}</div>
+                      </div>
+                      <div className="card-soft" style={{ padding: 10 }}>
+                        <div className="tiny muted">Your Estimated Cost Floor</div>
+                        <strong className="mono" style={{ fontSize: 17, color: '#b45309' }}>{labState.currency} {privateCostEst.toLocaleString()}</strong>
+                        <div className="tiny muted">Bidding below this risks losses</div>
+                      </div>
+                    </div>
+                    {labState.status === 'awarded' ? (
+                      <div className="notice small">
+                        <strong>Auction Closed:</strong> Awarded to {labState.winner?.name || '—'} at{' '}
+                        <strong className="mono">{labState.currency} {(labState.winner?.amount || curLow).toLocaleString()}</strong>.
+                      </div>
+                    ) : (
+                      <>
+                        <div className="row-wrap" style={{ gap: 8 }}>
+                          <button type="button" className="btn btn-sm" onClick={() => submitQuickBid(Math.floor(curLow * 0.98))}>
+                            Quick Bid −2% ({Math.floor(curLow * 0.98).toLocaleString()})
+                          </button>
+                          <button type="button" className="btn btn-sm" onClick={() => submitQuickBid(Math.floor(curLow * 0.95))}>
+                            Aggressive −5% ({Math.floor(curLow * 0.95).toLocaleString()})
+                          </button>
+                        </div>
+                        <div className="row" style={{ gap: 8 }}>
+                          <input
+                            className="input mono"
+                            type="number"
+                            style={{ flex: 1 }}
+                            placeholder={`Enter bid ≤ ${maxNextBid.toLocaleString()}`}
+                            value={studentBidInput}
+                            onChange={(e) => setStudentBidInput(e.target.value)}
+                          />
+                          <button type="button" className="btn btn-primary" onClick={() => submitQuickBid(studentBidInput || maxNextBid)}>
+                            Place Bid
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           )}
         </div>

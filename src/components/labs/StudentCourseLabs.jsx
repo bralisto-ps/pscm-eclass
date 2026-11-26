@@ -177,6 +177,7 @@ export default function StudentCourseLabs({ course, assignments = [], previewOnl
                   {track.stage} · {def.duration} · {policy}
                   {cfg.customDataset?.name ? ` · Dataset: ${cfg.customDataset.name}` : ''}
                   {cfg.uniqueVariant && !cfg.customDataset ? ' · Unique Data Variant' : ''}
+                  {Array.isArray(cfg.mappedClos) && cfg.mappedClos.length > 0 ? ` · ${cfg.mappedClos.join(', ')}` : ''}
                 </div>
 
                 <p className="small muted" style={{ margin: '6px 0 0', lineHeight: 1.5 }}>
