@@ -111,8 +111,8 @@ test('Excel workbook builder sanitizes formula injection and exports 3 structure
   assert.equal(sheets[2].name, 'Written Judgement');
 });
 
-test('Multi-Quarter Scenario Shock simulator covers all 14 labs and scores decisions accurately', () => {
-  assert.equal(ALL_LAB_IDS.length, 14);
+test('Multi-Quarter Scenario Shock simulator covers all 18 labs and scores decisions accurately', () => {
+  assert.equal(ALL_LAB_IDS.length, 18);
   for (const labId of ALL_LAB_IDS) { const lab = { id: labId };
     const qs = getLabScenarioShocks(lab.id);
     assert.equal(qs.length, 3, `${lab.id} should have 3 scenario shock quarters`);
@@ -131,7 +131,7 @@ test('Multi-Quarter Scenario Shock simulator covers all 14 labs and scores decis
   }
 });
 
-test('Industry-scale messy dataset generators produce valid datasets for all 14 labs', () => {
+test('Industry-scale messy dataset generators produce valid datasets for all 18 labs', () => {
   for (const labId of ALL_LAB_IDS) { const lab = { id: labId };
     const res = generateIndustryScaleDataset(lab.id);
     assert.ok(res && res.dataset && res.rowCount > 0, `Industry dataset missing for ${lab.id}`);
@@ -141,7 +141,7 @@ test('Industry-scale messy dataset generators produce valid datasets for all 14 
   assert.ok(generateIndustryScaleDataset('psis_spend_analytics').rowCount >= 120);
 });
 
-test('Guided hints & 4-criterion professional rubrics work across all 14 labs', () => {
+test('Guided hints & 4-criterion professional rubrics work across all 18 labs', () => {
   for (const labId of ALL_LAB_IDS) { const lab = { id: labId };
     const guide = getLabGuidedHints(lab.id, null, false);
     assert.equal(guide.steps.length, 3);

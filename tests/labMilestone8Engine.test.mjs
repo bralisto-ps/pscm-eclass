@@ -16,8 +16,8 @@ import {
 } from '../src/lib/labMilestone8Engine.js';
 import { LAB_DATASET_SCHEMAS } from '../src/lib/labMilestone7Engine.js';
 
-test('Milestone 7 Universal Dataset Mapper now covers all 14 labs', () => {
-  assert.equal(Object.keys(LAB_DATASET_SCHEMAS).length, 14);
+test('Milestone 7 Universal Dataset Mapper now covers all 18 labs', () => {
+  assert.equal(Object.keys(LAB_DATASET_SCHEMAS).length, 18);
 });
 
 test('Batch Auto-Score & Written Judgement Similarity Detector work accurately', () => {
