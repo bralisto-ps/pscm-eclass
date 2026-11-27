@@ -164,6 +164,45 @@ export const LAB_DATASET_SCHEMAS = {
       { key: 'ethicsScore', label: 'Ethical Audit Score (0–100)', required: false, aliases: ['ethicsscore', 'ethics', 'esg', 'audit'] },
     ],
   },
+  neg_zopa_batna: {
+    label: 'Distributive Bargaining BATNA & ZOPA Scenario',
+    fields: [
+      { key: 'buyerBatna', label: 'Buyer BATNA Price', required: true, aliases: ['buyerbatna', 'batna', 'alternative'] },
+      { key: 'buyerSwitchingCost', label: 'Switching Cost', required: false, aliases: ['switchingcost', 'switching', 'switch'] },
+      { key: 'buyerTarget', label: 'Buyer Target Price', required: false, aliases: ['buyertarget', 'target'] },
+      { key: 'buyerAnchor', label: 'Buyer Opening Anchor', required: false, aliases: ['buyeranchor', 'anchor'] },
+      { key: 'supplierCost', label: 'Supplier Unit Cost', required: true, aliases: ['suppliercost', 'cost', 'floor'] },
+      { key: 'supplierMinMarginPct', label: 'Supplier Min Margin %', required: false, aliases: ['supplierminmarginpct', 'margin', 'minmargin'] },
+      { key: 'supplierAnchor', label: 'Supplier Opening Ask', required: false, aliases: ['supplieranchor', 'ask', 'quote'] },
+      { key: 'quantity', label: 'Order Quantity', required: false, aliases: ['quantity', 'qty', 'volume'] },
+    ],
+  },
+  neg_integrative_pareto: {
+    label: 'Integrative Multi-Issue Scoring Matrix',
+    fields: [
+      { key: 'issue', label: 'Issue Name', required: true, aliases: ['issue', 'issuename', 'clause', 'term'] },
+      { key: 'optionLabel', label: 'Option Label', required: true, aliases: ['optionlabel', 'option', 'level', 'tier', 'label'] },
+      { key: 'buyerPoints', label: 'Buyer Utility Points', required: true, aliases: ['buyerpoints', 'buyerpts', 'buyer', 'bpts'] },
+      { key: 'supplierPoints', label: 'Supplier Utility Points', required: true, aliases: ['supplierpoints', 'supplierpts', 'supplier', 'spts'] },
+    ],
+  },
+  neg_should_cost: {
+    label: 'Open-Book Should-Cost Component Breakdown',
+    fields: [
+      { key: 'name', label: 'Cost Component Name', required: true, aliases: ['component', 'name', 'costline', 'item', 'driver'] },
+      { key: 'category', label: 'Cost Category (material/labour/overhead/logistics/sga)', required: false, aliases: ['category', 'type', 'bucket'] },
+      { key: 'quotedCost', label: 'Supplier Quoted Cost', required: true, aliases: ['quotedcost', 'quoted', 'supplierquote', 'quote'] },
+      { key: 'benchmarkCost', label: 'Verified Market Benchmark', required: true, aliases: ['benchmarkcost', 'benchmark', 'shouldcost', 'market'] },
+    ],
+  },
+  neg_power_concession: {
+    label: 'Concession Schedule & Conditional Trades',
+    fields: [
+      { key: 'round', label: 'Round Number', required: false, aliases: ['round', 'step', 'rd'] },
+      { key: 'concessionAmount', label: 'Concession Amount', required: true, aliases: ['concessionamount', 'concession', 'move', 'amount'] },
+      { key: 'ifThenTrade', label: 'Conditional If-Then Trade', required: false, aliases: ['ifthentrade', 'condition', 'trade', 'giveget'] },
+    ],
+  },
 };
 
 function normalizeHeaderToken(h) {
@@ -569,6 +608,59 @@ export function transformMappedRowsToDataset(labId, dataRows, mapping, options =
     return { dataset: { name: datasetName, currency, suppliers }, rowCount: suppliers.length, warnings };
   }
 
+  if (labId === 'neg_zopa_batna') {
+    const r = rows[0];
+    return {
+      dataset: {
+        name: datasetName,
+        currency,
+        buyerBatna: Math.max(1, parseNum(getCell(r, 'buyerBatna'), 1140)),
+        buyerSwitchingCost: Math.max(0, parseNum(getCell(r, 'buyerSwitchingCost'), 60)),
+        buyerTarget: Math.max(1, parseNum(getCell(r, 'buyerTarget'), 980)),
+        buyerAnchor: Math.max(1, parseNum(getCell(r, 'buyerAnchor'), 910)),
+        supplierCost: Math.max(1, parseNum(getCell(r, 'supplierCost'), 810)),
+        supplierMinMarginPct: Math.max(0, parseNum(getCell(r, 'supplierMinMarginPct'), 12)),
+        supplierAnchor: Math.max(1, parseNum(getCell(r, 'supplierAnchor'), 1290)),
+        quantity: Math.max(1, Math.round(parseNum(getCell(r, 'quantity'), 500))),
+      },
+      rowCount: rows.length,
+      warnings,
+    };
+  }
+  if (labId === 'neg_integrative_pareto') {
+    const issueMap = new Map();
+    rows.forEach((r, idx) => {
+      const iName = String(getCell(r, 'issue') || `Issue ${idx + 1}`).trim();
+      if (!issueMap.has(iName)) {
+        issueMap.set(iName, { id: `iss_${issueMap.size + 1}`, name: iName, options: [] });
+      }
+      const iss = issueMap.get(iName);
+      iss.options.push({
+        id: `${iss.id}_o${iss.options.length + 1}`,
+        label: String(getCell(r, 'optionLabel') || `Option ${iss.options.length + 1}`).trim(),
+        buyerPoints: Math.max(0, parseNum(getCell(r, 'buyerPoints'), 0)),
+        supplierPoints: Math.max(0, parseNum(getCell(r, 'supplierPoints'), 0)),
+      });
+    });
+    const issues = Array.from(issueMap.values());
+    return { dataset: { name: datasetName, buyerBatnaPts: 40, supplierBatnaPts: 40, issues }, rowCount: rows.length, warnings };
+  }
+  if (labId === 'neg_should_cost') {
+    const costLines = rows.map((r, i) => ({
+      name: String(getCell(r, 'name') || `Cost Line ${i + 1}`).trim(),
+      category: String(getCell(r, 'category') || 'overhead').trim().toLowerCase(),
+      quotedCost: Math.max(0, parseNum(getCell(r, 'quotedCost'), 10)),
+      benchmarkCost: Math.max(0, parseNum(getCell(r, 'benchmarkCost'), 8)),
+    }));
+    return { dataset: { name: datasetName, currency, annualVolume: 5000, supplierProfitMarginQuotedPct: 22, targetProfitMarginPct: 11, costLines }, rowCount: costLines.length, warnings };
+  }
+  if (labId === 'neg_power_concession') {
+    const concessionSteps = rows.map((r) => ({
+      concessionAmount: Math.max(0, parseNum(getCell(r, 'concessionAmount'), 25)),
+      ifThenTrade: String(getCell(r, 'ifThenTrade') || '').trim(),
+    }));
+    return { dataset: { name: datasetName, currency, buyerAnchor: 900, buyerReservation: 1120, supplierAnchor: 1260, concessionSteps }, rowCount: concessionSteps.length, warnings };
+  }
   throw new Error(`No mapper implemented for lab: ${labId}`);
 }
 
@@ -1312,6 +1404,54 @@ export function generateLabVivaQuestions({ labId, labEvidence, variantTag, stude
       {
         q: `How would you defend paying a modest green premium to a budget-constrained CFO?`,
         cue: 'Cite carbon-cap compliance, CBAM/regulatory tariff exposure, brand risk, and low abatement cost per tonne CO2e.',
+      },
+    ],
+    neg_zopa_batna: [
+      {
+        q: `In your negotiation variant${variantNote} (${topMetrics || 'your ZOPA analysis'}), how did switching cost change your Reservation Price relative to your raw BATNA?`,
+        cue: 'Buyer Reservation Price = BATNA + Switching Cost; ignoring switching costs creates an unrealistically low ceiling.',
+      },
+      {
+        q: `When a Negative ZOPA occurs, why is walking away superior to splitting the difference?`,
+        cue: 'Settling above Buyer Reservation destroys value relative to executing BATNA; only adding new issues can create a deal.',
+      },
+      {
+        q: `How did your opening anchor influence the supplier’s counter-offers across rounds?`,
+        cue: 'Well-justified aggressive anchors shift the perceived midpoint in the anchoring party’s favor without triggering walk-away.',
+      },
+    ],
+    neg_integrative_pareto: [
+      {
+        q: `Which two issues in your contract${variantNote} provided the largest logrolling gain, and why?`,
+        cue: 'Trading high-supplier/low-buyer weight issues (e.g., Payment Terms or Volume) for high-buyer/low-supplier issues (Lead Time/Warranty).',
+      },
+      {
+        q: `What does it mean mathematically when a deal sits inside rather than on the Pareto Efficient Frontier?`,
+        cue: 'Value was left on the table: at least one other feasible package improves one party without harming the other.',
+      },
+      {
+        q: `Why do skilled negotiators present MESO (Multiple Equivalent Simultaneous Offers) instead of a single take-it-or-leave-it offer?`,
+        cue: 'MESOs reveal the counterpart’s hidden priority weights while preserving identical utility for the proposer.',
+      },
+    ],
+    neg_should_cost: [
+      {
+        q: `Which specific cost line showed the highest percentage padding in your Should-Cost audit${variantNote}, and how would you challenge it without antagonizing the vendor?`,
+        cue: 'Cite verified market indices/benchmarks objectively and invite the supplier to explain efficiency or specification assumptions.',
+      },
+      {
+        q: `How does Wright’s learning curve justify lower unit labour costs when committing to higher multi-year volumes?`,
+        cue: 'Doubling cumulative volume lowers direct labour/conversion hours by a predictable percentage (e.g., 10% at a 90% curve).',
+      },
+    ],
+    neg_power_concession: [
+      {
+        q: `Why must concessions follow a diminishing pattern (e.g., 80 → 50 → 30 → 15) rather than equal or increasing steps?`,
+        cue: 'Diminishing concessions signal you are approaching your true limit; escalating concessions train the counterpart to stall.',
+      },
+      {
+        q: `When facing Supplier Dominance, what concrete actions strengthen your BATNA before entering the room?`,
+        cue: 'Qualify secondary sources, standardize proprietary specs, pool regional demand, or negotiate early before schedule urgency peaks.',
       },
     ],
   };

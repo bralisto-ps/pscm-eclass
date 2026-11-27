@@ -12,6 +12,7 @@ export const LAB_DOMAINS = [
   { id: 'TQM', label: 'Total Quality Management' },
   { id: 'PSIS', label: 'Purchasing & Supply IS' },
   { id: 'SCM', label: 'Logistics, Contracts & Sustainability' },
+  { id: 'NEG', label: 'Procurement Negotiation Science' },
 ];
 
 export const DATA_POLICIES = [
@@ -848,6 +849,153 @@ export const GREEN_PROCUREMENT_PRESETS = [
   },
 ];
 
+
+const NEG_ZOPA_PRESETS = [
+  {
+    id: 'zopa_industrial_valves',
+    name: 'Industrial Steel Valves Supply Contract',
+    currency: 'GHS',
+    quantity: 500,
+    buyerBatna: 1140,
+    buyerSwitchingCost: 60,
+    buyerTarget: 980,
+    buyerAnchor: 910,
+    supplierCost: 810,
+    supplierMinMarginPct: 12,
+    supplierAltOffer: 910,
+    supplierAnchor: 1290,
+  },
+  {
+    id: 'zopa_cold_chain_fleet',
+    name: 'Cold-Chain Fleet Leasing Renewal (Negative ZOPA Trap)',
+    currency: 'USD',
+    quantity: 20,
+    buyerBatna: 4100,
+    buyerSwitchingCost: 150,
+    buyerTarget: 3900,
+    buyerAnchor: 3750,
+    supplierCost: 3950,
+    supplierMinMarginPct: 12,
+    supplierAltOffer: 4400,
+    supplierAnchor: 4950,
+  },
+];
+
+const NEG_PARETO_PRESETS = [
+  {
+    id: 'pareto_commercial_supply',
+    name: 'Five-Issue Strategic Component Agreement',
+    buyerBatnaPts: 42,
+    supplierBatnaPts: 42,
+    issues: [
+      {
+        id: 'price',
+        name: 'Unit Price (GHS)',
+        options: [
+          { id: 'p1', label: 'GHS 95 / unit', buyerPoints: 40, supplierPoints: 0 },
+          { id: 'p2', label: 'GHS 105 / unit', buyerPoints: 26, supplierPoints: 18 },
+          { id: 'p3', label: 'GHS 115 / unit', buyerPoints: 12, supplierPoints: 34 },
+          { id: 'p4', label: 'GHS 125 / unit', buyerPoints: 0, supplierPoints: 48 },
+        ],
+      },
+      {
+        id: 'payment',
+        name: 'Payment Terms',
+        options: [
+          { id: 'pay1', label: 'Net 15 Days', buyerPoints: 0, supplierPoints: 28 },
+          { id: 'pay2', label: 'Net 30 Days', buyerPoints: 7, supplierPoints: 16 },
+          { id: 'pay3', label: 'Net 60 Days', buyerPoints: 14, supplierPoints: 0 },
+        ],
+      },
+      {
+        id: 'leadtime',
+        name: 'Delivery Lead Time',
+        options: [
+          { id: 'lt1', label: '7 Days Express', buyerPoints: 26, supplierPoints: 0 },
+          { id: 'lt2', label: '14 Days Standard', buyerPoints: 15, supplierPoints: 10 },
+          { id: 'lt3', label: '28 Days Economy', buyerPoints: 0, supplierPoints: 16 },
+        ],
+      },
+      {
+        id: 'warranty',
+        name: 'Warranty Coverage',
+        options: [
+          { id: 'w1', label: '24 Months Full', buyerPoints: 18, supplierPoints: 0 },
+          { id: 'w2', label: '12 Months Standard', buyerPoints: 10, supplierPoints: 5 },
+          { id: 'w3', label: '6 Months Basic', buyerPoints: 0, supplierPoints: 8 },
+        ],
+      },
+      {
+        id: 'volume',
+        name: 'Volume Commitment',
+        options: [
+          { id: 'v1', label: '3-Year Exclusive (15k units)', buyerPoints: 2, supplierPoints: 22 },
+          { id: 'v2', label: '2-Year Framework (10k units)', buyerPoints: 6, supplierPoints: 13 },
+          { id: 'v3', label: '1-Year Spot Order (5k units)', buyerPoints: 10, supplierPoints: 0 },
+        ],
+      },
+    ],
+  },
+];
+
+const NEG_SHOULD_COST_PRESETS = [
+  {
+    id: 'sc_packaging_cartons',
+    name: 'Custom Corrugated Export Cartons (10k Units/Yr)',
+    currency: 'USD',
+    annualVolume: 10000,
+    supplierProfitMarginQuotedPct: 24,
+    targetProfitMarginPct: 11,
+    costLines: [
+      { name: 'Raw Kraft Paper & Liner', category: 'material', quotedCost: 3.45, benchmarkCost: 2.75 },
+      { name: 'Direct Assembly Labour', category: 'labour', quotedCost: 1.35, benchmarkCost: 1.05 },
+      { name: 'Manufacturing Overhead', category: 'overhead', quotedCost: 1.25, benchmarkCost: 0.92 },
+      { name: 'Inbound & Delivery Freight', category: 'logistics', quotedCost: 0.95, benchmarkCost: 0.68 },
+      { name: 'SG&A & Admin Allocation', category: 'sga', quotedCost: 0.80, benchmarkCost: 0.48 },
+    ],
+  },
+  {
+    id: 'sc_medical_consumables',
+    name: 'Sterile Diagnostic Kits Open-Book Audit',
+    currency: 'GHS',
+    annualVolume: 4000,
+    supplierProfitMarginQuotedPct: 28,
+    targetProfitMarginPct: 12,
+    costLines: [
+      { name: 'Reagent & Raw Polymer', category: 'material', quotedCost: 48, benchmarkCost: 39 },
+      { name: 'Cleanroom Assembly Labour', category: 'labour', quotedCost: 19, benchmarkCost: 15 },
+      { name: 'Sterilization & QA Overhead', category: 'overhead', quotedCost: 16, benchmarkCost: 12 },
+      { name: 'Cold-Chain Distribution', category: 'logistics', quotedCost: 12, benchmarkCost: 9 },
+      { name: 'SG&A & Compliance Overhead', category: 'sga', quotedCost: 14, benchmarkCost: 7 },
+    ],
+  },
+];
+
+const NEG_POWER_PRESETS = [
+  {
+    id: 'power_erp_renewal',
+    name: 'Enterprise ERP Support Contract Renewal',
+    currency: 'USD',
+    buyerAnchor: 880,
+    buyerReservation: 1120,
+    supplierAnchor: 1320,
+    drivers: {
+      spendAttractiveness: 4,
+      buyerBatnaStrength: 2,
+      marketTransparency: 3,
+      switchingCost: 5,
+      supplyScarcity: 4,
+      buyerUrgency: 4,
+    },
+    concessionSteps: [
+      { concessionAmount: 85, ifThenTrade: 'IF vendor caps annual renewal escalation at 3%' },
+      { concessionAmount: 55, ifThenTrade: 'IF vendor adds 24/7 SLA credit clauses' },
+      { concessionAmount: 35, ifThenTrade: 'IF vendor includes 40 hours migration training' },
+      { concessionAmount: 15, ifThenTrade: 'IF vendor signs 3-year price lock with exit clause' },
+    ],
+  },
+];
+
 export const LAB_CATALOG = [
   {
     id: 'tqm_spc',
@@ -1119,6 +1267,84 @@ export const LAB_CATALOG = [
       { id: 'c4', title: 'Sustainable Sourcing & ESG Governance Judgement', maxMarks: 25 },
     ],
   },
+  {
+    id: 'neg_zopa_batna',
+    domain: 'NEG',
+    code: 'NEG-LAB 01',
+    title: 'Distributive Bargaining, BATNA & ZOPA Dynamics',
+    shortTitle: 'BATNA & ZOPA Bargaining',
+    summary: 'Model reservation prices, anchors, and ZOPA overlap across live distributive bargaining rounds.',
+    duration: '45–60 min',
+    supportsOwnData: true,
+    supportsLiveClassroom: true,
+    presets: NEG_ZOPA_PRESETS,
+    defaultPresetId: NEG_ZOPA_PRESETS[0].id,
+    defaultPrompt: 'Compute the buyer and supplier reservation prices, identify whether a positive ZOPA exists, conduct round-by-round price bargaining, and evaluate surplus capture versus walking away to BATNA.',
+    rubricCriteria: [
+      { id: 'c1', title: 'BATNA & Reservation Price Calculation', maxMarks: 25 },
+      { id: 'c2', title: 'ZOPA & Anchoring Effect Analysis', maxMarks: 25 },
+      { id: 'c3', title: 'Bargaining Execution & Surplus Capture', maxMarks: 25 },
+      { id: 'c4', title: 'Walk-Away Discipline & Managerial Judgement', maxMarks: 25 },
+    ],
+  },
+  {
+    id: 'neg_integrative_pareto',
+    domain: 'NEG',
+    code: 'NEG-LAB 02',
+    title: 'Integrative Multi-Issue Negotiation & Pareto Frontier Analysis',
+    shortTitle: 'Integrative Pareto Negotiation',
+    summary: 'Structure multi-issue trade-offs and MESO packages to reach the mathematical Pareto frontier.',
+    duration: '60 min',
+    supportsOwnData: true,
+    supportsLiveClassroom: true,
+    presets: NEG_PARETO_PRESETS,
+    defaultPresetId: NEG_PARETO_PRESETS[0].id,
+    defaultPrompt: 'Negotiate across five commercial contract issues with asymmetric weights, construct MESO packages, and plot your deal against the Pareto efficient frontier to quantify value created.',
+    rubricCriteria: [
+      { id: 'c1', title: 'Asymmetric Utility & BATNA Valuation', maxMarks: 25 },
+      { id: 'c2', title: 'Logrolling & Pareto Efficiency Achievement', maxMarks: 25 },
+      { id: 'c3', title: 'MESO Package Design Quality', maxMarks: 25 },
+      { id: 'c4', title: 'Integrative Value-Creation Judgement', maxMarks: 25 },
+    ],
+  },
+  {
+    id: 'neg_should_cost',
+    domain: 'NEG',
+    code: 'NEG-LAB 03',
+    title: 'Should-Cost Modeling & Open-Book Price Analysis',
+    shortTitle: 'Should-Cost Negotiation',
+    summary: 'Dissect supplier price quotes into cost drivers, expose padding, and set evidence-based targets.',
+    duration: '45–60 min',
+    supportsOwnData: true,
+    presets: NEG_SHOULD_COST_PRESETS,
+    defaultPresetId: NEG_SHOULD_COST_PRESETS[0].id,
+    defaultPrompt: 'Audit each open-book cost line against market benchmarks, test commodity-index and volume learning-curve shifts, and establish a defensible opening anchor, target price, and reservation ceiling.',
+    rubricCriteria: [
+      { id: 'c1', title: 'Open-Book Cost Dissection Accuracy', maxMarks: 25 },
+      { id: 'c2', title: 'Padded Cost Line & Margin Diagnosis', maxMarks: 25 },
+      { id: 'c3', title: 'Commodity & Learning-Curve Sensitivity', maxMarks: 25 },
+      { id: 'c4', title: 'Evidence-Based Negotiation Opening Strategy', maxMarks: 25 },
+    ],
+  },
+  {
+    id: 'neg_power_concession',
+    domain: 'NEG',
+    code: 'NEG-LAB 04',
+    title: 'Bargaining Power, Concession Planning & Deadlock Resolution',
+    shortTitle: 'Power & Concession Strategy',
+    summary: 'Diagnose buyer-supplier power balance and design diminishing conditional concession schedules.',
+    duration: '45–60 min',
+    supportsOwnData: true,
+    presets: NEG_POWER_PRESETS,
+    defaultPresetId: NEG_POWER_PRESETS[0].id,
+    defaultPrompt: 'Diagnose the buyer-supplier power balance quadrant, design a four-round diminishing concession schedule with conditional give-gets, and formulate a deadlock-breaking and BATNA-hardening plan.',
+    rubricCriteria: [
+      { id: 'c1', title: 'Power Balance Diagnostic Accuracy', maxMarks: 25 },
+      { id: 'c2', title: 'Diminishing Concession Curve Discipline', maxMarks: 25 },
+      { id: 'c3', title: 'Conditional Give-Get Trade Design', maxMarks: 25 },
+      { id: 'c4', title: 'BATNA Hardening & Deadlock Playbook', maxMarks: 25 },
+    ],
+  },
 ];
 
 export function getLabDef(labId) {
@@ -1227,6 +1453,30 @@ export function buildLabCsvTemplate(labId, variant = '') {
     return {
       filename: 'contract-sla-ledger-template.csv',
       content: 'Period,InvoiceValue,OTIF_Pct,Defect_Pct,ResponseHrs,ForceMajeure\nMonth 1,100000,97,0.9,14,No\nMonth 2,100000,88,2.4,28,No\nMonth 3,100000,82,3.1,35,No\n',
+    };
+  }
+  if (labId === 'neg_zopa_batna') {
+    return {
+      filename: 'zopa-batna-scenario-template.csv',
+      content: 'BuyerBatna,SwitchingCost,BuyerTarget,BuyerAnchor,SupplierCost,SupplierMinMarginPct,SupplierAnchor,Quantity\n1140,60,980,910,810,12,1290,500\n',
+    };
+  }
+  if (labId === 'neg_integrative_pareto') {
+    return {
+      filename: 'integrative-issues-template.csv',
+      content: 'Issue,OptionLabel,BuyerPoints,SupplierPoints\nUnit Price,GHS 95,40,0\nUnit Price,GHS 115,12,34\nPayment Terms,Net 15,0,28\nPayment Terms,Net 60,14,0\nDelivery Lead Time,7 Days,26,0\nDelivery Lead Time,28 Days,0,16\n',
+    };
+  }
+  if (labId === 'neg_should_cost') {
+    return {
+      filename: 'should-cost-breakdown-template.csv',
+      content: 'Component,Category,QuotedCost,BenchmarkCost\nRaw Material,material,3.45,2.75\nDirect Labour,labour,1.35,1.05\nManufacturing Overhead,overhead,1.25,0.92\nFreight & Logistics,logistics,0.95,0.68\nSG&A Admin,sga,0.80,0.48\n',
+    };
+  }
+  if (labId === 'neg_power_concession') {
+    return {
+      filename: 'concession-plan-template.csv',
+      content: 'Round,ConcessionAmount,IfThenTrade\n1,80,IF supplier cuts lead time to 10 days\n2,50,IF supplier extends warranty to 24 months\n3,30,IF supplier grants Net 45 payment terms\n4,15,IF supplier signs 18-month price lock\n',
     };
   }
   if (labId === 'scm_green_procurement') {

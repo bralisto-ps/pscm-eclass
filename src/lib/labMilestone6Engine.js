@@ -300,6 +300,70 @@ export function generateUniqueLabVariant({ labId, basePreset, seedKey }) {
       },
     };
   }
+  if (labId === 'neg_zopa_batna') {
+    const scale = 0.88 + rng() * 0.28;
+    const round10 = (v) => Math.max(50, Math.round((Number(v) * scale) / 10) * 10);
+    return {
+      variantTag,
+      customDataset: {
+        ...basePreset,
+        name,
+        buyerBatna: round10(basePreset.buyerBatna || 1140),
+        buyerTarget: round10(basePreset.buyerTarget || 980),
+        buyerAnchor: round10(basePreset.buyerAnchor || 910),
+        supplierCost: round10(basePreset.supplierCost || 810),
+        supplierAltOffer: round10(basePreset.supplierAltOffer || 910),
+        supplierAnchor: round10(basePreset.supplierAnchor || 1290),
+      },
+    };
+  }
+  if (labId === 'neg_integrative_pareto' && Array.isArray(basePreset.issues)) {
+    const batnaDelta = Math.round((rng() - 0.5) * 8);
+    return {
+      variantTag,
+      customDataset: {
+        ...basePreset,
+        name,
+        buyerBatnaPts: Math.max(25, (Number(basePreset.buyerBatnaPts) || 42) + batnaDelta),
+        supplierBatnaPts: Math.max(25, (Number(basePreset.supplierBatnaPts) || 42) - batnaDelta),
+        issues: basePreset.issues.map((iss) => ({
+          ...iss,
+          options: (iss.options || []).map((o) => ({
+            ...o,
+            buyerPoints: o.buyerPoints > 0 ? Math.max(2, Math.round(o.buyerPoints * (0.9 + rng() * 0.2))) : 0,
+            supplierPoints: o.supplierPoints > 0 ? Math.max(2, Math.round(o.supplierPoints * (0.9 + rng() * 0.2))) : 0,
+          })),
+        })),
+      },
+    };
+  }
+  if (labId === 'neg_should_cost' && Array.isArray(basePreset.costLines)) {
+    return {
+      variantTag,
+      customDataset: {
+        ...basePreset,
+        name,
+        costLines: basePreset.costLines.map((l) => ({
+          ...l,
+          quotedCost: Number(((Number(l.quotedCost) || 1) * (0.9 + rng() * 0.22)).toFixed(2)),
+          benchmarkCost: Number(((Number(l.benchmarkCost) || 1) * (0.92 + rng() * 0.16)).toFixed(2)),
+        })),
+      },
+    };
+  }
+  if (labId === 'neg_power_concession') {
+    const shift = Math.round((rng() - 0.5) * 140 / 10) * 10;
+    return {
+      variantTag,
+      customDataset: {
+        ...basePreset,
+        name,
+        buyerAnchor: Math.max(200, (Number(basePreset.buyerAnchor) || 900) + shift),
+        buyerReservation: Math.max(350, (Number(basePreset.buyerReservation) || 1120) + shift),
+        supplierAnchor: Math.max(450, (Number(basePreset.supplierAnchor) || 1260) + shift),
+      },
+    };
+  }
   if (labId === 'scm_green_procurement' && Array.isArray(basePreset.suppliers)) {
     return {
       variantTag,

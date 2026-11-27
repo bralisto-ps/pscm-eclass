@@ -16,6 +16,10 @@ export const LAB_TRACK_META = {
   scm_landed_cost: { track: 'Global Logistics', accent: '#0369a1', stage: 'Incoterms & Landed Cost' },
   scm_contract_sla: { track: 'Contract Management', accent: '#b45309', stage: 'SLAs & Remedies' },
   scm_green_procurement: { track: 'Sustainable Supply Chains', accent: '#15803d', stage: 'Scope 3 & ESG' },
+  neg_zopa_batna: { track: 'Negotiation Science', accent: '#6d28d9', stage: 'Distributive ZOPA' },
+  neg_integrative_pareto: { track: 'Negotiation Science', accent: '#6d28d9', stage: 'Integrative Pareto' },
+  neg_should_cost: { track: 'Negotiation Science', accent: '#6d28d9', stage: 'Should-Cost Analysis' },
+  neg_power_concession: { track: 'Negotiation Science', accent: '#6d28d9', stage: 'Power & Concessions' },
 };
 
 export const LAB_CONCEPT_GUIDES = {
@@ -182,6 +186,57 @@ export const LAB_CONCEPT_GUIDES = {
     checklist: [
       'Air freight emits ~38× more CO₂e per tonne-km than ocean freight (0.602 vs 0.016).',
       'Identify the exact Shadow Carbon Price where the sustainable supplier overtakes the lowest-price bid.',
+    ],
+  },
+  neg_zopa_batna: {
+    title: 'Distributive Bargaining, BATNA & ZOPA Quick Reference',
+    formulas: [
+      'Buyer Reservation Price (RP_B) = Buyer BATNA + Switching Cost',
+      'Supplier Reservation Floor (RP_S) = max(Direct Cost × (1 + Min Margin%), Best Alternative Offer)',
+      'ZOPA Width = RP_B − RP_S (Positive ZOPA exists iff RP_B ≥ RP_S)',
+      'Buyer Surplus Share % = ((RP_B − Agreed Price) / (RP_B − RP_S)) × 100',
+    ],
+    checklist: [
+      'Never accept a deal worse than your Reservation Price — walk away to your BATNA.',
+      'Opening anchors pull final settlements significantly when backed by credible justification.',
+    ],
+  },
+  neg_integrative_pareto: {
+    title: 'Integrative Negotiation & Pareto Frontier Quick Reference',
+    formulas: [
+      'Joint Value = Buyer Utility Points + Supplier Utility Points',
+      'Pareto Frontier = All deals where neither party can improve without making the other worse off',
+      'Nash Bargaining Solution = argmax (Buyer Pts − Buyer BATNA) × (Supplier Pts − Supplier BATNA)',
+      'Pareto Efficiency % = (Deal Joint Points / Max Feasible Joint Points) × 100',
+    ],
+    checklist: [
+      'Logrolling: concede on issues of low priority to you that have high priority for your counterpart.',
+      'Present 2–3 MESOs (Multiple Equivalent Simultaneous Offers) to uncover hidden counterpart weights.',
+    ],
+  },
+  neg_should_cost: {
+    title: 'Should-Cost Modeling & Open-Book Analysis Quick Reference',
+    formulas: [
+      'Should-Cost = Σ(Benchmark Cost Lines adjusted for Commodity Index & Learning Curve) × (1 + Target Margin%)',
+      'Overcharge / Unit = Supplier Quoted Price − Should-Cost',
+      'Wright’s Learning Curve Factor = (Volume Multiplier) ^ log2(Learning Rate)',
+      'Recommended Anchor ≈ 0.94 × Should-Cost | Reservation Ceiling ≈ 1.07 × Should-Cost',
+    ],
+    checklist: [
+      'Challenge specific padded cost drivers (e.g., inflated overhead or SG&A) rather than asking for arbitrary discounts.',
+      'Pair volume commitments with learning-curve unit cost reductions.',
+    ],
+  },
+  neg_power_concession: {
+    title: 'Bargaining Power & Concession Planning Quick Reference',
+    formulas: [
+      'Buyer Power Index = (Spend Attractiveness + BATNA Credibility + Market Transparency) / 15 × 100',
+      'Supplier Power Index = (Switching Cost + Supply Scarcity + Buyer Urgency) / 15 × 100',
+      'Diminishing Concession Pattern: Δ1 ≥ Δ2 ≥ Δ3 ≥ Δ4 (signals convergence toward true limit)',
+    ],
+    checklist: [
+      'Never make an unconditional concession — tie every move to an explicit IF–THEN give-get.',
+      'In Supplier Dominance, harden your BATNA before negotiating rather than negotiating under time pressure.',
     ],
   },
 };

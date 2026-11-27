@@ -804,6 +804,134 @@ const SCENARIO_SHOCK_PACKS = {
       ],
     },
   ],
+  neg_zopa_batna: [
+    {
+      quarter: 'Q1',
+      title: 'Backup Supplier Raises Quote +14% Mid-Negotiation',
+      event: 'Your secondary supplier withdraws its discount, weakening your BATNA right before Round 3.',
+      options: [
+        { id: 'recalc_qualify', label: 'Recalculate Reservation Price quietly, qualify a 3rd regional quote & hold firm on Should-Cost rationale', costDeltaPct: 2.0, serviceDeltaPct: 3.5, resilienceDelta: 17, note: 'Prevents panic concessions while rebuilding BATNA credibility.' },
+        { id: 'disclose_weak_batna', label: 'Immediately tell the supplier your backup quote rose so they sympathize', costDeltaPct: 12.5, serviceDeltaPct: -2.0, resilienceDelta: -17, note: 'Exposing a weakened BATNA shifts the entire ZOPA capture to the seller.' },
+        { id: 'accept_anchor', label: 'Accept the supplier’s opening anchor immediately to lock supply', costDeltaPct: 14.0, serviceDeltaPct: 1.0, resilienceDelta: -16, note: 'Surrenders 100% of the bargaining surplus.' },
+      ],
+    },
+    {
+      quarter: 'Q2',
+      title: 'Supplier Issues "Take-It-Or-Leave-It" Exploding Offer',
+      event: 'The account manager demands signature by 5 PM at +6% above your Target Price.',
+      options: [
+        { id: 'defuse_test', label: 'Refuse artificial time pressure, restate objective market criteria & test whether walk-away is a bluff', costDeltaPct: -2.0, serviceDeltaPct: 3.0, resilienceDelta: 16, note: 'Most exploding offers are anchoring tactics that soften when met calmly.' },
+        { id: 'sign_under_duress', label: 'Sign immediately before 5 PM without internal finance review', costDeltaPct: 11.0, serviceDeltaPct: -3.0, resilienceDelta: -15, note: 'Rewards hardball tactics and locks in inflated pricing.' },
+        { id: 'insult_walk', label: 'Send an angry email burning the relationship permanently', costDeltaPct: 9.5, serviceDeltaPct: -9.0, resilienceDelta: -14, note: 'Destroys future option value even when a positive ZOPA exists.' },
+      ],
+    },
+    {
+      quarter: 'Q3',
+      title: 'Negative ZOPA Emerges After Commodity Spike',
+      event: 'Supplier cost floor rises above your maximum budget ceiling, eliminating price overlap.',
+      options: [
+        { id: 'expand_pie', label: 'Stop single-issue haggling; introduce multi-year volume, faster payment, or spec redesign to create new ZOPA', costDeltaPct: 1.5, serviceDeltaPct: 5.0, resilienceDelta: 17, note: 'Converts a deadlocked distributive game into integrative value creation.' },
+        { id: 'breach_rp', label: 'Pay 12% above your Reservation Price just to close the deal', costDeltaPct: 13.0, serviceDeltaPct: -4.0, resilienceDelta: -18, note: 'Violates BATNA discipline and destroys budget value.' },
+        { id: 'split_diff_blind', label: 'Propose splitting the difference halfway above your walk-away limit', costDeltaPct: 10.5, serviceDeltaPct: -3.0, resilienceDelta: -15, note: 'Splitting the difference rewards whoever anchored most aggressively.' },
+      ],
+    },
+  ],
+  neg_integrative_pareto: [
+    {
+      quarter: 'Q1',
+      title: 'Counterpart Refuses to Share Cost or Priority Weights',
+      event: 'The supplier insists on negotiating strictly one issue at a time—starting with Unit Price.',
+      options: [
+        { id: 'meso_probe', label: 'Keep all 5 issues linked and table 3 MESO packages to infer their hidden priority weights', costDeltaPct: -2.5, serviceDeltaPct: 5.0, resilienceDelta: 17, note: 'MESOs break single-issue framing and reveal logrolling opportunities safely.' },
+        { id: 'issue_by_issue', label: 'Agree to lock Unit Price first before discussing Payment Terms or Warranty', costDeltaPct: 10.0, serviceDeltaPct: -6.0, resilienceDelta: -15, note: 'Sequential issue-by-issue bargaining destroys logrolling potential.' },
+        { id: 'reveal_all_pts', label: 'Hand over your entire confidential scoring sheet hoping they reciprocate', costDeltaPct: 9.0, serviceDeltaPct: -2.0, resilienceDelta: -12, note: 'Exposes your reservation limits to unilateral value claiming.' },
+      ],
+    },
+    {
+      quarter: 'Q2',
+      title: 'Sub-Optimal Compromise Proposal Leaves 22 Joint Points on Table',
+      event: 'Both teams gravitate toward the middle option on every single issue ("fair compromise").',
+      options: [
+        { id: 'post_settlement', label: 'Propose a Post-Settlement Settlement: test asymmetric swaps to push both sides onto the Pareto Frontier', costDeltaPct: -3.0, serviceDeltaPct: 5.5, resilienceDelta: 17, note: 'Middle-of-the-road compromises are almost always Pareto-inefficient.' },
+        { id: 'lock_middle', label: 'Sign the all-middle compromise immediately because it looks symmetric', costDeltaPct: 8.5, serviceDeltaPct: -5.0, resilienceDelta: -13, note: 'Leaves substantial mutual value unclaimed.' },
+        { id: 'claw_back', label: 'Demand extra price cuts after verbally shaking hands', costDeltaPct: 11.5, serviceDeltaPct: -9.5, resilienceDelta: -17, note: 'Erodes trust and causes supplier to pad future change orders.' },
+      ],
+    },
+    {
+      quarter: 'Q3',
+      title: 'Post-Award Working-Capital Squeeze Hits Supplier',
+      event: 'Six months in, high borrowing rates make Net 60 painful for the supplier while you value faster delivery.',
+      options: [
+        { id: 'trade_cash_speed', label: 'Trade Net 60 → Net 20 fast payment in exchange for guaranteed 7-day lead time & 2% rebate', costDeltaPct: -2.2, serviceDeltaPct: 6.0, resilienceDelta: 16, note: 'Classic dynamic logrolling exploiting asymmetric cost of capital.' },
+        { id: 'refuse_reopen', label: 'Refuse any discussion and enforce late penalties until supplier defaults', costDeltaPct: 12.0, serviceDeltaPct: -11.0, resilienceDelta: -16, note: 'Turns a solvable financing mismatch into supply disruption.' },
+        { id: 'pay_early_free', label: 'Switch to Net 15 unilaterally without asking for any operational concession', costDeltaPct: 7.5, serviceDeltaPct: 0.0, resilienceDelta: -11, note: 'Gives away working capital with zero reciprocity.' },
+      ],
+    },
+  ],
+  neg_should_cost: [
+    {
+      quarter: 'Q1',
+      title: 'Supplier Claims +22% Raw Material Inflation Across Entire Price',
+      event: 'Supplier demands a 22% total price hike because steel rose 22%—even though steel is only 38% of unit cost.',
+      options: [
+        { id: 'weighted_pass_through', label: 'Use Should-Cost weightings to cap pass-through strictly at 38% × 22% = +8.4% & audit index', costDeltaPct: -5.0, serviceDeltaPct: 3.5, resilienceDelta: 17, note: 'Stops classic "margin-on-inflation" overcharging cleanly with math.' },
+        { id: 'accept_22', label: 'Approve the full +22% total price increase without checking cost share', costDeltaPct: 14.0, serviceDeltaPct: 0.0, resilienceDelta: -18, note: 'Overpays +13.6% directly into supplier excess margin.' },
+        { id: 'reject_zero', label: 'Reject all commodity adjustment even when verified index surged +22%', costDeltaPct: 9.5, serviceDeltaPct: -9.0, resilienceDelta: -13, note: 'Forces supplier into loss-making deliveries and quality shortcuts.' },
+      ],
+    },
+    {
+      quarter: 'Q2',
+      title: 'Volume Doubles Under New Regional Expansion',
+      event: 'Your annual order doubles from 5,000 to 10,000 units, yet the supplier quotes the exact same unit price.',
+      options: [
+        { id: 'learning_curve_rebate', label: 'Invoke Wright’s learning curve & fixed-overhead amortization to negotiate a 9–12% tiered volume discount', costDeltaPct: -4.5, serviceDeltaPct: 4.0, resilienceDelta: 16, note: 'Captures genuine economies of scale without squeezing supplier variable margin.' },
+        { id: 'pay_flat_rate', label: 'Accept unchanged unit pricing because volume growth was your own change', costDeltaPct: 9.0, serviceDeltaPct: 0.5, resilienceDelta: -12, note: 'Hands fixed-overhead windfall entirely to vendor.' },
+        { id: 'split_4_vendors', label: 'Split the volume across 4 tiny vendors so nobody gets scale efficiencies', costDeltaPct: 11.5, serviceDeltaPct: -5.0, resilienceDelta: -14, note: 'Destroys volume leverage and raises coordination defects.' },
+      ],
+    },
+    {
+      quarter: 'Q3',
+      title: 'Supplier Refuses Open-Book Cost Transparency',
+      event: 'Vendor cites "proprietary trade secrets" and declines to share overhead or SG&A breakdown.',
+      options: [
+        { id: 'clean_sheet_bench', label: 'Present your independent Clean-Sheet Should-Cost estimate & invite supplier to correct assumptions', costDeltaPct: -2.0, serviceDeltaPct: 4.0, resilienceDelta: 16, note: 'Clean-sheet benchmarks shift the burden of proof onto the supplier respectfully.' },
+        { id: 'abandon_should_cost', label: 'Drop cost analysis and revert to blind percentage haggling', costDeltaPct: 10.5, serviceDeltaPct: -2.0, resilienceDelta: -14, note: 'Loses objective legitimacy at the table.' },
+        { id: 'threaten_blacklist', label: 'Threaten immediate debarment if they do not open their general ledger', costDeltaPct: 9.5, serviceDeltaPct: -8.5, resilienceDelta: -15, note: 'Triggers defensive stonewalling.' },
+      ],
+    },
+  ],
+  neg_power_concession: [
+    {
+      quarter: 'Q1',
+      title: 'Supplier Exploits Your Escalating Concession Mistake',
+      event: 'After a junior buyer makes two rapid unconditional concessions, the supplier stops moving and demands more.',
+      options: [
+        { id: 'reset_conditional', label: 'Pause, tighten concession increments sharply & require explicit reciprocal IF–THEN trades for every move', costDeltaPct: -2.5, serviceDeltaPct: 3.5, resilienceDelta: 17, note: 'Re-establishes credibility and halts concession exploitation.' },
+        { id: 'bigger_sweetener', label: 'Offer an even larger unconditional price jump to "show good faith"', costDeltaPct: 13.5, serviceDeltaPct: -2.0, resilienceDelta: -18, note: 'Confirms to the counterpart that stalling pays.' },
+        { id: 'walk_immediately', label: 'Walk out permanently with zero backup supplier ready', costDeltaPct: 12.0, serviceDeltaPct: -11.0, resilienceDelta: -16, note: 'Unprepared walk-away damages operations.' },
+      ],
+    },
+    {
+      quarter: 'Q2',
+      title: 'Sole-Source Monopoly Supplier Demands +18% Renewal',
+      event: 'Switching cost is high and internal stakeholders want to sign fast to avoid migration work.',
+      options: [
+        { id: 'harden_batna_plan', label: 'Start 90 days early, fund parallel backup qualification & remove internal urgency before final round', costDeltaPct: -4.0, serviceDeltaPct: 5.0, resilienceDelta: 17, note: 'Reduces Supplier Dominance structurally by lowering switching barriers and urgency.' },
+        { id: 'wait_last_week', label: 'Wait until 5 days before contract expiry to begin renewal talks', costDeltaPct: 15.0, serviceDeltaPct: -6.0, resilienceDelta: -19, note: 'Time pressure hands 100% bargaining leverage to the incumbent.' },
+        { id: 'bluff_fake_batna', label: 'Invent a fake competitor quote that the incumbent knows does not exist', costDeltaPct: 11.5, serviceDeltaPct: -9.0, resilienceDelta: -17, note: 'Destroys long-term negotiator credibility when exposed.' },
+      ],
+    },
+    {
+      quarter: 'Q3',
+      title: 'Negotiation Reaches Hard Deadlock on Price Escalation Clause',
+      event: 'Both sides refuse to budge on a 3-year fixed vs. floating price clause.',
+      options: [
+        { id: 'contingent_collar', label: 'Propose a Contingent Collar Agreement (±4% neutral band + shared index split beyond collar)', costDeltaPct: -2.0, serviceDeltaPct: 5.5, resilienceDelta: 17, note: 'Classic deadlock-breaking contingent contract sharing tail risk fairly.' },
+        { id: 'take_100_risk', label: 'Accept uncapped quarterly supplier price pass-throughs', costDeltaPct: 13.0, serviceDeltaPct: -4.0, resilienceDelta: -16, note: 'Exposes buyer budget to unlimited inflation risk.' },
+        { id: 'freeze_talks', label: 'Leave talks deadlocked indefinitely with no interim supply cover', costDeltaPct: 11.0, serviceDeltaPct: -12.0, resilienceDelta: -17, note: 'Causes operational stockout.' },
+      ],
+    },
+  ],
 };
 
 export function getLabScenarioShocks(labId) {
@@ -1259,6 +1387,84 @@ export function generateIndustryScaleDataset(labId) {
     };
   }
 
+  if (labId === 'neg_zopa_batna') {
+    return {
+      ...transformMappedRowsToDataset(
+        'neg_zopa_batna',
+        [['2480', '145', '2150', '1980', '1840', '13', '2890', '1200']],
+        { buyerBatna: 0, buyerSwitchingCost: 1, buyerTarget: 2, buyerAnchor: 3, supplierCost: 4, supplierMinMarginPct: 5, supplierAnchor: 6, quantity: 7 },
+        { name: 'National Utility Transformer Procurement — High-Stakes Distributive Case', currency: 'USD' },
+      ),
+      isIndustryScale: true,
+    };
+  }
+  if (labId === 'neg_integrative_pareto') {
+    const rows = [
+      ['Unit Price', 'USD 420 / unit', '42', '0'],
+      ['Unit Price', 'USD 455 / unit', '28', '18'],
+      ['Unit Price', 'USD 490 / unit', '14', '36'],
+      ['Unit Price', 'USD 525 / unit', '0', '50'],
+      ['Payment Terms', 'Net 15 (Early Cash)', '0', '30'],
+      ['Payment Terms', 'Net 30 Standard', '8', '16'],
+      ['Payment Terms', 'Net 60 Extended', '15', '0'],
+      ['Lead Time SLA', '5 Days Guaranteed', '28', '0'],
+      ['Lead Time SLA', '12 Days Standard', '15', '12'],
+      ['Lead Time SLA', '25 Days Economy', '0', '20'],
+      ['Warranty & Spares', '36 Months + Consignment', '20', '0'],
+      ['Warranty & Spares', '18 Months Standard', '11', '6'],
+      ['Warranty & Spares', '6 Months Basic', '0', '10'],
+      ['Volume Commitment', '3-Year 80% Share', '2', '24'],
+      ['Volume Commitment', '2-Year 60% Share', '7', '14'],
+      ['Volume Commitment', '1-Year Spot', '12', '0'],
+    ];
+    return {
+      ...transformMappedRowsToDataset(
+        'neg_integrative_pareto',
+        rows,
+        { issue: 0, optionLabel: 1, buyerPoints: 2, supplierPoints: 3 },
+        { name: 'Strategic Aerospace & Mining Framework — 5-Issue Asymmetric Scoring Matrix' },
+      ),
+      isIndustryScale: true,
+    };
+  }
+  if (labId === 'neg_should_cost') {
+    const rows = [
+      ['Primary Alloy Steel', 'material', '142.50', '118.00'],
+      ['Specialty Coatings & Seals', 'material', '34.20', '28.50'],
+      ['CNC Machining Labour', 'labour', '58.00', '44.00'],
+      ['Quality NDT Testing Labour', 'labour', '21.50', '16.50'],
+      ['Plant Energy & Depreciation Overhead', 'overhead', '46.80', '33.00'],
+      ['Export Packaging & Crating', 'material', '19.40', '14.20'],
+      ['Port Haulage & Freight', 'logistics', '29.00', '21.50'],
+      ['Corporate SG&A Allocation', 'sga', '38.60', '18.00'],
+    ];
+    return {
+      ...transformMappedRowsToDataset(
+        'neg_should_cost',
+        rows,
+        { name: 0, category: 1, quotedCost: 2, benchmarkCost: 3 },
+        { name: 'Heavy Industrial Valve Assembly — 8-Component Clean-Sheet Should-Cost Audit', currency: 'USD' },
+      ),
+      isIndustryScale: true,
+    };
+  }
+  if (labId === 'neg_power_concession') {
+    const rows = [
+      ['1', '90', 'IF supplier removes minimum order quantity surcharge'],
+      ['2', '55', 'IF supplier commits to 97% OTIF SLA with 2% service credit'],
+      ['3', '30', 'IF supplier accepts Net 45 payment terms with zero interest'],
+      ['4', '15', 'IF supplier signs 24-month ±4% commodity collar price lock'],
+    ];
+    return {
+      ...transformMappedRowsToDataset(
+        'neg_power_concession',
+        rows,
+        { round: 0, concessionAmount: 1, ifThenTrade: 2 },
+        { name: 'Tier-1 Sole-Source Strategic Renewal — 4-Round Concession Playbook', currency: 'USD' },
+      ),
+      isIndustryScale: true,
+    };
+  }
   return null;
 }
 
@@ -1337,6 +1543,26 @@ const GUIDED_STEPS_BY_LAB = {
     'Adjust the Shadow Carbon Price slider to test when the lowest-carbon option beats the cheapest quote.',
     'Evaluate corporate carbon-cap compliance and implied Carbon Abatement Cost ($/tCO2e).',
   ],
+  neg_zopa_batna: [
+    'Compute Buyer Reservation Price (BATNA + Switching Cost) and Supplier Floor to verify if a positive ZOPA exists.',
+    'Play round-by-round offers against the counterpart persona using disciplined diminishing concessions.',
+    'Compare your final surplus capture against your BATNA and justify whether to settle or walk away.',
+  ],
+  neg_integrative_pareto: [
+    'Inspect the asymmetric buyer vs. supplier point weights across all 5 contract issues.',
+    'Trade low-weight issues for high-weight issues until your deal reaches the Pareto Efficient Frontier.',
+    'Save 2–3 MESO packages and explain how they unlock mutual value over single-issue price haggling.',
+  ],
+  neg_should_cost: [
+    'Compare each supplier cost line against market benchmarks to isolate padded cost drivers.',
+    'Test commodity index shifts and volume learning-curve multipliers to verify sensitivity.',
+    'Set an evidence-based Opening Anchor, Target Price, and Reservation Price for the bargaining table.',
+  ],
+  neg_power_concession: [
+    'Rate the 6 Buyer vs. Supplier power drivers to diagnose your true Power Balance quadrant.',
+    'Design a 4-round diminishing concession schedule staying strictly inside your walk-away ceiling.',
+    'Attach a concrete conditional IF–THEN give-get to every concession and plan your deadlock breaker.',
+  ],
 };
 
 export function getLabGuidedHints(labId, draftState, judgementReady) {
@@ -1375,6 +1601,10 @@ const RUBRIC_DIAGNOSIS_FOCUS = {
   scm_landed_cost: 'Incoterms 2020 waterfall, CIF duty/port buildup & FOB price-trap diagnosis',
   scm_contract_sla: 'SLA breach credit math, liability cap, Force Majeure & switching diagnosis',
   scm_green_procurement: 'Scope 1–3 emissions, Shadow Carbon TCO & abatement cost diagnosis',
+  neg_zopa_batna: 'BATNA/Reservation math, ZOPA identification, anchoring & surplus capture diagnosis',
+  neg_integrative_pareto: 'Asymmetric logrolling trade-offs, MESO structure & Pareto efficiency diagnosis',
+  neg_should_cost: 'Open-book cost driver audit, padded line isolation & learning-curve sensitivity diagnosis',
+  neg_power_concession: 'Power quadrant assessment, diminishing concession curve & conditional give-get diagnosis',
 };
 
 export function getLabProfessionalRubric(labId, maxMarks = 20) {
