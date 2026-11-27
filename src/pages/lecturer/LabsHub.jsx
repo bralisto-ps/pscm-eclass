@@ -110,7 +110,7 @@ export default function LabsHub() {
     <>
       <Topbar
         title="Software Laboratories Studio"
-        sub="Open interactive TQM, PSIS & SCM labs to classes, link to CA assignments, or host live classroom sessions"
+        sub="Open interactive TQM, PSIS, SCM & Negotiation labs to classes, link to CA assignments, or host live classroom sessions"
       />
 
       <div className="page stack-lg">
