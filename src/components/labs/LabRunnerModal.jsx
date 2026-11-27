@@ -48,6 +48,10 @@ const SpendAnalyticsLab = lazy(() => import('./SpendAnalyticsLab.jsx'));
 const LandedCostLab = lazy(() => import('./LandedCostLab.jsx'));
 const ContractSlaLab = lazy(() => import('./ContractSlaLab.jsx'));
 const GreenProcurementLab = lazy(() => import('./GreenProcurementLab.jsx'));
+const DistributiveZopaLab = lazy(() => import('./DistributiveZopaLab.jsx'));
+const IntegrativeParetoLab = lazy(() => import('./IntegrativeParetoLab.jsx'));
+const ShouldCostLab = lazy(() => import('./ShouldCostLab.jsx'));
+const PowerConcessionLab = lazy(() => import('./PowerConcessionLab.jsx'));
 
 export default function LabRunnerModal({
   labConfig,
@@ -1248,6 +1252,10 @@ export default function LabRunnerModal({
             {def.id === 'scm_landed_cost' && <LandedCostLab key={`landed_${syncVersion}`} {...labProps} />}
             {def.id === 'scm_contract_sla' && <ContractSlaLab key={`sla_${syncVersion}`} {...labProps} />}
             {def.id === 'scm_green_procurement' && <GreenProcurementLab key={`green_${syncVersion}`} {...labProps} />}
+            {def.id === 'neg_zopa_batna' && <DistributiveZopaLab key={`zopa_${syncVersion}`} {...labProps} />}
+            {def.id === 'neg_integrative_pareto' && <IntegrativeParetoLab key={`pareto_${syncVersion}`} {...labProps} />}
+            {def.id === 'neg_should_cost' && <ShouldCostLab key={`should_${syncVersion}`} {...labProps} />}
+            {def.id === 'neg_power_concession' && <PowerConcessionLab key={`power_${syncVersion}`} {...labProps} />}
           </Suspense>
         </div>
 

@@ -25,6 +25,14 @@ import {
   createInitialReverseAuctionState,
   processLiveAuctionBid,
 } from '../../lib/labMilestone7Engine.js';
+import {
+  LIVE_INTEGRATIVE_ISSUES,
+  assignNegotiationPairs,
+  computeParetoFrontier,
+  createInitialLiveNegState,
+  evaluateIntegrativePackage,
+  processLiveNegotiationMove,
+} from '../../lib/labNegotiationEngine.js';
 
 const LIVE_LAB_OPTIONS = [
   {
@@ -50,6 +58,18 @@ const LIVE_LAB_OPTIONS = [
     code: 'PSIS-LAB 06',
     title: 'Electronic Tendering — Live Multi-Student Reverse Auction',
     desc: 'Students compete as rival suppliers on their phones in real-time bidding rounds while the projector tracks live price savings and Winner’s Curse risk.',
+  },
+  {
+    id: 'neg_zopa_batna',
+    code: 'NEG-LAB 01',
+    title: 'Distributive Bargaining, BATNA & ZOPA — Live Paired Bargaining',
+    desc: 'Pair students into confidential Buyer vs. Supplier desks with hidden reservation prices. Watch live settlements and impasses, then reveal the hidden ZOPA on the projector.',
+  },
+  {
+    id: 'neg_integrative_pareto',
+    code: 'NEG-LAB 02',
+    title: 'Integrative Multi-Issue Negotiation — Live Pareto Frontier',
+    desc: 'Pair students to logroll a 5-issue procurement contract using private point schedules, then plot every pair’s deal against the true Pareto Efficiency Frontier.',
   },
 ];
 
@@ -101,6 +121,9 @@ function createInitialLabState(labId) {
   }
   if (labId === 'psis_the_tender') {
     return createInitialReverseAuctionState();
+  }
+  if (labId === 'neg_zopa_batna' || labId === 'neg_integrative_pareto') {
+    return createInitialLiveNegState(labId);
   }
   // psis_the_match
   return {
@@ -249,6 +272,127 @@ function LiveReverseAuctionChart({ state }) {
   );
 }
 
+function LiveDistributiveZopaChart({ state }) {
+  const width = 560;
+  const height = 160;
+  const padL = 36;
+  const padR = 36;
+  const minP = 750;
+  const maxP = 1350;
+  const xOf = (v) => padL + ((Math.max(minP, Math.min(maxP, v)) - minP) / (maxP - minP)) * (width - padL - padR);
+  const pairs = Object.entries(state?.pairs || {});
+  const agreed = pairs.filter(([, p]) => p.status === 'agreed' && Number.isFinite(Number(p.agreedPrice)));
+  const sFloor = Number(state?.supplierReservation) || 920;
+  const bMax = Number(state?.buyerReservation) || 1180;
+  const reveal = Boolean(state?.revealZopa);
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block', background: '#fff', borderRadius: 8, border: '1px solid var(--line)' }}>
+      <line x1={padL} y1={86} x2={width - padR} y2={86} stroke="#cbd5e1" strokeWidth="4" strokeLinecap="round" />
+      {[800, 900, 1000, 1100, 1200, 1300].map((t) => (
+        <g key={t}>
+          <line x1={xOf(t)} y1={80} x2={xOf(t)} y2={92} stroke="#94a3b8" strokeWidth="1" />
+          <text x={xOf(t)} y={108} textAnchor="middle" fontSize="10" fill="#64748b">{state?.currency || 'GHS'} {t}</text>
+        </g>
+      ))}
+      {reveal ? (
+        <>
+          <rect x={xOf(sFloor)} y={58} width={Math.max(2, xOf(bMax) - xOf(sFloor))} height={56} rx={6} fill="#6d28d9" opacity="0.14" stroke="#6d28d9" strokeDasharray="4 3" />
+          <line x1={xOf(sFloor)} y1={46} x2={xOf(sFloor)} y2={122} stroke="#0f766e" strokeWidth="2" />
+          <text x={xOf(sFloor)} y={38} textAnchor="middle" fontSize="10" fontWeight="700" fill="#0f766e">Supplier Floor {sFloor}</text>
+          <line x1={xOf(bMax)} y1={46} x2={xOf(bMax)} y2={122} stroke="#1d4ed8" strokeWidth="2" />
+          <text x={xOf(bMax)} y={38} textAnchor="middle" fontSize="10" fontWeight="700" fill="#1d4ed8">Buyer Max {bMax}</text>
+          <text x={(xOf(sFloor) + xOf(bMax)) / 2} y={136} textAnchor="middle" fontSize="10" fontWeight="700" fill="#6d28d9">
+            ZOPA = {state?.currency || 'GHS'} {sFloor} – {bMax} (Width {bMax - sFloor})
+          </text>
+        </>
+      ) : (
+        <text x={width / 2} y={32} textAnchor="middle" fontSize="11" fill="#64748b">
+          Reservation prices & ZOPA hidden during live bargaining — click "Reveal ZOPA" to debrief
+        </text>
+      )}
+      {agreed.map(([pairNo, p], idx) => {
+        const cx = xOf(Number(p.agreedPrice));
+        const cy = 72 + ((idx % 3) - 1) * 14;
+        return (
+          <g key={pairNo}>
+            <circle cx={cx} cy={cy} r={7} fill="#6d28d9" stroke="#fff" strokeWidth="1.5" />
+            <text x={cx} y={cy - 10} textAnchor="middle" fontSize="9" fontWeight="700" fill="#1e293b">P{pairNo}: {p.agreedPrice}</text>
+          </g>
+        );
+      })}
+      {agreed.length === 0 && (
+        <text x={width / 2} y={148} textAnchor="middle" fontSize="10" fill="#94a3b8">
+          Agreed pair settlements will plot along the price spectrum in real time.
+        </text>
+      )}
+    </svg>
+  );
+}
+
+function LiveIntegrativeParetoChart({ state }) {
+  const width = 560;
+  const height = 220;
+  const pad = { l: 46, r: 20, t: 18, b: 34 };
+  const plotW = width - pad.l - pad.r;
+  const plotH = height - pad.t - pad.b;
+  const frontier = computeParetoFrontier(
+    state?.issues || LIVE_INTEGRATIVE_ISSUES,
+    Number(state?.buyerBatnaPts) || 42,
+    Number(state?.supplierBatnaPts) || 42,
+  );
+  const maxX = Math.max(100, ...frontier.allCombos.map((c) => c.buyerPoints), 105);
+  const maxY = Math.max(100, ...frontier.allCombos.map((c) => c.supplierPoints), 105);
+  const xOf = (v) => pad.l + (Math.max(0, v) / maxX) * plotW;
+  const yOf = (v) => pad.t + plotH - (Math.max(0, v) / maxY) * plotH;
+  const pairs = Object.entries(state?.pairs || {});
+  const agreed = pairs.filter(([, p]) => p.status === 'agreed');
+  const reveal = Boolean(state?.revealFrontier);
+  const frontierPath = frontier.frontier
+    .map((pt, i) => `${i === 0 ? 'M' : 'L'}${xOf(pt.buyerPoints).toFixed(1)},${yOf(pt.supplierPoints).toFixed(1)}`)
+    .join(' ');
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block', background: '#fff', borderRadius: 8, border: '1px solid var(--line)' }}>
+      {[0, 25, 50, 75, 100].map((v) => (
+        <g key={v}>
+          <line x1={pad.l} y1={yOf(v)} x2={width - pad.r} y2={yOf(v)} stroke="#f1f5f9" strokeWidth="1" />
+          <text x={pad.l - 6} y={yOf(v) + 3} textAnchor="end" fontSize="9" fill="#64748b">{v}</text>
+          <text x={xOf(v)} y={height - 14} textAnchor="middle" fontSize="9" fill="#64748b">{v}</text>
+        </g>
+      ))}
+      <line x1={pad.l} y1={pad.t} x2={pad.l} y2={height - pad.b} stroke="#94a3b8" strokeWidth="1.2" />
+      <line x1={pad.l} y1={height - pad.b} x2={width - pad.r} y2={height - pad.b} stroke="#94a3b8" strokeWidth="1.2" />
+      <text x={width / 2} y={height - 2} textAnchor="middle" fontSize="10" fontWeight="600" fill="#334155">Buyer Utility Points</text>
+      <text x={14} y={height / 2} textAnchor="middle" fontSize="10" fontWeight="600" fill="#334155" transform={`rotate(-90 14 ${height / 2})`}>Supplier Pts</text>
+      {reveal ? (
+        <>
+          <line x1={xOf(state.buyerBatnaPts || 42)} y1={pad.t} x2={xOf(state.buyerBatnaPts || 42)} y2={height - pad.b} stroke="#94a3b8" strokeDasharray="4 3" />
+          <line x1={pad.l} y1={yOf(state.supplierBatnaPts || 42)} x2={width - pad.r} y2={yOf(state.supplierBatnaPts || 42)} stroke="#94a3b8" strokeDasharray="4 3" />
+          {frontier.allCombos.slice(0, 400).map((pt, i) => (
+            <circle key={i} cx={xOf(pt.buyerPoints)} cy={yOf(pt.supplierPoints)} r={2} fill={pt.feasible ? '#c4b5fd' : '#e2e8f0'} />
+          ))}
+          {frontierPath && <path d={frontierPath} fill="none" stroke="#6d28d9" strokeWidth="2.5" />}
+          {frontier.frontier.map((pt, i) => (
+            <circle key={i} cx={xOf(pt.buyerPoints)} cy={yOf(pt.supplierPoints)} r={3.5} fill="#6d28d9" />
+          ))}
+        </>
+      ) : (
+        <text x={width / 2} y={34} textAnchor="middle" fontSize="11" fill="#64748b">
+          Pareto Frontier hidden — click "Reveal Pareto Frontier" after pairs settle to expose value left on the table
+        </text>
+      )}
+      {agreed.map(([pairNo, p]) => (
+        <g key={pairNo}>
+          <circle cx={xOf(p.buyerPts || 0)} cy={yOf(p.supplierPts || 0)} r={6.5} fill="#0f766e" stroke="#fff" strokeWidth="1.5" />
+          <text x={xOf(p.buyerPts || 0)} y={yOf(p.supplierPts || 0) - 9} textAnchor="middle" fontSize="9" fontWeight="700" fill="#0f172a">
+            P{pairNo} ({p.jointPts}pt)
+          </text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
 export default function LiveLabSessionModal({
   isHost = false,
   initialLabId = 'psis_seven_names',
@@ -283,6 +427,10 @@ export default function LiveLabSessionModal({
   const [studentOrderInput, setStudentOrderInput] = useState('40');
   const [studentVendorInput, setStudentVendorInput] = useState('Ghost Shell Traders Ltd');
   const [studentBidInput, setStudentBidInput] = useState('');
+  const [studentNegPriceInput, setStudentNegPriceInput] = useState('');
+  const [studentNegPkg, setStudentNegPkg] = useState(() =>
+    Object.fromEntries(LIVE_INTEGRATIVE_ISSUES.map((iss) => [iss.id, iss.options[1]?.id || iss.options[0]?.id])),
+  );
   const [lastStudentFeedback, setLastStudentFeedback] = useState(null);
 
   const clientIdRef = useRef(
@@ -583,7 +731,7 @@ export default function LiveLabSessionModal({
         );
         broadcastState(curLab, nextState, curAssign);
       }
-    } else if (curLab === 'psis_the_tender' && action === 'submit_bid') {
+    } else if (curLab === 'psis_the_tender' && actionType === 'submit_bid') {
       const bidderMeta = curAssign[fromId];
       const bidderLabel = bidderMeta ? `${bidderMeta.bidderCode} (${fromName})` : fromName;
       const res = processLiveAuctionBid(curState, {
@@ -603,6 +751,25 @@ export default function LiveLabSessionModal({
         bidderLabel,
         res.belowFloor ? 'WINNERS_CURSE_BID' : 'REVERSE_BID',
         `Bid ${res.nextState.currency} ${res.entry.amount.toLocaleString()} (Round ${res.entry.round})${res.belowFloor ? ' — BELOW SUSTAINABLE COST FLOOR!' : ''}`,
+      );
+      broadcastState(curLab, res.nextState, curAssign);
+    } else if ((curLab === 'neg_zopa_batna' || curLab === 'neg_integrative_pareto') && actionType === 'neg_move') {
+      const slot = curAssign[fromId] || { pairNo: data.pairNo || 1, role: data.role || 'buyer' };
+      const res = processLiveNegotiationMove(curState, {
+        moveId: data.moveId,
+        pairNo: slot.pairNo,
+        role: slot.role,
+        fromName,
+        action: data.action,
+        price: data.price,
+        packageChoices: data.packageChoices,
+      });
+      if (!res.accepted) return;
+      setLabState(res.nextState);
+      pushLog(
+        fromName,
+        data.action === 'accept_latest' ? 'DEAL_AGREED' : data.action === 'walk_away' ? 'IMPASSE_BATNA' : 'NEG_OFFER',
+        res.summary,
       );
       broadcastState(curLab, res.nextState, curAssign);
     }
@@ -733,7 +900,23 @@ export default function LiveLabSessionModal({
       pushLog('Lecturer', 'DEAL_BIDDERS', `Assigned bidder codes & private cost guidance to ${participants.length} participant(s).`);
       broadcastState(labId, labState, nextA);
       toast(`Assigned bidder IDs to ${participants.length} student(s).`);
+    } else if (labId === 'neg_zopa_batna' || labId === 'neg_integrative_pareto') {
+      const nextA = assignNegotiationPairs(participants, labId);
+      setAssignments(nextA);
+      const pairCount = Math.ceil(participants.length / 2);
+      pushLog('Lecturer', 'DEAL_NEG_PAIRS', `Paired ${participants.length} student(s) into ${pairCount} Buyer vs. Supplier desk(s).`);
+      broadcastState(labId, labState, nextA);
+      toast(`Dealt ${participants.length} students into ${pairCount} Buyer vs. Supplier pair(s).`);
     }
+  }
+
+  function toggleNegReveal() {
+    const field = labId === 'neg_integrative_pareto' ? 'revealFrontier' : 'revealZopa';
+    const nextVal = !labState[field];
+    const nextState = { ...labState, [field]: nextVal };
+    setLabState(nextState);
+    pushLog('Lecturer', field === 'revealFrontier' ? 'REVEAL_PARETO' : 'REVEAL_ZOPA', nextVal ? 'Revealed hidden negotiation analysis on projector' : 'Hid negotiation reveal');
+    broadcastState(labId, nextState, assignments);
   }
 
   function nextAuctionRound() {
@@ -1096,7 +1279,7 @@ export default function LiveLabSessionModal({
                       className={`btn btn-sm ${labId === opt.id ? 'btn-primary' : ''}`}
                       onClick={() => switchHostLab(opt.id)}
                     >
-                      {opt.code}: {opt.id === 'psis_seven_names' ? 'Master Data' : opt.id === 'psis_the_whip' ? 'Bullwhip Chains' : opt.id === 'psis_the_tender' ? 'Reverse Auction' : 'P2P Controls'}
+                      {opt.code}: {opt.id === 'psis_seven_names' ? 'Master Data' : opt.id === 'psis_the_whip' ? 'Bullwhip Chains' : opt.id === 'psis_the_tender' ? 'Reverse Auction' : opt.id === 'neg_zopa_batna' ? 'ZOPA Bargaining' : opt.id === 'neg_integrative_pareto' ? 'Pareto Frontier' : 'P2P Controls'}
                     </button>
                   ))}
                 </div>
@@ -1334,6 +1517,172 @@ export default function LiveLabSessionModal({
                       </>
                     );
                   })()}
+
+                  {labId === 'neg_zopa_batna' && (() => {
+                    const pairEntries = Object.entries(labState.pairs || {});
+                    const totalPairs = Math.max(pairEntries.length, Math.ceil(participants.length / 2));
+                    const agreedPairs = pairEntries.filter(([, p]) => p.status === 'agreed');
+                    const impassePairs = pairEntries.filter(([, p]) => p.status === 'impasse');
+                    const avgPrice = agreedPairs.length
+                      ? Math.round(agreedPairs.reduce((s, [, p]) => s + (Number(p.agreedPrice) || 0), 0) / agreedPairs.length)
+                      : null;
+                    return (
+                      <>
+                        <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                          <div>
+                            <div className="tiny muted">LIVE PAIRED DISTRIBUTIVE BARGAINING · {labState.itemLabel}</div>
+                            <div className="small muted">Students receive private reservation prices. Watch agreements & impasses unfold live.</div>
+                          </div>
+                          <div className="row-wrap" style={{ gap: 6 }}>
+                            <button type="button" className="btn btn-sm" onClick={dealParticipants}>Deal Buyer/Supplier Pairs</button>
+                            <button type="button" className={`btn btn-sm ${labState.revealZopa ? '' : 'btn-primary'}`} onClick={toggleNegReveal}>
+                              {labState.revealZopa ? 'Hide ZOPA' : 'Reveal Hidden ZOPA'}
+                            </button>
+                          </div>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(125px, 1fr))', gap: 8 }}>
+                          <div className="card-soft" style={{ padding: 10 }}>
+                            <div className="tiny muted">Active Pairs</div>
+                            <strong className="mono" style={{ fontSize: 18 }}>{totalPairs}</strong>
+                          </div>
+                          <div className="card-soft" style={{ padding: 10 }}>
+                            <div className="tiny muted">Deals Agreed</div>
+                            <strong className="mono" style={{ fontSize: 18, color: 'var(--teal-700)' }}>{agreedPairs.length}</strong>
+                          </div>
+                          <div className="card-soft" style={{ padding: 10 }}>
+                            <div className="tiny muted">Impasses (BATNA)</div>
+                            <strong className="mono" style={{ fontSize: 18, color: impassePairs.length ? 'var(--red)' : 'var(--muted)' }}>{impassePairs.length}</strong>
+                          </div>
+                          <div className="card-soft" style={{ padding: 10 }}>
+                            <div className="tiny muted">Avg Settlement</div>
+                            <strong className="mono" style={{ fontSize: 18 }}>{avgPrice ? `${labState.currency} ${avgPrice.toLocaleString()}` : '—'}</strong>
+                          </div>
+                        </div>
+                        <LiveDistributiveZopaChart state={labState} />
+                        {pairEntries.length > 0 && (
+                          <div style={{ overflowX: 'auto' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                              <thead>
+                                <tr style={{ borderBottom: '1px solid var(--line)', textAlign: 'left' }}>
+                                  <th style={{ padding: '6px 8px' }}>Pair</th>
+                                  <th style={{ padding: '6px 8px' }}>Status</th>
+                                  <th style={{ padding: '6px 8px' }}>Offers</th>
+                                  <th style={{ padding: '6px 8px' }}>Latest / Agreed</th>
+                                  {labState.revealZopa && <th style={{ padding: '6px 8px' }}>Buyer / Supplier Surplus</th>}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {pairEntries.map(([pairNo, p]) => {
+                                  const latest = p.offers?.[p.offers.length - 1];
+                                  const bSur = p.status === 'agreed' ? (labState.buyerReservation - p.agreedPrice) : null;
+                                  const sSur = p.status === 'agreed' ? (p.agreedPrice - labState.supplierReservation) : null;
+                                  return (
+                                    <tr key={pairNo} style={{ borderBottom: '1px solid var(--line)' }}>
+                                      <td className="mono" style={{ padding: '6px 8px', fontWeight: 700 }}>Pair {pairNo}</td>
+                                      <td style={{ padding: '6px 8px', color: p.status === 'agreed' ? 'var(--teal-700)' : p.status === 'impasse' ? 'var(--red)' : '#b45309', fontWeight: 600 }}>
+                                        {p.status.toUpperCase()}
+                                      </td>
+                                      <td className="mono" style={{ padding: '6px 8px' }}>{p.offers?.length || 0}</td>
+                                      <td className="mono" style={{ padding: '6px 8px' }}>
+                                        {p.status === 'agreed' ? `${labState.currency} ${p.agreedPrice.toLocaleString()}` : latest ? `${labState.currency} ${latest.price.toLocaleString()} (${latest.role})` : '—'}
+                                      </td>
+                                      {labState.revealZopa && (
+                                        <td className="mono" style={{ padding: '6px 8px' }}>
+                                          {p.status === 'agreed' ? `B: ${bSur >= 0 ? '+' : ''}${bSur} · S: ${sSur >= 0 ? '+' : ''}${sSur}` : '—'}
+                                        </td>
+                                      )}
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+
+                  {labId === 'neg_integrative_pareto' && (() => {
+                    const pairEntries = Object.entries(labState.pairs || {});
+                    const totalPairs = Math.max(pairEntries.length, Math.ceil(participants.length / 2));
+                    const agreedPairs = pairEntries.filter(([, p]) => p.status === 'agreed');
+                    const impassePairs = pairEntries.filter(([, p]) => p.status === 'impasse');
+                    const avgJoint = agreedPairs.length
+                      ? Math.round(agreedPairs.reduce((s, [, p]) => s + (Number(p.jointPts) || 0), 0) / agreedPairs.length)
+                      : null;
+                    const frontier = computeParetoFrontier(
+                      labState.issues || LIVE_INTEGRATIVE_ISSUES,
+                      labState.buyerBatnaPts || 42,
+                      labState.supplierBatnaPts || 42,
+                    );
+                    return (
+                      <>
+                        <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                          <div>
+                            <div className="tiny muted">LIVE MULTI-ISSUE INTEGRATIVE NEGOTIATION · 5 ISSUES</div>
+                            <div className="small muted">Pairs trade off price, payment terms, lead time, warranty & volume to expand the pie.</div>
+                          </div>
+                          <div className="row-wrap" style={{ gap: 6 }}>
+                            <button type="button" className="btn btn-sm" onClick={dealParticipants}>Deal Buyer/Supplier Pairs</button>
+                            <button type="button" className={`btn btn-sm ${labState.revealFrontier ? '' : 'btn-primary'}`} onClick={toggleNegReveal}>
+                              {labState.revealFrontier ? 'Hide Pareto Frontier' : 'Reveal Pareto Frontier'}
+                            </button>
+                          </div>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(125px, 1fr))', gap: 8 }}>
+                          <div className="card-soft" style={{ padding: 10 }}>
+                            <div className="tiny muted">Active Pairs</div>
+                            <strong className="mono" style={{ fontSize: 18 }}>{totalPairs}</strong>
+                          </div>
+                          <div className="card-soft" style={{ padding: 10 }}>
+                            <div className="tiny muted">Deals Agreed</div>
+                            <strong className="mono" style={{ fontSize: 18, color: 'var(--teal-700)' }}>{agreedPairs.length}</strong>
+                          </div>
+                          <div className="card-soft" style={{ padding: 10 }}>
+                            <div className="tiny muted">Avg Joint Score</div>
+                            <strong className="mono" style={{ fontSize: 18, color: '#6d28d9' }}>{avgJoint ? `${avgJoint} pts` : '—'}</strong>
+                          </div>
+                          <div className="card-soft" style={{ padding: 10 }}>
+                            <div className="tiny muted">Max Possible Joint</div>
+                            <strong className="mono" style={{ fontSize: 18 }}>{labState.revealFrontier ? `${(frontier.maxJointDeal?.jointPoints || 0)} pts` : 'Hidden'}</strong>
+                          </div>
+                        </div>
+                        <LiveIntegrativeParetoChart state={labState} />
+                        {pairEntries.length > 0 && (
+                          <div style={{ overflowX: 'auto' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                              <thead>
+                                <tr style={{ borderBottom: '1px solid var(--line)', textAlign: 'left' }}>
+                                  <th style={{ padding: '6px 8px' }}>Pair</th>
+                                  <th style={{ padding: '6px 8px' }}>Status</th>
+                                  <th style={{ padding: '6px 8px' }}>Offers</th>
+                                  <th style={{ padding: '6px 8px' }}>Buyer / Supplier Pts</th>
+                                  <th style={{ padding: '6px 8px' }}>Joint Score</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {pairEntries.map(([pairNo, p]) => (
+                                  <tr key={pairNo} style={{ borderBottom: '1px solid var(--line)' }}>
+                                    <td className="mono" style={{ padding: '6px 8px', fontWeight: 700 }}>Pair {pairNo}</td>
+                                    <td style={{ padding: '6px 8px', color: p.status === 'agreed' ? 'var(--teal-700)' : p.status === 'impasse' ? 'var(--red)' : '#b45309', fontWeight: 600 }}>
+                                      {p.status.toUpperCase()}
+                                    </td>
+                                    <td className="mono" style={{ padding: '6px 8px' }}>{p.offers?.length || 0}</td>
+                                    <td className="mono" style={{ padding: '6px 8px' }}>
+                                      {p.status === 'agreed' ? `B: ${p.buyerPts} · S: ${p.supplierPts}` : 'In negotiation…'}
+                                    </td>
+                                    <td className="mono" style={{ padding: '6px 8px', fontWeight: 700, color: '#6d28d9' }}>
+                                      {p.status === 'agreed' ? `${p.jointPts} / ${(frontier.maxJointDeal?.jointPoints || 0)}` : '—'}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
 
                 {/* Right: Live Student Roster & Append-Only Event Log */}
@@ -1349,6 +1698,8 @@ export default function LiveLabSessionModal({
                           ? `C${a.chainNo}·${a.tier}`
                           : a?.bidderCode
                             ? a.bidderCode
+                          : a?.pairNo
+                            ? `P${a.pairNo}·${a.role === 'buyer' ? 'BUYER' : 'SUPPLIER'}`
                           : a?.groupNo
                             ? `G${a.groupNo}·${a.isSuperUserDemo ? 'SUPER-USER' : a.roles?.[0]}`
                             : 'ready';
@@ -1653,6 +2004,271 @@ export default function LiveLabSessionModal({
                             Place Bid
                           </button>
                         </div>
+                      </>
+                    )}
+                  </>
+                );
+              })()}
+
+              {labId === 'neg_zopa_batna' && (() => {
+                const pairNo = myAssignment?.pairNo;
+                const role = myAssignment?.role;
+                const pairState = pairNo ? labState.pairs?.[String(pairNo)] : null;
+                const offers = pairState?.offers || [];
+                const latest = offers[offers.length - 1];
+                const canAccept = Boolean(pairState?.status !== 'agreed' && pairState?.status !== 'impasse' && latest && latest.role !== role);
+                const isClosed = pairState?.status === 'agreed' || pairState?.status === 'impasse';
+                const privateLimit = role === 'buyer' ? labState.buyerReservation : labState.supplierReservation;
+                const sendNegMove = (action, extra = {}) => {
+                  if (!pairNo || !role) {
+                    toast('Wait for your lecturer to click "Deal Buyer/Supplier Pairs".', 'error');
+                    return;
+                  }
+                  sendStudentAction('neg_move', {
+                    moveId: `${clientIdRef.current}:${Date.now()}:${action}`,
+                    pairNo,
+                    role,
+                    action,
+                    ...extra,
+                  });
+                };
+                return (
+                  <>
+                    <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                      <div className="tiny muted">DISTRIBUTIVE BARGAINING · {labState.itemLabel}</div>
+                      <strong className="mono tiny" style={{ color: '#6d28d9' }}>
+                        {pairNo ? `PAIR ${pairNo} · ${role === 'buyer' ? 'BUYER DESK' : 'SUPPLIER DESK'}` : 'WAITING FOR PAIR ASSIGNMENT'}
+                      </strong>
+                    </div>
+                    {!pairNo ? (
+                      <div className="notice small">Connected! Wait for your lecturer to click <strong>Deal Buyer/Supplier Pairs</strong> to receive your confidential role and reservation price.</div>
+                    ) : (
+                      <>
+                        <div className="card-soft" style={{ padding: 12, borderLeft: '4px solid #6d28d9' }}>
+                          <div className="tiny muted">CONFIDENTIAL BRIEF — DO NOT SHOW YOUR COUNTERPART</div>
+                          <div className="small" style={{ marginTop: 4 }}>
+                            You are the <strong>{myAssignment.roleLabel}</strong> in <strong>Pair {pairNo}</strong>.{' '}
+                            {role === 'buyer'
+                              ? <>Your maximum Walk-Away Price (Buyer Reservation / BATNA) is <strong className="mono">{labState.currency} {privateLimit.toLocaleString()}</strong>. Negotiate as LOW as possible without losing the deal.</>
+                              : <>Your minimum Walk-Away Floor (Supplier Reservation / BATNA) is <strong className="mono">{labState.currency} {privateLimit.toLocaleString()}</strong>. Negotiate as HIGH as possible without triggering an impasse.</>}
+                          </div>
+                        </div>
+
+                        {offers.length > 0 && (
+                          <div className="stack-xs" style={{ maxHeight: 160, overflowY: 'auto', padding: 8, background: 'var(--surface-2)', borderRadius: 8 }}>
+                            <div className="tiny muted">PAIR {pairNo} OFFER HISTORY</div>
+                            {offers.map((o, idx) => (
+                              <div key={idx} className="between small" style={{ padding: '4px 6px', borderBottom: '1px solid var(--line)' }}>
+                                <span><strong>{o.role === 'buyer' ? 'Buyer' : 'Supplier'}</strong> ({o.fromName})</span>
+                                <strong className="mono">{labState.currency} {o.price.toLocaleString()}</strong>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {isClosed ? (
+                          <div className={pairState.status === 'agreed' ? 'notice small' : 'notice-err small'}>
+                            {pairState.status === 'agreed' ? (
+                              <>
+                                <strong>Deal Agreed at {labState.currency} {pairState.agreedPrice.toLocaleString()}!</strong>{' '}
+                                Your private surplus vs. BATNA:{' '}
+                                <strong className="mono">
+                                  {role === 'buyer'
+                                    ? `${labState.buyerReservation - pairState.agreedPrice >= 0 ? '+' : ''}${labState.currency} ${(labState.buyerReservation - pairState.agreedPrice).toLocaleString()}`
+                                    : `${pairState.agreedPrice - labState.supplierReservation >= 0 ? '+' : ''}${labState.currency} ${(pairState.agreedPrice - labState.supplierReservation).toLocaleString()}`}
+                                </strong>
+                              </>
+                            ) : (
+                              <><strong>Impasse — Walked Away to BATNA.</strong> Closed by {pairState.closedBy}.</>
+                            )}
+                          </div>
+                        ) : (
+                          <>
+                            <div className="row" style={{ gap: 8 }}>
+                              <input
+                                className="input mono"
+                                type="number"
+                                style={{ flex: 1 }}
+                                placeholder={`Enter ${role === 'buyer' ? 'buy' : 'sell'} offer (${labState.currency})`}
+                                value={studentNegPriceInput}
+                                onChange={(e) => setStudentNegPriceInput(e.target.value)}
+                              />
+                              <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={() => {
+                                  const v = Number(studentNegPriceInput);
+                                  if (!Number.isFinite(v) || v <= 0) {
+                                    toast('Enter a positive price offer.', 'error');
+                                    return;
+                                  }
+                                  sendNegMove('offer', { price: v });
+                                  setStudentNegPriceInput('');
+                                  toast(`Sent offer: ${labState.currency} ${v.toLocaleString()}`);
+                                }}
+                              >
+                                Send Offer
+                              </button>
+                            </div>
+                            <div className="row-wrap" style={{ gap: 8 }}>
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                disabled={!canAccept}
+                                onClick={() => sendNegMove('accept_latest')}
+                              >
+                                {canAccept ? `Accept Counterpart's ${labState.currency} ${latest.price.toLocaleString()}` : 'Accept Counterpart Offer'}
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                style={{ color: 'var(--red)' }}
+                                onClick={() => sendNegMove('walk_away')}
+                              >
+                                Walk Away (BATNA)
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </>
+                );
+              })()}
+
+              {labId === 'neg_integrative_pareto' && (() => {
+                const pairNo = myAssignment?.pairNo;
+                const role = myAssignment?.role;
+                const issues = labState.issues || LIVE_INTEGRATIVE_ISSUES;
+                const pairState = pairNo ? labState.pairs?.[String(pairNo)] : null;
+                const offers = pairState?.offers || [];
+                const latest = offers[offers.length - 1];
+                const canAccept = Boolean(pairState?.status !== 'agreed' && pairState?.status !== 'impasse' && latest && latest.role !== role);
+                const isClosed = pairState?.status === 'agreed' || pairState?.status === 'impasse';
+                const myBatna = role === 'buyer' ? (labState.buyerBatnaPts || 42) : (labState.supplierBatnaPts || 42);
+                const myDraftEval = evaluateIntegrativePackage(issues, studentNegPkg, labState.buyerBatnaPts || 42, labState.supplierBatnaPts || 42);
+                const myDraftPts = role === 'buyer' ? myDraftEval.buyerPoints : myDraftEval.supplierPoints;
+                const sendNegMove = (action, extra = {}) => {
+                  if (!pairNo || !role) {
+                    toast('Wait for your lecturer to click "Deal Buyer/Supplier Pairs".', 'error');
+                    return;
+                  }
+                  sendStudentAction('neg_move', {
+                    moveId: `${clientIdRef.current}:${Date.now()}:${action}`,
+                    pairNo,
+                    role,
+                    action,
+                    ...extra,
+                  });
+                };
+                return (
+                  <>
+                    <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
+                      <div className="tiny muted">MULTI-ISSUE INTEGRATIVE NEGOTIATION</div>
+                      <strong className="mono tiny" style={{ color: '#6d28d9' }}>
+                        {pairNo ? `PAIR ${pairNo} · ${role === 'buyer' ? 'BUYER DESK' : 'SUPPLIER DESK'}` : 'WAITING FOR PAIR ASSIGNMENT'}
+                      </strong>
+                    </div>
+                    {!pairNo ? (
+                      <div className="notice small">Connected! Wait for your lecturer to click <strong>Deal Buyer/Supplier Pairs</strong> to receive your confidential scoring table.</div>
+                    ) : (
+                      <>
+                        <div className="card-soft" style={{ padding: 10, borderLeft: '4px solid #6d28d9' }}>
+                          <div className="tiny muted">CONFIDENTIAL POINT SCHEDULE · YOUR BATNA = {myBatna} PTS</div>
+                          <div className="small" style={{ marginTop: 2 }}>
+                            Trade issues you value less for issues you value more. Current draft package gives you{' '}
+                            <strong className="mono" style={{ color: myDraftPts >= myBatna ? 'var(--teal-700)' : 'var(--red)' }}>
+                              {myDraftPts} pts
+                            </strong>{' '}
+                            ({myDraftPts >= myBatna ? `+${myDraftPts - myBatna} above BATNA` : `${myDraftPts - myBatna} below BATNA`}).
+                          </div>
+                        </div>
+
+                        {latest && (
+                          <div className="card-soft small" style={{ padding: 10 }}>
+                            <div className="tiny muted">LATEST PACKAGE ON TABLE ({latest.role.toUpperCase()} — {latest.fromName})</div>
+                            <div className="row-wrap" style={{ gap: 6, marginTop: 4 }}>
+                              {issues.map((iss) => {
+                                const opt = iss.options.find((o) => o.id === latest.packageChoices?.[iss.id]);
+                                return (
+                                  <span key={iss.id} className="tiny mono" style={{ padding: '2px 6px', borderRadius: 5, background: '#fff', border: '1px solid var(--line)' }}>
+                                    {iss.name}: {opt?.label || '—'}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                            <div className="tiny" style={{ marginTop: 6, fontWeight: 700, color: (role === 'buyer' ? latest.buyerPts : latest.supplierPts) >= myBatna ? 'var(--teal-700)' : 'var(--red)' }}>
+                              Value to YOU: {role === 'buyer' ? latest.buyerPts : latest.supplierPts} pts (BATNA: {myBatna} pts)
+                            </div>
+                          </div>
+                        )}
+
+                        {isClosed ? (
+                          <div className={pairState.status === 'agreed' ? 'notice small' : 'notice-err small'}>
+                            {pairState.status === 'agreed' ? (
+                              <>
+                                <strong>Multi-Issue Deal Agreed!</strong> Your score:{' '}
+                                <strong className="mono">{role === 'buyer' ? pairState.buyerPts : pairState.supplierPts} pts</strong>{' '}
+                                {labState.revealFrontier && <>· Joint Score: <strong className="mono">{pairState.jointPts} pts</strong></>}
+                              </>
+                            ) : (
+                              <><strong>Impasse — Walked Away to BATNA ({myBatna} pts).</strong></>
+                            )}
+                          </div>
+                        ) : (
+                          <>
+                            <div className="stack-xs">
+                              {issues.map((iss) => (
+                                <div key={iss.id} className="between" style={{ gap: 8, flexWrap: 'wrap' }}>
+                                  <label className="tiny" style={{ fontWeight: 700, minWidth: 130 }}>{iss.name}</label>
+                                  <select
+                                    className="input"
+                                    style={{ flex: 1, minWidth: 190, padding: '6px 8px', fontSize: 12 }}
+                                    value={studentNegPkg[iss.id] || ''}
+                                    onChange={(e) => setStudentNegPkg((prev) => ({ ...prev, [iss.id]: e.target.value }))}
+                                  >
+                                    {iss.options.map((o) => {
+                                      const myPts = role === 'buyer' ? o.buyerPoints : o.supplierPoints;
+                                      return (
+                                        <option key={o.id} value={o.id}>
+                                          {o.label} (+{myPts} pts to you)
+                                        </option>
+                                      );
+                                    })}
+                                  </select>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="row-wrap" style={{ gap: 8, marginTop: 6 }}>
+                              <button
+                                type="button"
+                                className="btn btn-primary btn-sm"
+                                onClick={() => {
+                                  sendNegMove('offer', { packageChoices: { ...studentNegPkg } });
+                                  toast(`Sent 5-issue package offer (Worth ${myDraftPts} pts to you)`);
+                                }}
+                              >
+                                Send Package Offer ({myDraftPts} pts)
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                disabled={!canAccept}
+                                onClick={() => sendNegMove('accept_latest')}
+                              >
+                                Accept Latest Offer
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                style={{ color: 'var(--red)' }}
+                                onClick={() => sendNegMove('walk_away')}
+                              >
+                                Walk Away (BATNA)
+                              </button>
+                            </div>
+                          </>
+                        )}
                       </>
                     )}
                   </>
