@@ -97,14 +97,24 @@ export default function Layout() {
           <Icon name="home" /> {isLecturer ? 'Faculty Dashboard' : 'Home'}
         </NavLink>
         {isLecturer && (
-          <NavLink to="/teach/labs" className="nav-link">
-            <Icon name="flask" /> Software Labs
-          </NavLink>
+          <>
+            <NavLink to="/teach/labs" className="nav-link">
+              <Icon name="flask" /> Software Labs
+            </NavLink>
+            <NavLink to="/teach/thesis" className="nav-link">
+              <Icon name="award" /> Thesis Supervision
+            </NavLink>
+          </>
         )}
         {!isLecturer && (
-          <NavLink to="/grades" className="nav-link">
-            <Icon name="chart" /> My Grades
-          </NavLink>
+          <>
+            <NavLink to="/grades" className="nav-link">
+              <Icon name="chart" /> My Grades
+            </NavLink>
+            <NavLink to="/thesis" className="nav-link">
+              <Icon name="award" /> My Thesis
+            </NavLink>
+          </>
         )}
         <div className="nav-section">Courses</div>
         {courses.map((c) => (
@@ -195,15 +205,25 @@ export default function Layout() {
             <span>{isLecturer ? 'Dashboard' : 'Home'}</span>
           </NavLink>
           {!isLecturer ? (
-            <NavLink to="/grades" className="mobile-bottom-link">
-              <Icon name="chart" size={18} />
-              <span>Grades</span>
-            </NavLink>
+            <>
+              <NavLink to="/grades" className="mobile-bottom-link">
+                <Icon name="chart" size={18} />
+                <span>Grades</span>
+              </NavLink>
+              <NavLink to="/thesis" className="mobile-bottom-link">
+                <Icon name="award" size={18} />
+                <span>Thesis</span>
+              </NavLink>
+            </>
           ) : (
             <>
               <NavLink to="/teach/labs" className="mobile-bottom-link">
                 <Icon name="flask" size={18} />
                 <span>Labs</span>
+              </NavLink>
+              <NavLink to="/teach/thesis" className="mobile-bottom-link">
+                <Icon name="award" size={18} />
+                <span>Thesis</span>
               </NavLink>
               <button type="button" className="mobile-bottom-link" onClick={() => setOpen(true)}>
                 <Icon name="book" size={18} />

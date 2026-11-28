@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getSignedFileUrl } from '../lib/files.js';
 import { rpc } from '../lib/supabase.js';
+import { buildTypedResponsePdfBlob } from '../lib/textPdf.js';
+import { buildAnnotationFeedbackLines } from '../lib/thesisEngine.js';
 import Icon from './Icon.jsx';
 import { Loading, useToast } from './ui.jsx';
 
@@ -8,17 +10,23 @@ const TAGS = [
   { id: 'comment', label: 'Comment', cls: 'badge-blue', color: '#2563eb' },
   { id: 'strength', label: 'Strength', cls: 'badge-teal', color: '#0f766e' },
   { id: 'correction', label: 'Correction', cls: 'badge-amber', color: '#d97706' },
-  { id: 'deduction', label: 'Deduction', cls: 'badge-red', color: '#dc2626' },
+  { id: 'deduction', label: 'Major Revision', cls: 'badge-red', color: '#dc2626' },
 ];
 
 export default function PdfAnnotatorModal({
   submissionId,
+  bucket = 'submissions',
   filePath,
   fileName,
   studentLabel,
+  titleLabel,
   initialAnnotations = [],
   snippets = [],
   readOnly = false,
+  hideDelta = false,
+  allowStudentReplies = false,
+  onSaveAnnotations,
+  onReplyAnnotation,
   onSaved,
   onClose,
 }) {
@@ -37,6 +45,8 @@ export default function PdfAnnotatorModal({
   const [selectedId, setSelectedId] = useState(null);
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [replyDrafts, setReplyDrafts] = useState({});
+  const [replyBusyId, setReplyBusyId] = useState(null);
 
   useEffect(() => {
     let alive = true;
@@ -47,7 +57,7 @@ export default function PdfAnnotatorModal({
         const [pdfjs, workerMod, url] = await Promise.all([
           import('pdfjs-dist'),
           import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
-          getSignedFileUrl('submissions', filePath),
+          getSignedFileUrl(bucket, filePath),
         ]);
         pdfjs.GlobalWorkerOptions.workerSrc = workerMod.default;
         const res = await fetch(url);
@@ -76,7 +86,7 @@ export default function PdfAnnotatorModal({
       try { pdfRef.current?.destroy?.(); } catch { /* ignore */ }
       pdfRef.current = null;
     };
-  }, [filePath]);
+  }, [bucket, filePath]);
 
   const renderPage = useCallback(async () => {
     const doc = pdfRef.current;
@@ -128,7 +138,7 @@ export default function PdfAnnotatorModal({
     const clean = {
       ...draft,
       text: draft.text.trim(),
-      delta: draft.delta === '' ? null : Number(draft.delta),
+      delta: hideDelta || draft.delta === '' ? null : Number(draft.delta),
     };
     setAnnotations((prev) => {
       const exists = prev.some((x) => x.id === clean.id);
@@ -148,11 +158,16 @@ export default function PdfAnnotatorModal({
     if (readOnly) return;
     setSaving(true);
     try {
-      const saved = await rpc('save_submission_annotations', {
-        p_submission: submissionId,
-        p_annotations: annotations,
-      });
-      toast(`Saved ${annotations.length} PDF annotation${annotations.length === 1 ? '' : 's'}.`);
+      let saved;
+      if (typeof onSaveAnnotations === 'function') {
+        saved = await onSaveAnnotations(annotations);
+      } else {
+        saved = await rpc('save_submission_annotations', {
+          p_submission: submissionId,
+          p_annotations: annotations,
+        });
+      }
+      toast(`Saved ${annotations.length} PDF annotation${annotations.length === 1 ? '' : 's'} & notified student.`);
       onSaved?.(Array.isArray(saved) ? saved : annotations);
       onClose();
     } catch (err) {
@@ -162,16 +177,61 @@ export default function PdfAnnotatorModal({
     }
   }
 
+  async function submitStudentReply(pin, nextResolved) {
+    if (!onReplyAnnotation) return;
+    const replyText = (replyDrafts[pin.id] ?? pin.studentReply ?? '').trim();
+    setReplyBusyId(pin.id);
+    try {
+      const updated = await onReplyAnnotation(pin.id, replyText, nextResolved);
+      if (Array.isArray(updated)) {
+        setAnnotations(updated);
+      } else {
+        setAnnotations((prev) =>
+          prev.map((a) => (a.id === pin.id ? { ...a, studentReply: replyText, studentResolved: nextResolved } : a))
+        );
+      }
+      toast(nextResolved ? 'Marked comment addressed & notified supervisor.' : 'Reply saved & supervisor notified.');
+    } catch (err) {
+      toast(err.message || 'Could not save reply.', 'error');
+    } finally {
+      setReplyBusyId(null);
+    }
+  }
+
+  function exportCommentsPdf() {
+    const lines = buildAnnotationFeedbackLines({
+      title: titleLabel || 'PDF Annotation Feedback',
+      studentLabel,
+      fileName,
+      annotations,
+    });
+    const blob = buildTypedResponsePdfBlob({
+      title: titleLabel || 'Annotated Feedback Summary',
+      studentLine: studentLabel || fileName || 'Document Review',
+      submittedAt: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+      body: lines.join('\n'),
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${String(fileName || 'draft').replace(/\.pdf$/i, '')}_comments.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 500);
+  }
+
   const tagInfo = (id) => TAGS.find((t) => t.id === id) || TAGS[0];
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="PDF annotation studio">
-      <div className="modal pdf-annotator-modal" style={{ maxWidth: 1120, width: '96vw', maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}>
+      <div className="modal pdf-annotator-modal" style={{ maxWidth: 1140, width: '96vw', maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}>
         <div className="modal-head">
           <div className="stack-sm" style={{ gap: 2 }}>
-            <h3 style={{ margin: 0 }}>{readOnly ? 'Annotated submission PDF' : 'Inline PDF Annotation Grading'}</h3>
+            <h3 style={{ margin: 0 }}>
+              {titleLabel || (readOnly ? 'Annotated PDF Feedback' : 'Inline PDF Annotation Studio')}
+            </h3>
             <span className="tiny muted">
-              {studentLabel ? `${studentLabel} · ` : ''}{fileName || 'Submission PDF'} · {annotations.length} pin{annotations.length === 1 ? '' : 's'}
+              {studentLabel ? `${studentLabel} · ` : ''}{fileName || 'Submission PDF'} · {annotations.length} comment{annotations.length === 1 ? '' : 's'}
             </span>
           </div>
           <div className="row-wrap" style={{ gap: 6 }}>
@@ -181,9 +241,14 @@ export default function PdfAnnotatorModal({
             <button type="button" className="btn btn-sm" onClick={() => setScale((s) => Math.max(0.75, +(s - 0.15).toFixed(2)))} aria-label="Zoom out">−</button>
             <span className="mono tiny">{Math.round(scale * 100)}%</span>
             <button type="button" className="btn btn-sm" onClick={() => setScale((s) => Math.min(2.2, +(s + 0.15).toFixed(2)))} aria-label="Zoom in">+</button>
+            {annotations.length > 0 && (
+              <button type="button" className="btn btn-sm" onClick={exportCommentsPdf} title="Download all page comments as PDF">
+                <Icon name="download" size={14} /> Comments PDF
+              </button>
+            )}
             {!readOnly && (
               <button type="button" className="btn btn-sm btn-primary" disabled={saving} onClick={saveAll}>
-                {saving ? 'Saving…' : 'Save annotations'}
+                {saving ? 'Saving…' : 'Save & Notify'}
               </button>
             )}
             <button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><Icon name="x" /></button>
@@ -212,7 +277,8 @@ export default function PdfAnnotatorModal({
                       style={{
                         left: `${pin.x}%`,
                         top: `${pin.y}%`,
-                        background: t.color,
+                        background: pin.studentResolved ? '#0f766e' : t.color,
+                        opacity: pin.studentResolved ? 0.72 : 1,
                       }}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -221,7 +287,7 @@ export default function PdfAnnotatorModal({
                       }}
                       title={pin.text}
                     >
-                      {idx + 1}
+                      {pin.studentResolved ? '✓' : idx + 1}
                     </button>
                   );
                 })}
@@ -238,9 +304,13 @@ export default function PdfAnnotatorModal({
           </div>
 
           <aside className="pdf-annotator-side stack">
-            {!readOnly && (
+            {!readOnly ? (
               <div className="notice notice-info tiny">
-                Click anywhere on the PDF page to drop an inline comment pin or mark deduction.
+                Click anywhere on the PDF page to drop a pinned comment. Students see every pin on the exact page.
+              </div>
+            ) : (
+              <div className="notice notice-info tiny">
+                Click any comment below to jump to its exact page. {allowStudentReplies ? 'You can reply and mark items addressed as you revise.' : ''}
               </div>
             )}
 
@@ -268,17 +338,19 @@ export default function PdfAnnotatorModal({
                   onChange={(e) => setDraft((d) => ({ ...d, text: e.target.value }))}
                   autoFocus
                 />
-                <div className="row" style={{ gap: 8 }}>
-                  <input
-                    className="input mono"
-                    type="number"
-                    step="0.5"
-                    placeholder="Mark +/- (opt.)"
-                    style={{ minHeight: 34 }}
-                    value={draft.delta}
-                    onChange={(e) => setDraft((d) => ({ ...d, delta: e.target.value }))}
-                  />
-                </div>
+                {!hideDelta && (
+                  <div className="row" style={{ gap: 8 }}>
+                    <input
+                      className="input mono"
+                      type="number"
+                      step="0.5"
+                      placeholder="Mark +/- (opt.)"
+                      style={{ minHeight: 34 }}
+                      value={draft.delta}
+                      onChange={(e) => setDraft((d) => ({ ...d, delta: e.target.value }))}
+                    />
+                  </div>
+                )}
                 {snippets.length > 0 && (
                   <select
                     className="select"
@@ -289,7 +361,7 @@ export default function PdfAnnotatorModal({
                       if (val) setDraft((d) => ({ ...d, text: d.text ? `${d.text}\n${val}` : val }));
                     }}
                   >
-                    <option value="">Insert quick snippet…</option>
+                    <option value="">Insert quick academic snippet…</option>
                     {snippets.map((sn, i) => (
                       <option key={sn.id || i} value={sn.text}>{sn.title || sn.text.slice(0, 48)}</option>
                     ))}
@@ -305,14 +377,15 @@ export default function PdfAnnotatorModal({
             )}
 
             <div className="stack-sm">
-              <strong className="small">All Annotations ({annotations.length})</strong>
+              <strong className="small">All Comments ({annotations.length})</strong>
               {annotations.length === 0 ? (
                 <span className="tiny muted">No pins added yet.</span>
               ) : (
-                <div className="stack-sm" style={{ maxHeight: 380, overflowY: 'auto' }}>
+                <div className="stack-sm" style={{ maxHeight: 420, overflowY: 'auto' }}>
                   {annotations.map((pin, idx) => {
                     const t = tagInfo(pin.tag);
                     const active = selectedId === pin.id;
+                    const draftReply = replyDrafts[pin.id] ?? pin.studentReply ?? '';
                     return (
                       <div
                         key={pin.id}
@@ -320,6 +393,7 @@ export default function PdfAnnotatorModal({
                         style={{
                           padding: 10,
                           borderColor: active ? 'var(--teal)' : 'var(--line)',
+                          background: pin.studentResolved ? 'var(--surface-2)' : 'var(--surface)',
                           cursor: 'pointer',
                         }}
                         onClick={() => {
@@ -329,9 +403,12 @@ export default function PdfAnnotatorModal({
                         }}
                       >
                         <div className="between" style={{ gap: 6 }}>
-                          <div className="row" style={{ gap: 6 }}>
+                          <div className="row-wrap" style={{ gap: 6 }}>
                             <span className={`badge ${t.cls}`} style={{ fontSize: 11 }}>{t.label}</span>
                             <span className="mono tiny muted">#{idx + 1} · p.{pin.page}</span>
+                            {pin.studentResolved && (
+                              <span className="badge badge-teal" style={{ fontSize: 10 }}>Addressed ✓</span>
+                            )}
                             {pin.delta !== null && pin.delta !== undefined && pin.delta !== '' && (
                               <span className="mono tiny strong">{Number(pin.delta) > 0 ? `+${pin.delta}` : pin.delta}</span>
                             )}
@@ -351,6 +428,40 @@ export default function PdfAnnotatorModal({
                           )}
                         </div>
                         <div className="small pre">{pin.text}</div>
+                        {pin.studentReply && !allowStudentReplies && (
+                          <div className="tiny" style={{ padding: '6px 8px', borderRadius: 6, background: 'var(--surface-2)', borderLeft: '3px solid var(--teal)' }}>
+                            <strong>Student reply:</strong> {pin.studentReply}
+                          </div>
+                        )}
+                        {allowStudentReplies && (
+                          <div className="stack-sm" style={{ gap: 6, marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
+                            <input
+                              className="input"
+                              style={{ minHeight: 32, fontSize: 12 }}
+                              placeholder="Reply to supervisor (e.g., Fixed in v2 on p.14)…"
+                              value={draftReply}
+                              onChange={(e) => setReplyDrafts((prev) => ({ ...prev, [pin.id]: e.target.value }))}
+                            />
+                            <div className="row-wrap" style={{ gap: 6 }}>
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                disabled={replyBusyId === pin.id}
+                                onClick={() => submitStudentReply(pin, Boolean(pin.studentResolved))}
+                              >
+                                {replyBusyId === pin.id ? 'Saving…' : 'Save Reply'}
+                              </button>
+                              <button
+                                type="button"
+                                className={`btn btn-sm ${pin.studentResolved ? '' : 'btn-primary'}`}
+                                disabled={replyBusyId === pin.id}
+                                onClick={() => submitStudentReply(pin, !pin.studentResolved)}
+                              >
+                                {pin.studentResolved ? 'Reopen' : 'Mark Addressed ✓'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
